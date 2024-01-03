@@ -1,4 +1,5 @@
 echo "Fetching GWTC1 samples from zenodo.org/records/6513631"
+mkdir standard_events
 cd standard_events
 declare -a GWTC1_EVENTS=(
     "GW150914" "GW151012" "GW151226" "GW170104" 
