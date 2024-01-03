@@ -1,0 +1,4 @@
+# ignore large event files loaded into the standard_events directory
+standard_events/*
+
+
