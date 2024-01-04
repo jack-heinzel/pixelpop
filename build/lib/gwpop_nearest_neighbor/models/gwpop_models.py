@@ -172,10 +172,15 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     norm = scs.logsumexp(smoothed_pl_test, axis=0) + jnp.log(dq) # simple Riemann rule
 
     # takes the LARGER normalization estimate so to DOWNWEIGHT bad estimates
-    norms = norm[jnp.digitize(m1, m1s_test)] 
+    norms = jnp.interp(m1, m1s_test, norm) 
+    # norm[jnp.digitize(m1, m1s_test)] 
     # correct normalization in the test powerlaw
     norms += jnp.log(jnp.abs(1 - 0.02**(slope+1))) - jnp.log(jnp.abs(1 - (minimum/m1)**(slope+1)))
-    # print(norms, jnp.all(jnp.isfinite(norms)))
+    
+    # as m1 approaches a grid point in m1s_test from below, the normalization will approach 1
+    # as it passes this grid point, the normalization shoots down, for points near mmin this behavior
+    # is exaggerated, ie for mmin = 5 and delta_m = 5, it can be downweighted as much as 50% for 
+    # m1 = 5.5ish, but at m1 = 7ish the downweighting is 5% or so.
     return smoothed_pl - norms
 
 def Powerlaw_MassRatio(data, slope, minimum):
