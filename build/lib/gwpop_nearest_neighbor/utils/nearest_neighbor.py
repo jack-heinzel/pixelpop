@@ -1,4 +1,4 @@
-import jax.numpy as jnp
+import numpy as jnp
 import scipy
 from tqdm import tqdm
 
@@ -77,7 +77,7 @@ def nearest_neighbors(density, dimension, isVisible=False):
 
     powers = [generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
     if isVisible:
-        print(f'Computing nearest neighbors list for {dimension}-dimension grid of size {density}')
+        print(f'Computing nearest neighbors list for {dimension}-dimensional grid of size {density}')
         array = tqdm(indices)
     else:
         array = indices

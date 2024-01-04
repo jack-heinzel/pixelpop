@@ -1,4 +1,4 @@
-import jax.numpy as jnp
+import numpy as jnp
 import scipy
 from tqdm import tqdm
 
