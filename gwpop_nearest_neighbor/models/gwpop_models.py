@@ -15,8 +15,22 @@ def log_expit(x):
     log(1 / [1 + exp(-x)]) = log(exp(x) / (exp(x) + 1)) = x - log(1 + exp(x))
 
     exactly as done in scipy.special.log_expit
+
+    DANGEROUS: https://github.com/google/jax/issues/1052 gradients will be nan.
+
+    cannot use a single `where', must use the "double-where" trick
+
+    consider differentiating this function for x = -1000, using naive single-where method
+    the arguments of where are (True, -1000, jnp.inf). This causes trouble for gradients as the 
+    divergence is propagated along, eventually it is multiplied by 0 to remove it, but 0*inf is an issue.
+    With the double where method, now evaulating the function for x=-1000 gives you (True, -1000, 0.)
+    and this works because the forward differentiation is done serially, so we never get an inf
     """
-    return jnp.where(x < 0, x-jnp.log(1+jnp.exp(x)), -jnp.log(1+jnp.exp(-x)))
+    condition = x < 0
+    posx_valid = jnp.where(condition, 0, x) # in forward differentiation, gradient is 0 for condition, 1 where false
+    negx_valid = jnp.where(condition, x, 0) # in forward differentiation, gradient is 0 for condition, 1 where false
+    
+    return jnp.where(condition, negx_valid-jnp.log(1+jnp.exp(negx_valid)), -jnp.log(1+jnp.exp(-posx_valid)))
 
 def m_smoother(m1s, minimum, delta, buffer=1e-3):
     '''
@@ -158,7 +172,9 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     smoothed_pl_test = power_law_test + m_smoother(m2s_test, minimum, delta_m)
     
     norm = scs.logsumexp(smoothed_pl_test, axis=0) + jnp.log(dq) # simple Riemann rule
-    norms = jnp.interp(m1, m1s_test, norm)
+    # norms = jnp.interp(m1, m1s_test, norm)
+    norms = norm[jnp.digitize(m1, m1s_test)] # take the point to the right of each m1, so
+    # that the normalization is always SMALLER than the true value, so that 
     # correct normalization from fiducial lower bound
     norms += jnp.log(jnp.abs(1 - 0.02**(slope+1))) - jnp.log(jnp.abs(1 - (minimum/m1)**(slope+1)))
     return smoothed_pl - norms
