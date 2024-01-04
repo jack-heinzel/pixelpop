@@ -101,7 +101,7 @@ def powerlaw(data, slope, minimum, maximum):
 def gaussian(data, mean, sig):
     
     px = -(data - mean)**2 / 2 / sig**2
-    norm = 0.5*jnp.log(2*jnp.pi)*sig
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
 
 def chieff_gaussian(data, mean, sig):

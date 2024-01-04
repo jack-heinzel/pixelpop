@@ -161,7 +161,7 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     power_law = powerlaw(q, slope, minimum/m1, jnp.ones_like(m1))
     smoothed_pl = power_law + m_smoother(q*m1, minimum, delta_m)
     m1s_test = jnp.exp(jnp.linspace(jnp.log(2.), jnp.log(100.), 500))
-    m2s_test = jnp.linspace(1.99*jnp.ones_like(m1s_test), m1s_test, 1000)
+    m2s_test = jnp.linspace(1.99*jnp.ones_like(m1s_test), m1s_test, 10000)
     # m2s_test = jnp.exp(ln_m2s_test)
     qs_test = m2s_test / jnp.expand_dims(m1s_test, axis=0)
     # qs_test = jnp.exp(ln_qs_test)
