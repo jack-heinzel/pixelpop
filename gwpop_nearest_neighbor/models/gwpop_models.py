@@ -12,7 +12,9 @@ def log_expit(x):
         return -std::log1p(std::exp(-x));
     }
     exact same expression, just more numerically stable for each side of 0
-    log(1 / [1 + exp(-x)]) = log(exp(x) / (exp(x) + 1)) = x - log(1 + exp(x))    
+    log(1 / [1 + exp(-x)]) = log(exp(x) / (exp(x) + 1)) = x - log(1 + exp(x))
+
+    exactly as done in scipy.special.log_expit
     """
     return jnp.where(x < 0, x-jnp.log(1+jnp.exp(x)), -jnp.log(1+jnp.exp(-x)))
 
@@ -24,18 +26,10 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     return log(1 / 1+f(m-mmin, delta)) if inside minimum and minimum + delta
 
     standard powerlaw + peak smoother: https://arxiv.org/pdf/2111.03634.pdf B5
-    see scipy.special.log_expit for documentation
     '''
 
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
-    # return_arr = jnp.zeros_like(m1s)
-    # zero_window = jnp.array(m1s > minimum, dtype=float)
-    # center_window = jnp.array(jnp.logical_and(m1s > minimum, m1s < minimum + delta), dtype=float)
-    # return_arr = return_arr \
-    #                 + jnp.nan_to_num(scs.log_expit(-delta/m1s - delta/(m1s - delta))*center_window) \
-    #                 + jnp.log(zero_window)
-    # return return_arr 
 
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
@@ -71,7 +65,7 @@ def NoSmoothedPowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, mpp, s
     '''
     Modifies how the PP model is smoothed, instead of using a numerically difficult log_expit function
 
-    slope, minimum, maximum, delta_m, mpp, sigpp, and lam are the standard PP mass parameters
+    slope, minimum, maximum, mpp, sigpp, and lam are the standard PP mass parameters
     '''
     slope = -alpha
     isLogMass = True
@@ -91,7 +85,6 @@ def NoSmoothedPowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, mpp, s
     return pm1
 
 def powerlaw(data, slope, minimum, maximum):
-    # sgn = jnp.sign(slope + 1)
     norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
     
     window = jnp.logical_and(data >= minimum, data <= maximum)
@@ -143,10 +136,6 @@ def PowerlawRedshift(data, lamb, normalize=True):
 
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     '''
-    WIP
-    ========
-    right now, it appears the normalization is broken. Needlessly expensive too.
-    ========
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
     of mass_1 samples
 
@@ -160,26 +149,24 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
 
     power_law = powerlaw(q, slope, minimum/m1, jnp.ones_like(m1))
     smoothed_pl = power_law + m_smoother(q*m1, minimum, delta_m)
+
     m1s_test = jnp.exp(jnp.linspace(jnp.log(2.), jnp.log(100.), 500))
     m2s_test = jnp.linspace(1.99*jnp.ones_like(m1s_test), m1s_test, 10000)
-    # m2s_test = jnp.exp(ln_m2s_test)
     qs_test = m2s_test / jnp.expand_dims(m1s_test, axis=0)
-    # qs_test = jnp.exp(ln_qs_test)
-    # m2s_test = jnp.outer(qs_test, m1s_test)
     dq = qs_test[1] - qs_test[0]
     power_law_test = powerlaw(qs_test, slope, 0.02, 1.) # fiducial lower bound of 0.02 
     smoothed_pl_test = power_law_test + m_smoother(m2s_test, minimum, delta_m)
+    
     norm = scs.logsumexp(smoothed_pl_test, axis=0) + jnp.log(dq) # simple Riemann rule
-
     norms = jnp.interp(m1, m1s_test, norm)
-    # correct normalization in the test powerlaw
+    # correct normalization from fiducial lower bound
     norms += jnp.log(jnp.abs(1 - 0.02**(slope+1))) - jnp.log(jnp.abs(1 - (minimum/m1)**(slope+1)))
     return smoothed_pl - norms
 
 def Powerlaw_MassRatio(data, slope, minimum):
     '''
-    because ordinary is broken! I can't get it to work. Following "Parameter Free Tour" we can just
-    use simple powerlaws
+    Simple powerlaw function for fitting mass ratio distribution, using a global
+    minimum BH mass
     '''
     try:
         m1 = jnp.exp(data['log_mass_1'])
@@ -192,8 +179,8 @@ def Powerlaw_MassRatio(data, slope, minimum):
 
 def SimplePowerlaw_MassRatio(data, slope):
     '''
-    because ordinary is broken! I can't get it to work. Following "Parameter Free Tour" we can just
-    use simple powerlaws
+    Simple function for fitting mass ratio distribution, using no global minimum
+    BH mass, can be as low as 0.02*mmin
     '''
     q = data['mass_ratio']
 
