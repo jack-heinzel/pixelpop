@@ -284,25 +284,30 @@ def spin_iid(data, mu, var, mu_tilt, sig_tilt, zeta):
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
-def hierarchical_likelihood(event_weights, denominator_weights, total_injections):
+def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False):
     '''
     event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
     denominator weights are a 1d array of p(theta|lambda) / prior(theta)
     '''
     n_events, minimum_length = event_weights.shape
-    # print(n_events, minimum_length)
     numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
-    # print(numerators)
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
-    # print(denominator)
-    ln_likelihood = jnp.sum(numerators) - n_events*denominator
-    
+
+    ln_likelihood = jnp.sum(numerators)
+    if rate_likelihood:
+        ln_likelihood += n_events*jnp.log(live_time) - live_time*jnp.exp(denominator)
+    else:
+        ln_likelihood += -n_events*denominator
+
     square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
     
     ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length) # sum w^2 - (sum w)^2 / (sum w)^2
     # print(ln_likelihood_variance)
-    ln_likelihood_variance += n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
+    if rate_likelihood:
+        ln_likelihood_variance += live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
+    else:
+        ln_likelihood_variance += n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
 
     return ln_likelihood, ln_likelihood_variance
     
