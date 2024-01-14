@@ -124,7 +124,7 @@ def load_meta_file_from_hdf5(filename, labels):
         return posterior, label
 
 
-def load_injection_data(vt_file, ifar_threshold=1, snr_threshold=11, chi_eff=False):
+def load_injection_data(vt_file, ifar_threshold=1, snr_threshold=10, chi_eff=False):
     """
     Slightly modified from gwpopulation_pipe.vt_helper
 
@@ -171,7 +171,7 @@ def load_injection_data(vt_file, ifar_threshold=1, snr_threshold=11, chi_eff=Fal
         data = ff["injections"]
         found = np.zeros_like(data["mass1_source"][()], dtype=bool)
         for key in data:
-            if "ifar" in key.lower():
+            if ("ifar" in key.lower()) and ('cwb' not in key.lower()):
                 found = found | (data[key][()] > ifar_threshold)
             if "name" in data.keys():
                 gwtc1 = (data["name"][()] == b"o1") | (data["name"][()] == b"o2")
