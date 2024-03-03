@@ -47,7 +47,6 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
-@jit
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -78,6 +77,41 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
     smoothed_pl_test = jnp.logaddexp(smoothed_pl_test + jnp.log(1-lam), peak_test + jnp.log(lam))
     
     pm1 -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
+    if isLogMass: # include jacobian
+        pm1 = pm1 + data['log_mass_1']
+    return pm1
+
+@jit
+def PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
+    '''
+    data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
+    of mass_1 samples
+
+    slope, minimum, maximum, delta_m, mpp, sigpp, and lam are the standard PP mass parameters
+
+    This is NOT the standard PP model, this normalizes the smoothed powerlaw FIRST before adding the gaussian peak
+    This basically changes the definition of lam, but is equivalent up to a redefinition. That is, sampling with
+    this model will be identical to sampling with the conventional model.
+    '''
+    slope = -alpha
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+    power_law = powerlaw(m1, slope, minimum, maximum)
+    smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
+    m1s_test = jnp.linspace(2.0, 100., 1000)
+    dm1 = m1s_test[1] - m1s_test[0]
+    power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
+    smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
+    smoothed_pl -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
+    peak = gaussian(m1, mpp, sigpp)
+    pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
     return pm1
@@ -222,6 +256,14 @@ def PowerlawPlusPeak(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
 
     return pm1 + pq
+
+@jit
+def PowerlawPlusPeak_NormFirst(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
+    pm1 = PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
+    pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
+
+    return pm1 + pq
+
 
 @jit
 def smooth(x, cutoff, width):
