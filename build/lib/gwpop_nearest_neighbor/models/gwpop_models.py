@@ -1,7 +1,9 @@
 from astropy.cosmology import Planck15
+from jax import jit
 import jax.numpy as jnp
 import jax.scipy.special as scs
 import numpy as np
+from functools import partial
 
 def log_expit(x):
     """
@@ -45,6 +47,7 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
+@jit
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -64,13 +67,17 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
         m1 = data
     power_law = powerlaw(m1, slope, minimum, maximum)
     smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
+    peak = gaussian(m1, mpp, sigpp)
+    pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
+    
     m1s_test = jnp.linspace(2.0, 100., 1000)
     dm1 = m1s_test[1] - m1s_test[0]
     power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
     smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
-    smoothed_pl -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
-    peak = gaussian(m1, mpp, sigpp)
-    pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
+    peak_test = gaussian(m1s_test, mpp, sigpp)
+    smoothed_pl_test = jnp.logaddexp(smoothed_pl_test + jnp.log(1-lam), peak_test + jnp.log(lam))
+    
+    pm1 -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
     return pm1
@@ -98,6 +105,7 @@ def NoSmoothedPowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, mpp, s
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
+@jit
 def powerlaw(data, slope, minimum, maximum):
     norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
     
@@ -105,12 +113,14 @@ def powerlaw(data, slope, minimum, maximum):
     p = jnp.where(window, slope*jnp.log(data), -100.*jnp.ones_like(data))
     return p - norm
 
+@jit
 def gaussian(data, mean, sig):
     
     px = -(data - mean)**2 / 2 / sig**2
     norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
 
+@jit
 def chieff_gaussian(data, mean, sig):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -118,6 +128,7 @@ def chieff_gaussian(data, mean, sig):
         x = data
     return gaussian(x, mean, sig)
 
+@jit
 def trunc_gaussian(data, mean, sig, lower, upper):
     
     px = -(data - mean)**2 / 2 / sig**2
@@ -128,13 +139,14 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     norm = 0.5*jnp.log(2*jnp.pi)*sig + jnp.log(trunc)
     return px - norm
 
+@jit
 def PowerlawRedshift(data, lamb, normalize=True):
     if isinstance(data, dict):
         z = data['redshift']
     else:
         z = data
 
-    zs_fixed = np.linspace(0, 1.9, 1000)
+    zs_fixed = np.linspace(1e-5, 1.9, 1000)
     fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
     ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
     ln_p = ln_dvc_dz + (lamb - 1) * jnp.log(1. + z)
@@ -148,6 +160,7 @@ def PowerlawRedshift(data, lamb, normalize=True):
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
+@jit
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -193,26 +206,24 @@ def Powerlaw_MassRatio(data, slope, minimum):
     power_law = powerlaw(q, slope, minimum/m1, jnp.ones_like(m1))
     return power_law
 
-def SimplePowerlaw_MassRatio(data, slope):
+def SimplePowerlaw_MassRatio(data, slope, qmin):
     '''
     Simple function for fitting mass ratio distribution, using no global minimum
-    BH mass, can be as low as 0.02*mmin
+    BH mass, can be as low as 0.02
     '''
     q = data['mass_ratio']
 
-    power_law = powerlaw(q, slope, 0.02, 1.)
+    power_law = powerlaw(q, slope, qmin, 1.)
     return power_law
 
-
-
-
+@jit
 def PowerlawPlusPeak(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
     pm1 = PowerlawPlusPeak_PrimaryMass(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
 
     return pm1 + pq
 
-
+@jit
 def smooth(x, cutoff, width):
     # less than cutoff return 1
     # first derivative is continuous, so all good for autodiff
@@ -229,6 +240,7 @@ def beta_spin_mv(spin_mag, mu, var):
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(spin_mag, alpha, beta)
 
+@jit
 def beta_spin(spin_mag, alpha, beta):
     ln_a = jnp.log(spin_mag)
     ln_1ma = jnp.log(1. - spin_mag)
@@ -237,10 +249,12 @@ def beta_spin(spin_mag, alpha, beta):
     norm = scs.gammaln(alpha) + scs.gammaln(beta) - scs.gammaln(alpha + beta)
     return ln_p - norm
 
+@jit
 def iid_beta_spin(data, mu, var):
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(data['a_1'], alpha, beta) + beta_spin(data['a_2'], alpha, beta)
 
+@jit
 def tilt_model(data, mu, sig, zeta):
     '''
     Only difference here is that mu is allowed to be != 1, a free parameter
@@ -256,12 +270,14 @@ def tilt_model(data, mu, sig, zeta):
 
     return jnp.logaddexp(ln_zeta + pfield, ln_1mzeta + pisotropic)
 
+@jit
 def tilt_default(data, sig, zeta):
     '''
     Here the tilt distribution is NOT iid, either BOTH isotropic or BOTH from field, truncated gaussian
     '''
     return tilt_model(data, 1., sig, zeta)
 
+@jit
 def tilt_iid(data, mu, sig, zeta):
     '''
     here, the tilt distribution is assumed to be IID, a truncated normal plus a isotropic component
@@ -278,12 +294,15 @@ def tilt_iid(data, mu, sig, zeta):
     p2 = jnp.logaddexp(ln_zeta + pfield2, ln_1mzeta + pisotropic)
     return p1 + p2
     
+@jit
 def spin_iid(data, mu, var, mu_tilt, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_iid(data, mu_tilt, sig_tilt, zeta)
 
+@jit
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
+@partial(jit, static_argnames=['rate_likelihood'])
 def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False):
     '''
     event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]

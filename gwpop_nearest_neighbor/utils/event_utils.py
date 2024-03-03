@@ -29,7 +29,7 @@ _BBH_SET = [
     "GW200224_222234", "GW200225_060421", "GW200302_015811", "GW200311_115853", 
     "GW200316_215756"]
 
-def load_posterior_from_meta_file(event_name, catalog_directory, labels=None):
+def load_posterior_from_meta_file(event_name, catalog_directory, labels=None, verbose=False):
     """
     Modified from gwpopulation_pipe.data_collection
     ========================================================
@@ -75,7 +75,7 @@ def load_posterior_from_meta_file(event_name, catalog_directory, labels=None):
         labels = ["C01:Mixed"]
     if not os.path.exists(filename):
         raise FileNotFoundError(f"{filename} does not exist")
-    _posterior, label = load_meta_file_from_hdf5(filename=filename, labels=labels)
+    _posterior, label = load_meta_file_from_hdf5(filename=filename, labels=labels, verbose=verbose)
     try:
         posterior = pd.DataFrame({key: _posterior[_mapping[key]] for key in _mapping})
     except KeyError:
@@ -91,7 +91,7 @@ def load_posterior_from_meta_file(event_name, catalog_directory, labels=None):
     print(f"Loaded {label} from {filename}.")
     return posterior, meta_data
 
-def load_meta_file_from_hdf5(filename, labels):
+def load_meta_file_from_hdf5(filename, labels, verbose=False):
     """
     Modified from gwpopulation_pipe.data_collection
     ========================================================
@@ -106,6 +106,8 @@ def load_meta_file_from_hdf5(filename, labels):
             data = data["posterior_samples"]
         label = list(data.keys())[0]
         for _label in labels:
+            if verbose:
+                print(data.keys())
             if _label in data.keys():
                 label = _label
                 break
@@ -387,10 +389,22 @@ def evaluate_prior(posts, posterior_names, max_redshift=1.9, distance_prior='euc
     return posts
 
 
-def load_gwtc3pop_bbh_set(catalog_directory, labels=['C01:Mixed'], minimum_length=np.inf, chi_eff=False, event_list=_BBH_SET):
+def load_gwtc3pop_bbh_set(catalog_directory, labels=['C01:Mixed'], minimum_length=np.inf, chi_eff=False, event_list=_BBH_SET, special_events=[], special_labels=['C01:IMRPhenomXPHM'], verbose=False):
+    '''
+    catalog_directory, path to where the event.hdf5s are stored
+    labels, list in order of which label to use in order of preference
+    minimum_length, length to downsample to
+    chieff, whether to calculate p(chieff|PE prior) for each event sample list
+    event_list, the list of events to use
+    special_events, list of events (in the same naming convention as above) for which to use a special label
+    special_labels, list of labels in order of preference to use for special events, e.g. 
+    '''
     posterior_list = []
     for bbh in event_list:
-        posterior, meta_data = load_posterior_from_meta_file(bbh, catalog_directory, labels=labels)
+        if bbh in special_events:
+            posterior, meta_data = load_posterior_from_meta_file(bbh, catalog_directory, labels=special_labels, verbose=verbose)
+        else:
+            posterior, meta_data = load_posterior_from_meta_file(bbh, catalog_directory, labels=labels)
         posterior_list.append(posterior)
 
     posterior_list = reformat(posterior_list, event_list, minimum_length=minimum_length)

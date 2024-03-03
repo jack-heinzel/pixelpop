@@ -59,6 +59,9 @@ def coordinate_to_index(coordinate, density, dimension):
     return r
 
 def index_to_coordinate(index, dimension, density):
+    '''
+    Computes the coordinate in a C-style reshaping
+    '''
     r = []
     i = index
     for d in range(dimension):
