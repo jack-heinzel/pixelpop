@@ -170,7 +170,7 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     up = (upper - mean) / sig / jnp.sqrt(2)
     lo = (lower - mean) / sig / jnp.sqrt(2)
     trunc = 0.5*(scs.erf(up) - scs.erf(lo))
-    norm = 0.5*jnp.log(2*jnp.pi)*sig + jnp.log(trunc)
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
     return px - norm
 
 @jit

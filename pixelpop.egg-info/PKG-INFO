@@ -1,5 +1,5 @@
 Metadata-Version: 2.1
-Name: gwpop_nearest_neighbor
+Name: pixelpop
 Version: 0.1
 Summary: Meant for use with numpyro and jax, package for fitting the GW population with a nonparameteric binning scheme, where bins are correlated with only their nearest neighbors. Meant for inferring the GW population distribution nonparameterically in higher dimensions.
 Home-page: #

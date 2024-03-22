@@ -1,1 +1,1 @@
-gwpop_nearest_neighbor
+pixelpop
