@@ -156,3 +156,4 @@ def place_samples_in_bins(bin_axes, sample_coordinates):
     # print(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
+    

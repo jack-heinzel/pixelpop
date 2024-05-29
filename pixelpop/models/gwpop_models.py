@@ -162,6 +162,29 @@ def chieff_gaussian(data, mean, sig):
         x = data
     return gaussian(x, mean, sig)
 
+@jit
+def trunc_gaussian(data, mean, sig, lower, upper):
+    px = -(data - mean)**2 / 2 / sig**2
+    up = (upper - mean) / sig / jnp.sqrt(2)
+    lo = (lower - mean) / sig / jnp.sqrt(2)
+    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
+    return px - norm
+
+# Sofia implements a truncated gaussian that cuts at the limits
+@jit
+def trunc_gaussian_2(data, mean, sig, lower, upper):
+    px = -(data - mean)**2 / 2 / sig**2
+    width = 0.001 #TODO: hardcoding it for now.
+    taper_l = jnp.where(data > lower, 0, -((data-lower)/width)**2)
+    taper_r = jnp.where(data < upper, 0, -((data-upper)/width)**2)
+    px = px + taper_l + taper_r
+    up = (upper - mean) / sig / jnp.sqrt(2)
+    lo = (lower - mean) / sig / jnp.sqrt(2)
+    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
+    return px - norm
+
 # Sofia implements a mixture of two gaussians for the chieff model
 @jit
 def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
@@ -171,19 +194,19 @@ def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
         x = data
     gaussian_1 = gaussian(x, mean1, sig1)
     gaussian_2 = gaussian(x, mean2, sig2)
-    model = np.logaddexp(np.log(lamb_x) + gaussian_1, np.log(1 - lamb_x) + gaussian_2)    
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian_1, jnp.log(1 - lamb_x) + gaussian_2)    
     return model
 
 @jit
-def trunc_gaussian(data, mean, sig, lower, upper):
-    
-    px = -(data - mean)**2 / 2 / sig**2
-
-    up = (upper - mean) / sig / jnp.sqrt(2)
-    lo = (lower - mean) / sig / jnp.sqrt(2)
-    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
-    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
-    return px - norm
+def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    trunc_gaussian_1 = trunc_gaussian(x, mean1, sig1, lower1, upper1)
+    trunc_gaussian_2 = trunc_gaussian(x, mean2, sig2, lower2, upper2)
+    model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
+    return model
 
 @jit
 def PowerlawRedshift(data, lamb, normalize=True):
