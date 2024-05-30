@@ -203,8 +203,8 @@ def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, l
         x = data['chi_eff']
     else:
         x = data
-    trunc_gaussian_1 = trunc_gaussian(x, mean1, sig1, lower1, upper1)
-    trunc_gaussian_2 = trunc_gaussian(x, mean2, sig2, lower2, upper2)
+    trunc_gaussian_1 = trunc_gaussian_2(x, mean1, sig1, lower1, upper1)
+    trunc_gaussian_2 = trunc_gaussian_2(x, mean2, sig2, lower2, upper2)
     model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
     return model
 
@@ -380,7 +380,7 @@ def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
 @partial(jit, static_argnames=['rate_likelihood'])
-def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False):
+def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
     '''
     event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
     denominator weights are a 1d array of p(theta|lambda) / prior(theta)
@@ -390,27 +390,26 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
 
     # Sofia (05/01/24): compute pe_ln_likelihood, vt_ln_likelihood
-    ln_likelihood = jnp.sum(numerators)
     pe_ln_likelihood = jnp.sum(numerators)
     if rate_likelihood:
-        ln_likelihood += n_events*jnp.log(live_time) - live_time*jnp.exp(denominator)
         vt_ln_likelihood = n_events*jnp.log(live_time) - live_time*jnp.exp(denominator)
     else:
-        ln_likelihood += -n_events*denominator
-
+        vt_ln_likelihood = -n_events*denominator
     ln_likelihoods = [pe_ln_likelihood, vt_ln_likelihood]
+    ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
     square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
     
     # Sofia (05/01/24): compute pe_ln_likelihood_variance, vt_ln_likelihood_variance
-    ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length) # sum w^2 - (sum w)^2 / (sum w)^2
     pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
     # print(ln_likelihood_variance)
     if rate_likelihood:
-        ln_likelihood_variance += live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
         vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
     else:
-        ln_likelihood_variance += n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
+        vt_ln_likelihood_variance += n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
+    ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
     ln_likelihood_variances = [pe_ln_likelihood_variance, vt_ln_likelihood_variance]
-    return ln_likelihood, ln_likelihood_variance, ln_likelihoods, ln_likelihood_variances
-    
+    if return_likelihood_info:
+        return ln_likelihood, ln_likelihood_variance, ln_likelihoods, ln_likelihood_variances
+    else:
+        return ln_likelihood, ln_likelihood_variance
