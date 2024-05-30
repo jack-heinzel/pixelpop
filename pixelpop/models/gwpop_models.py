@@ -173,7 +173,7 @@ def trunc_gaussian(data, mean, sig, lower, upper):
 
 # Sofia implements a truncated gaussian that cuts at the limits
 @jit
-def trunc_gaussian_2(data, mean, sig, lower, upper):
+def trunc_gaussian_lims(data, mean, sig, lower, upper):
     px = -(data - mean)**2 / 2 / sig**2
     width = 0.001 #TODO: hardcoding it for now.
     taper_l = jnp.where(data > lower, 0, -((data-lower)/width)**2)
@@ -203,8 +203,8 @@ def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, l
         x = data['chi_eff']
     else:
         x = data
-    trunc_gaussian_1 = trunc_gaussian_2(x, mean1, sig1, lower1, upper1)
-    trunc_gaussian_2 = trunc_gaussian_2(x, mean2, sig2, lower2, upper2)
+    trunc_gaussian_1 = trunc_gaussian_lims(x, mean1, sig1, lower1, upper1)
+    trunc_gaussian_2 = trunc_gaussian_lims(x, mean2, sig2, lower2, upper2)
     model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
     return model
 
