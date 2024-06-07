@@ -175,9 +175,9 @@ def trunc_gaussian(data, mean, sig, lower, upper):
 @jit
 def trunc_gaussian_lims(data, mean, sig, lower, upper):
     px = -(data - mean)**2 / 2 / sig**2
-    width = 0.001 #TODO: hardcoding it for now.
-    taper_l = jnp.where(data > lower, 0, -((data-lower)/width)**2)
-    taper_r = jnp.where(data < upper, 0, -((data-upper)/width)**2)
+    width = 0.001 #Hardcoding it for now
+    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
+    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
     px = px + taper_l + taper_r
     up = (upper - mean) / sig / jnp.sqrt(2)
     lo = (lower - mean) / sig / jnp.sqrt(2)
@@ -228,6 +228,28 @@ def PowerlawRedshift(data, lamb, normalize=True):
     window = jnp.logical_and(z >= 0., z <= 1.9)
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
+
+@jit
+def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True):
+    if isinstance(data, dict):
+        z = data['redshift']
+    else:
+        z = data
+    zs_fixed = np.linspace(1e-5, z_max, 1000)
+    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
+    ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
+    ln_p = ln_dvc_dz + (gamma - 1)* jnp.log(1. + z) - jnp.log(1 + ((1 + z)/(1 + z_peak))**kappa)
+    if normalize:
+        dz = zs_fixed[1] - zs_fixed[0]
+        test_ln_p = fixed_ln_dvc_dz + (gamma - 1)* jnp.log(1. + zs_fixed) - jnp.log(1 + ((1 + zs_fixed)/(1 + z_peak))**kappa)
+        # Calculate the normalization
+        ln_norm = scs.logsumexp(test_ln_p) + jnp.log(dz)
+        # Divide in logspace (=subtract) by normalization
+        ln_p -= ln_norm
+    window = jnp.logical_and(z >= 0., z <= z_max)
+    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    return p
+
 
 @jit
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
