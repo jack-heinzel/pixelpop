@@ -9,8 +9,8 @@ class generalized_number(object):
             self.base = [base]*dimension
         elif isinstance(base, list):
             self.base = base
-        self.powers = [jnp.prod(self.base[:d]) for d in range(dimension)]
-        # TODO: add exception
+        else:
+            raise ValueError("Base must be either an integer or a list of the same length as dimension.")
         self.dimension = dimension
         self.base10_to_base()
 
@@ -26,13 +26,13 @@ class generalized_number(object):
 
     def __add__(self, obj):
         if len(self.coefficients) != len(obj.coefficients):
-            print('error')
+            print('Error: Dimension mismatch')
             return None
         new = [self.coefficients[ii] + obj.coefficients[ii] for ii in range(self.dimension)]
         return new
     def __sub__(self, obj):
         if len(self.coefficients) != len(obj.coefficients):
-            print('error')
+            print('Error: Dimension mismatch') 
             return None
         new = [self.coefficients[ii] - obj.coefficients[ii] for ii in range(self.dimension)]
         return new
@@ -51,7 +51,7 @@ def is_valid(l, base, dimension):
                 return False
         return True
     # TODO: throw exception
-    
+
 def coordinate_to_index(coordinate, density, dimension):
     '''
     Computes the index of a C-style flattening of a dimension-d array with axis length density
@@ -62,45 +62,42 @@ def coordinate_to_index(coordinate, density, dimension):
     (np.ndarray) coordinate: array of coordinates, ie. [coordinate0, coordinate1, ...]
         where each coordinate may be an ND-array
     
-    (int) density: length along each dimension, usually the number of bins
+    (int or list) density: length along each dimension, usually the number of bins
     (int) dimension: the dimension of the space, usually 1 or 2
     '''
     r = jnp.zeros_like(coordinate[0], dtype=int)
     if isinstance(density, int):
-        for ii, c in enumerate(coordinate):
-            r += c * density**(dimension - 1 - ii)
+        # This means equal along all directions
+        density = [density] * dimension
     elif isinstance(density, list):
         if len(density) != dimension:
             raise IndexError('Length of densities is different from dimension')
-        for ii, c in enumerate(coordinate):
-            # print(r, c)
-            r += int(c * jnp.prod(density[:dimension - 1 - ii]))
+    else:
+        raise TypeError('density must be an integer or list')
     
-    return r
+    coordinates = tuple(jnp.asarray(c, dtype=int) for c in coordinate)
+    indices = jnp.ravel_multi_index(coordinates, dims=density, order='C')
+    return indices
 
 def index_to_coordinate(index, dimension, density):
     '''
     Computes the coordinate in a C-style reshaping
+    Parameters
+    =====================
+    (int) index: The index in the flattened array
+    (int) dimension: The dimension of the space, usually 1 or 2
+    (int or list) density: length along each dimension, usually the number of bins
     '''
-    r = []
     if isinstance(density, int):
-        i = index
-        for d in range(dimension):
-            power = density**(dimension-1-d)
-            c = i // power
-            i -= c*power
-            r.append(c)
-        return r
+        density = [density] * dimension
     elif isinstance(density, list):
         if len(density) != dimension:
             raise IndexError('Length of densities is different from dimension')
-        i = index
-        for d in range(dimension):
-            power = jnp.prod(density[:dimension - 1 - ii])
-            c = i // power
-            i -= c*power
-            r.append(c)
-        return r
+    else:
+        raise TypeError('density must be an integer or list')
+    
+    coordinates = jnp.unravel_index(index, shape=density, order='C')
+    return list(coordinates)
         
 def nearest_neighbors(density, dimension, isVisible=False):
     '''
@@ -155,7 +152,7 @@ def create_CAR_coupling_matrix(density, dimension, isVisible=False):
 
     return adjancency_matrix
 
-
+# TODO: maybe also need to change this one to handle multi-shapes
 def place_grid_in_bins(bin_axes, minimums, maximums, grid_density):
     dimension = len(minimums)
     if dimension > 1:
@@ -194,10 +191,24 @@ def place_samples_in_bins(bin_axes, sample_coordinates):
         shape as sample_coordinates[0]
     '''
     dimension = len(sample_coordinates)
-    density = len(bin_axes[0]) - 1
-    # print(f'dimension = {dimension}, density = {density}')
+    # density = len(bin_axes[0]) - 1
+
+    if isinstance(bin_axes, list):
+        # Assuming bin_axes is a list of arrays
+        density = [len(bin_axes[i]) - 1 for i in range(dimension)]
+        if len(set(density)) == 1:
+            density = density[0]
+    else:
+        # Assuming bin_axes is a single array 
+        density = len(bin_axes[0]) - 1
+
+    print(f'dimension = {dimension}, density = {density}')
     _data_nd_bins = [jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
-    # print(_data_nd_bins)
+    
+    #print(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
-    
+
+
+
+
