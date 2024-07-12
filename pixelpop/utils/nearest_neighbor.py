@@ -152,13 +152,17 @@ def create_CAR_coupling_matrix(density, dimension, isVisible=False):
 
     return adjancency_matrix
 
-# TODO: maybe also need to change this one to handle multi-shapes
+
 def place_grid_in_bins(bin_axes, minimums, maximums, grid_density):
     dimension = len(minimums)
-    if dimension > 1:
-        density = len(bin_axes[0])
+    if isinstance(bin_axes, list):
+        # Assuming bin_axes is a list of arrays
+        density = [len(bin_axes[i]) - 1 for i in range(dimension)]
+        if len(set(density)) == 1:
+            density = density[0]
     else:
-        density = len(bin_axes)
+        # Assuming bin_axes is a single array 
+        density = len(bin_axes[0]) - 1
     m_axes = [jnp.linspace(minimums[d], maximums[d], grid_density) for d in range(dimension)]    
     ax_grids = jnp.meshgrid(*m_axes)
     grid = [ax_grids[ii].reshape(grid_density**dimension) for ii in range(dimension)]
