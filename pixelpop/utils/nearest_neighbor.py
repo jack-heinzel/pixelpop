@@ -76,6 +76,11 @@ def coordinate_to_index(coordinate, density, dimension):
         raise TypeError('density must be an integer or list')
     
     coordinates = tuple(jnp.asarray(c, dtype=int) for c in coordinate)
+
+    for c, d in zip(coordinates, density):
+        if jnp.any(c < 0) or jnp.any(c >= d):
+            print(c)
+
     indices = jnp.ravel_multi_index(coordinates, dims=density, order='C')
     return indices
 
