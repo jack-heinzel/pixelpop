@@ -2,41 +2,6 @@ import numpy as jnp
 import scipy
 from tqdm import tqdm
 
-class generalized_number(object):
-    def __init__(self, b10, base=10, dimension=1):
-        self.base_10 = b10
-        if isinstance(base, int):
-            self.base = [base]*dimension
-        elif isinstance(base, list):
-            self.base = base
-        else:
-            raise ValueError("Base must be either an integer or a list of the same length as dimension.")
-        self.dimension = dimension
-        self.base10_to_base()
-
-    def base10_to_base(self):
-        r = []
-        i = self.base_10
-        for d in range(self.dimension):
-            power = jnp.prod(self.base[:self.dimension-1-d])
-            c = i // power
-            i -= c*power
-            r.append(c)
-        self.coefficients = r
-
-    def __add__(self, obj):
-        if len(self.coefficients) != len(obj.coefficients):
-            print('Error: Dimension mismatch')
-            return None
-        new = [self.coefficients[ii] + obj.coefficients[ii] for ii in range(self.dimension)]
-        return new
-    def __sub__(self, obj):
-        if len(self.coefficients) != len(obj.coefficients):
-            print('Error: Dimension mismatch') 
-            return None
-        new = [self.coefficients[ii] - obj.coefficients[ii] for ii in range(self.dimension)]
-        return new
-
 def is_valid(l, base, dimension):
     if len(l) != dimension:
         return False
@@ -47,7 +12,7 @@ def is_valid(l, base, dimension):
         return True
     elif isinstance(base, list):
         for ii, coef in enumerate(l):
-            if coef < 0 or coef >= base[dimension-1-ii]:
+            if coef < 0 or coef >= base[ii]:
                 return False
         return True
     # TODO: throw exception
@@ -65,7 +30,6 @@ def coordinate_to_index(coordinate, density, dimension):
     (int or list) density: length along each dimension, usually the number of bins
     (int) dimension: the dimension of the space, usually 1 or 2
     '''
-    r = jnp.zeros_like(coordinate[0], dtype=int)
     if isinstance(density, int):
         # This means equal along all directions
         density = [density] * dimension
@@ -111,15 +75,15 @@ def nearest_neighbors(density, dimension, isVisible=False):
     '''
     if isinstance(density, int):
         indices = jnp.arange(0, density**dimension)
-        powers = [generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
+        powers = jnp.eye(dimension) #[generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
 
     elif isinstance(density, list):
         # raise exception if len(density) != dimension
         if len(density) != dimension:
             raise IndexError('Length of densities is different from dimension')
         indices = jnp.arange(0, jnp.prod(density))
-        powers = [generalized_number(jnp.prod(density[:d]), base=density, dimension=dimension) for d in range(dimension)]
-        print([p.coefficients for p in powers], [p.base_10 for p in powers])
+        powers = jnp.eye(dimension)
+        #print(powers)
     else:
         raise TypeError('density must be an integer or list')
     i_vals = []
@@ -131,8 +95,10 @@ def nearest_neighbors(density, dimension, isVisible=False):
     else:
         array = indices
     for index in array:
-        converted = generalized_number(index, base=density, dimension=dimension)
+        converted = jnp.array(jnp.unravel_index(index, shape=density, order='C')) 
         for d in range(dimension):
+            #print(index, converted + powers[d], is_valid(converted + powers[d], density, dimension))
+            #print(index, converted - powers[d], is_valid(converted - powers[d], density, dimension))
             if is_valid(converted + powers[d], density, dimension):
                 i_vals.append(index)
                 j_vals.append(coordinate_to_index(converted+powers[d], density=density, dimension=dimension))
@@ -217,7 +183,3 @@ def place_samples_in_bins(bin_axes, sample_coordinates):
     #print(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
-
-
-
-
