@@ -1,11 +1,12 @@
 from astropy.cosmology import Planck15
-from jax import jit
+from jax import jit, lax
 import numpyro
 import jax.numpy as jnp
 import jax.scipy.special as scs
 import numpy as np
 from functools import partial
 from jax.scipy.special import erf
+from jax.scipy.special import gamma
 
 def log_expit(x):
     """
@@ -175,21 +176,7 @@ def trunc_gaussian(data, mean, sig, lower, upper):
 
 # Sofia implements a truncated gaussian that cuts at the limits
 @jit
-def trunc_gaussian_real_lims(data, mean, sig, lower, upper):
-    px = -(data - mean)**2 / 2 / sig**2
-    width = 0.001 #Hardcoding it for now
-    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
-    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
-    px = px + taper_l + taper_r
-    up = (upper - mean) / sig / jnp.sqrt(2)
-    lo = (lower - mean) / sig / jnp.sqrt(2)
-    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
-    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
-    return px - norm
-
-# Sofia fixes the lower and upper truncation lims at 1
-@jit
-def trunc_gaussian_lims(data, mean, sig, lower=-1, upper=1):
+def trunc_gaussian_lims(data, mean, sig, lower, upper):
     px = -(data - mean)**2 / 2 / sig**2
     width = 0.001 #Hardcoding it for now
     taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
@@ -220,24 +207,13 @@ def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
     return model
 
 @jit
-def chieff_two_trunc_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
+def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
     if isinstance(data, dict):
         x = data['chi_eff']
     else:
         x = data
-    trunc_gaussian_1 = trunc_gaussian_lims(x, mean1, sig1)
-    trunc_gaussian_2 = trunc_gaussian_lims(x, mean2, sig2)
-    model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
-    return model
-
-@jit
-def chieff_two_trunc_gaussians_real(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    trunc_gaussian_1 = trunc_gaussian_real_lims(x, mean1, sig1, lower1, upper1)
-    trunc_gaussian_2 = trunc_gaussian_real_lims(x, mean2, sig2, lower2, upper2)
+    trunc_gaussian_1 = trunc_gaussian_lims(x, mean1, sig1, lower1, upper1)
+    trunc_gaussian_2 = trunc_gaussian_lims(x, mean2, sig2, lower2, upper2)
     model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
     return model
 
@@ -286,7 +262,7 @@ def chieff_gaussian_tukey(data, mean, sig, tx0, tr, tk, lamb_x):
         x = data['chi_eff']
     else:
         x = data
-    gaussian = trunc_gaussian_lims(x, mean, sig)
+    gaussian = trunc_gaussian_lims(x, mean, sig, lower=-1, upper=-1)
     tukey = log_tukey(x, tx0, tr, tk)
     model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
     return model
@@ -344,6 +320,168 @@ def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
+@jit
+def skew_norm(data, mu_0, mu_1, sigma_0, sigma_1, alpha_0, alpha_1, z_max=1.9, normalize=True):
+    redshift = data['redshift']
+    chi_eff = data['chi_eff']
+    
+    mu = mu_0 + chi_eff * mu_1
+    sigma = sigma_0 + chi_eff * sigma_1
+    alpha = alpha_0 + chi_eff * alpha_1
+    
+    zs_fixed = np.linspace(1e-5, z_max, 1000)
+    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
+    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
+    cdf = jnp.log(1 + erf(alpha * (redshift - mu) / (sigma * jnp.sqrt(2))))
+    exp = -(redshift - mu) ** 2 / (2 * sigma ** 2)
+    norm = jnp.log(sigma * jnp.sqrt(2 * jnp.pi))
+    result = ln_dvc_dz - jnp.log(1. + redshift) + cdf + exp - norm
+    
+    if normalize:
+        # Define fixed values of chi_eff for normalization
+        chi_eff_fixed = np.linspace(-1, 1, 1000)
+        dz = zs_fixed[1] - zs_fixed[0]
+        
+        # Precompute variables for chi_eff_fixed
+        mu_fixed = mu_0 + chi_eff_fixed * mu_1
+        sigma_fixed = sigma_0 + chi_eff_fixed * sigma_1
+        alpha_fixed = alpha_0 + chi_eff_fixed * alpha_1
+        
+        zs_fixed_ = zs_fixed[:, None]
+        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
+        mu_ = mu_fixed[None, ...]
+        sigma_ = sigma_fixed[None, ...]
+        alpha_ = alpha_fixed[None, ...]
+        
+        cdf_t = jnp.log(1 + erf(alpha_ * (zs_fixed_ - mu_) / (sigma_ * jnp.sqrt(2))))
+        exp_t = -(zs_fixed_ - mu_) ** 2 / (2 * sigma_ ** 2)
+        result_t = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + cdf_t + exp_t - jnp.log(sigma_ * jnp.sqrt(2 * jnp.pi))
+        ln_norm_fixed = scs.logsumexp(result_t, axis=0) + jnp.log(dz)
+        
+        # Interpolate normalization to original chi_eff
+        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
+    
+    ln_p = result - ln_norm
+    conditions = jnp.stack([redshift >= 0., 
+                                        redshift <= z_max,
+                                        mu >= 0, mu <= 1.9, sigma > 0,
+                                        np.isfinite(ln_p)], axis=0)
+    window = jnp.all(conditions, axis=0)
+    p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
+    return p
+
+@jit
+def jhonson_su(data, gamma_0, gamma_1, xi_0, xi_1, delta_0, delta_1, lambda_0, lambda_1, z_max=1.9, normalize=True):
+    redshift = data['redshift']
+    chi_eff = data['chi_eff']
+    
+    gamma = gamma_0 + chi_eff*gamma_1
+    xi = xi_0 + chi_eff*xi_1
+    delta = delta_0 + chi_eff*delta_1
+    lambd = lambda_0 + chi_eff*lambda_1
+    
+    zs_fixed = np.linspace(1e-5, z_max, 1000)
+    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
+    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
+    
+    f = jnp.log(delta) - jnp.log(lambd * jnp.sqrt(2*jnp.pi))
+    s = -0.5*jnp.log(1 + ((redshift - xi)/lambd)**2)
+    t = -0.5*(gamma + delta*np.arcsinh((redshift - xi)/lambd))**2
+    result =ln_dvc_dz - jnp.log(1. + redshift) + f + s + t
+    
+    if normalize:
+        # Define fixed values of chi_eff for normalization
+        chi_eff_fixed = np.linspace(-1, 1, 1000)
+        dz = zs_fixed[1] - zs_fixed[0]
+        
+        # Precompute variables for chi_eff_fixed
+        gamma_fixed = gamma_0 + chi_eff_fixed*gamma_1
+        xi_fixed = xi_0 + chi_eff_fixed*xi_1
+        delta_fixed = delta_0 + chi_eff_fixed*delta_1
+        lambd_fixed = lambda_0 + chi_eff_fixed*lambda_1
+
+        zs_fixed_ = zs_fixed[:,None]
+        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
+        gamma_ = gamma_fixed[None,...]
+        xi_ = xi_fixed[None,...]
+        delta_ = delta_fixed[None,...]
+        lambd_ = lambd_fixed[None, ...]
+        
+        f_fixed = jnp.log(delta_) - jnp.log(lambd_ * jnp.sqrt(2*jnp.pi))
+        s_fixed = -0.5*jnp.log(1 + ((zs_fixed_ - xi_)/lambd_)**2)
+        t_fixed = -0.5*(gamma_ + delta_*np.arcsinh((zs_fixed_ - xi_)/lambd_))**2
+        result_fixed = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + f_fixed + s_fixed + t_fixed
+        ln_norm_fixed = scs.logsumexp(result_fixed, axis=0) + jnp.log(dz)
+        
+        # Interpolate normalization to original chi_eff
+        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
+        
+    ln_p = result - ln_norm
+    conditions = jnp.stack([redshift >= 0., 
+                                        redshift <= z_max,
+                                        delta > 0, lambd > 0,
+                                        np.isfinite(ln_p)], axis=0)
+    window = jnp.all(conditions, axis=0)
+    p = jnp.where(window, ln_p, -100.*jnp.ones_like(redshift))
+    return p
+
+@jit
+def PERT(data, a, b_0, b_1, c_0, c_1, z_max=1.9, normalize=True):
+    redshift = data['redshift']
+    chi_eff = data['chi_eff']
+    
+    b = b_0 + chi_eff * b_1
+    c = c_0 + chi_eff * c_1
+
+    alpha = 1 + 4 * ((b - a) / (c - a))
+    beta = 1 + 4 * ((c - b) / (c - a))
+    gamma_factor = gamma(alpha) * gamma(beta) / gamma(alpha + beta)
+    
+    zs_fixed = np.linspace(1e-5, z_max, 1000)
+    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
+    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
+    
+    pos = (alpha - 1) * jnp.log(redshift - a) + (beta - 1) * jnp.log(c - redshift)
+    neg = jnp.log(gamma_factor) + (alpha + beta - 1) * jnp.log(c - a)
+    result = ln_dvc_dz - jnp.log(1. + redshift) + pos - neg
+    
+    if normalize:
+        # Define fixed values of chi_eff for normalization
+        chi_eff_fixed = np.linspace(-1, 1, 1000)
+        dz = zs_fixed[1] - zs_fixed[0]
+        
+        # Precompute variables for chi_eff_fixed
+        b_fixed = b_0 + chi_eff_fixed * b_1
+        c_fixed = c_0 + chi_eff_fixed * c_1
+        alpha_fixed = 1 + 4 * ((b_fixed - a) / (c_fixed - a))
+        beta_fixed = 1 + 4 * ((c_fixed - b_fixed) / (c_fixed - a))
+        gamma_factor_fixed = gamma(alpha_fixed) * gamma(beta_fixed) / gamma(alpha_fixed + beta_fixed)
+        
+        zs_fixed_ = zs_fixed[:, None]
+        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
+        a_ = a
+        b_ = b_fixed[None, ...]
+        c_ = c_fixed[None, ...]
+        alpha_ = alpha_fixed[None, ...]
+        beta_ = beta_fixed[None, ...]
+        gamma_factor_ = gamma_factor_fixed[None, ...]
+        
+        pos_t = (alpha_ - 1) * jnp.log(zs_fixed_ - a_) + (beta_ - 1) * jnp.log(c_ - zs_fixed_)
+        neg_t = jnp.log(gamma_factor_) + (alpha_ + beta_ - 1) * jnp.log(c_ - a_)
+        result_t = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + pos_t - neg_t
+        ln_norm_fixed = scs.logsumexp(result_t, axis=0) + jnp.log(dz)
+        
+        # Interpolate normalization to original chi_eff
+        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
+    
+    ln_p = result - ln_norm
+    conditions = jnp.stack([redshift >= 0., 
+                            redshift <= z_max,
+                            b > a, c > b,
+                            np.isfinite(ln_p)], axis=0)
+    window = jnp.all(conditions, axis=0)
+    p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
+    return p
 
 @jit
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
