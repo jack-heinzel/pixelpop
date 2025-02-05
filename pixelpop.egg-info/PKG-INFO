@@ -9,6 +9,7 @@ Requires-Dist: numpy
 Requires-Dist: scipy
 Requires-Dist: jax
 Requires-Dist: pandas
+Requires-Dist: numpyro
 Requires-Dist: gwspinpriors
 Requires-Dist: astropy
 Requires-Dist: nvidia-cusolver-cu12>=11.5

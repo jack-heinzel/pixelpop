@@ -2,6 +2,7 @@ numpy
 scipy
 jax
 pandas
+numpyro
 gwspinpriors
 astropy
 nvidia-cusolver-cu12>=11.5

@@ -1,9 +1,11 @@
 from astropy.cosmology import Planck15
 from jax import jit
+import numpyro
 import jax.numpy as jnp
 import jax.scipy.special as scs
 import numpy as np
 from functools import partial
+from jax.scipy.special import erf
 
 def log_expit(x):
     """
@@ -164,14 +166,141 @@ def chieff_gaussian(data, mean, sig):
 
 @jit
 def trunc_gaussian(data, mean, sig, lower, upper):
-    
     px = -(data - mean)**2 / 2 / sig**2
-
     up = (upper - mean) / sig / jnp.sqrt(2)
     lo = (lower - mean) / sig / jnp.sqrt(2)
     trunc = 0.5*(scs.erf(up) - scs.erf(lo))
     norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
     return px - norm
+
+# Sofia implements a truncated gaussian that cuts at the limits
+@jit
+def trunc_gaussian_real_lims(data, mean, sig, lower, upper):
+    px = -(data - mean)**2 / 2 / sig**2
+    width = 0.001 #Hardcoding it for now
+    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
+    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
+    px = px + taper_l + taper_r
+    up = (upper - mean) / sig / jnp.sqrt(2)
+    lo = (lower - mean) / sig / jnp.sqrt(2)
+    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
+    return px - norm
+
+# Sofia fixes the lower and upper truncation lims at 1
+@jit
+def trunc_gaussian_lims(data, mean, sig, lower=-1, upper=1):
+    px = -(data - mean)**2 / 2 / sig**2
+    width = 0.001 #Hardcoding it for now
+    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
+    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
+    px = px + taper_l + taper_r
+    up = (upper - mean) / sig / jnp.sqrt(2)
+    lo = (lower - mean) / sig / jnp.sqrt(2)
+    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
+    return px - norm
+
+@jit
+def ln_chieff(data, mean, sig):
+    px = -(jnp.log(data) - mean)**2 / 2 / sig**2
+    denom = jnp.log(data*sig*jnp.sqrt(2*jnp.pi))
+    return px - denom
+
+# Sofia implements a mixture of two gaussians for the chieff model
+@jit
+def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    gaussian_1 = gaussian(x, mean1, sig1)
+    gaussian_2 = gaussian(x, mean2, sig2)
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian_1, jnp.log(1 - lamb_x) + gaussian_2)    
+    return model
+
+@jit
+def chieff_two_trunc_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    trunc_gaussian_1 = trunc_gaussian_lims(x, mean1, sig1)
+    trunc_gaussian_2 = trunc_gaussian_lims(x, mean2, sig2)
+    model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
+    return model
+
+@jit
+def chieff_two_trunc_gaussians_real(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    trunc_gaussian_1 = trunc_gaussian_real_lims(x, mean1, sig1, lower1, upper1)
+    trunc_gaussian_2 = trunc_gaussian_real_lims(x, mean2, sig2, lower2, upper2)
+    model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
+    return model
+
+@jit
+def log_tukey(x, tx0, tr, tk, eps=1e-10, normalize=True):
+    # Define parameters to add/subtract
+    x0 = jnp.where(-1 > tx0 - tk, -1, tx0 - tk)
+    x1 = tx0 - tk * (1 - tr)
+    x2 = tx0 + tk * (1 - tr)
+    x3 = jnp.where(1 < tx0 + tk, 1, tx0 + tk)
+    
+    # Adding an epsilon to avoid numerical errors
+    ln_t01 = jnp.log((1 + jnp.cos((x - x1) * jnp.pi / tk / tr)) / 2 + eps)
+    ln_t23 = jnp.log((1 + jnp.cos((x - x2) * jnp.pi / tk / tr)) / 2 + eps)
+    
+    # Applying the windowing
+    ln_t = jnp.ones(x.shape)*(-100) # All values outside near -inf
+    ln_t = jnp.where((x0 <= x) * (x < x1), ln_t01, ln_t)
+    ln_t = jnp.where((x1 <= x) * (x < x2), 0, ln_t)
+    ln_t = jnp.where((x2 <= x) * (x < x3), ln_t23, ln_t)
+    
+    
+    # Calculate the normalization
+    if normalize:
+        xs_fixed = jnp.linspace(-1, 1, 1000)
+        dx = xs_fixed[1] - xs_fixed[0]
+        ln_t01_n = jnp.log((1 + jnp.cos((xs_fixed - x1) * jnp.pi / tk / tr)) / 2 + eps)
+        ln_t23_n = jnp.log((1 + jnp.cos((xs_fixed - x2) * jnp.pi / tk / tr)) / 2 + eps)
+    
+        t_n = jnp.ones(xs_fixed.shape)*(-100) # All values outside near -inf
+        t_n = jnp.where((x0 <= xs_fixed) * (xs_fixed < x1), ln_t01_n, t_n)
+        t_n = jnp.where((x1 <= xs_fixed) * (xs_fixed < x2), 0, t_n)
+        t_n = jnp.where((x2 <= xs_fixed) * (xs_fixed < x3), ln_t23_n, t_n) 
+    
+        t_norm = scs.logsumexp(t_n) + jnp.log(dx)
+        ln_t -= t_norm
+        
+    window = jnp.logical_and(x >= -1, x <= 1)
+    t = jnp.where(window, ln_t, -100.*jnp.ones_like(x))
+    
+    return t
+
+@jit
+def chieff_gaussian_tukey(data, mean, sig, tx0, tr, tk, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    gaussian = trunc_gaussian_lims(x, mean, sig)
+    tukey = log_tukey(x, tx0, tr, tk)
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
+    return model
+
+@jit
+def chieff_lognormal_tukey(data, mu_x, sig_x, tx0_x, tr_x, tk_x, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    gaussian = ln_chieff(x, mu_x, sig_x)
+    tukey = log_tukey(x, tx0_x, tr_x, tk_x)
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
+    return model
 
 @jit
 def PowerlawRedshift(data, lamb, normalize=True):
@@ -193,6 +322,28 @@ def PowerlawRedshift(data, lamb, normalize=True):
     window = jnp.logical_and(z >= 0., z <= 1.9)
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
+
+@jit
+def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True):
+    if isinstance(data, dict):
+        z = data['redshift']
+    else:
+        z = data
+    zs_fixed = np.linspace(1e-5, z_max, 1000)
+    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
+    ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
+    ln_p = ln_dvc_dz + (gamma - 1)* jnp.log(1. + z) - jnp.log(1 + ((1 + z)/(1 + z_peak))**kappa)
+    if normalize:
+        dz = zs_fixed[1] - zs_fixed[0]
+        test_ln_p = fixed_ln_dvc_dz + (gamma - 1)* jnp.log(1. + zs_fixed) - jnp.log(1 + ((1 + zs_fixed)/(1 + z_peak))**kappa)
+        # Calculate the normalization
+        ln_norm = scs.logsumexp(test_ln_p) + jnp.log(dz)
+        # Divide in logspace (=subtract) by normalization
+        ln_p -= ln_norm
+    window = jnp.logical_and(z >= 0., z <= z_max)
+    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    return p
+
 
 @jit
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
@@ -344,8 +495,8 @@ def spin_iid(data, mu, var, mu_tilt, sig_tilt, zeta):
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
-@partial(jit, static_argnames=['rate_likelihood'])
-def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False):
+@partial(jit, static_argnames=['rate_likelihood','return_likelihood_info'])
+def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
     '''
     event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
     denominator weights are a 1d array of p(theta|lambda) / prior(theta)
@@ -354,21 +505,28 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
     numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
 
-    ln_likelihood = jnp.sum(numerators)
+    pe_ln_likelihood = jnp.sum(numerators)
     if rate_likelihood:
-        ln_likelihood += n_events*jnp.log(live_time) - live_time*jnp.exp(denominator)
+        vt_ln_likelihood = n_events*jnp.log(live_time) - live_time*jnp.exp(denominator)
     else:
-        ln_likelihood += -n_events*denominator
+        vt_ln_likelihood = -n_events*denominator
 
+    ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
+    
     square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
     
-    ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length) # sum w^2 - (sum w)^2 / (sum w)^2
-    # print(ln_likelihood_variance)
+    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
     if rate_likelihood:
-        ln_likelihood_variance += live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
+        vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
     else:
-        ln_likelihood_variance += n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
-
-    return ln_likelihood, ln_likelihood_variance
+        vt_ln_likelihood_variance = n_events**2 * (jnp.exp(square_sum - 2*denominator) - 1/total_injections)
     
+    ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
+    
+    if return_likelihood_info:
+        ln_likelihoods = [pe_ln_likelihood, vt_ln_likelihood]
+        ln_likelihood_variances = [pe_ln_likelihood_variance, vt_ln_likelihood_variance]
+        return ln_likelihood, ln_likelihood_variance, ln_likelihoods, ln_likelihood_variances
+    else:
+        return ln_likelihood, ln_likelihood_variance

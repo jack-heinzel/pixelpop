@@ -5,7 +5,12 @@ from tqdm import tqdm
 class generalized_number(object):
     def __init__(self, b10, base=10, dimension=1):
         self.base_10 = b10
-        self.base = base
+        if isinstance(base, int):
+            self.base = [base]*dimension
+        elif isinstance(base, list):
+            self.base = base
+        self.powers = [jnp.prod(self.base[:d]) for d in range(dimension)]
+        # TODO: add exception
         self.dimension = dimension
         self.base10_to_base()
 
@@ -13,7 +18,7 @@ class generalized_number(object):
         r = []
         i = self.base_10
         for d in range(self.dimension):
-            power = self.base**(self.dimension-1-d)
+            power = jnp.prod(self.base[:self.dimension-1-d])
             c = i // power
             i -= c*power
             r.append(c)
@@ -23,23 +28,30 @@ class generalized_number(object):
         if len(self.coefficients) != len(obj.coefficients):
             print('error')
             return None
-        return [self.coefficients[ii] + obj.coefficients[ii] for ii in range(self.dimension)]
-
+        new = [self.coefficients[ii] + obj.coefficients[ii] for ii in range(self.dimension)]
+        return new
     def __sub__(self, obj):
         if len(self.coefficients) != len(obj.coefficients):
             print('error')
             return None
-        return [self.coefficients[ii] - obj.coefficients[ii] for ii in range(self.dimension)]
-
+        new = [self.coefficients[ii] - obj.coefficients[ii] for ii in range(self.dimension)]
+        return new
 
 def is_valid(l, base, dimension):
     if len(l) != dimension:
         return False
-    for coef in l:
-        if coef < 0 or coef >= base:
-            return False
-    return True
-
+    if isinstance(base, int):
+        for coef in l:
+            if coef < 0 or coef >= base:
+                return False
+        return True
+    elif isinstance(base, list):
+        for ii, coef in enumerate(l):
+            if coef < 0 or coef >= base[dimension-1-ii]:
+                return False
+        return True
+    # TODO: throw exception
+    
 def coordinate_to_index(coordinate, density, dimension):
     '''
     Computes the index of a C-style flattening of a dimension-d array with axis length density
@@ -53,9 +65,17 @@ def coordinate_to_index(coordinate, density, dimension):
     (int) density: length along each dimension, usually the number of bins
     (int) dimension: the dimension of the space, usually 1 or 2
     '''
-    r = jnp.zeros_like(coordinate[0])
-    for ii, c in enumerate(coordinate):
-        r += c * density**(dimension - 1 - ii)
+    r = jnp.zeros_like(coordinate[0], dtype=int)
+    if isinstance(density, int):
+        for ii, c in enumerate(coordinate):
+            r += c * density**(dimension - 1 - ii)
+    elif isinstance(density, list):
+        if len(density) != dimension:
+            raise IndexError('Length of densities is different from dimension')
+        for ii, c in enumerate(coordinate):
+            # print(r, c)
+            r += int(c * jnp.prod(density[:dimension - 1 - ii]))
+    
     return r
 
 def index_to_coordinate(index, dimension, density):
@@ -63,22 +83,46 @@ def index_to_coordinate(index, dimension, density):
     Computes the coordinate in a C-style reshaping
     '''
     r = []
-    i = index
-    for d in range(dimension):
-        power = density**(dimension-1-d)
-        c = i // power
-        i -= c*power
-        r.append(c)
-    return r
-
+    if isinstance(density, int):
+        i = index
+        for d in range(dimension):
+            power = density**(dimension-1-d)
+            c = i // power
+            i -= c*power
+            r.append(c)
+        return r
+    elif isinstance(density, list):
+        if len(density) != dimension:
+            raise IndexError('Length of densities is different from dimension')
+        i = index
+        for d in range(dimension):
+            power = jnp.prod(density[:dimension - 1 - ii])
+            c = i // power
+            i -= c*power
+            r.append(c)
+        return r
+        
 def nearest_neighbors(density, dimension, isVisible=False):
-    
-    indices = jnp.arange(0, density**dimension)
+    '''
+    density = array of length dimension, or integer of number of bins, if same for all dimensionx
+    dimension = integer number of dimensions
+    '''
+    if isinstance(density, int):
+        indices = jnp.arange(0, density**dimension)
+        powers = [generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
 
+    elif isinstance(density, list):
+        # raise exception if len(density) != dimension
+        if len(density) != dimension:
+            raise IndexError('Length of densities is different from dimension')
+        indices = jnp.arange(0, jnp.prod(density))
+        powers = [generalized_number(jnp.prod(density[:d]), base=density, dimension=dimension) for d in range(dimension)]
+        print([p.coefficients for p in powers], [p.base_10 for p in powers])
+    else:
+        raise TypeError('density must be an integer or list')
     i_vals = []
     j_vals = []
 
-    powers = [generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
     if isVisible:
         print(f'Computing nearest neighbors list for {dimension}-dimensional grid of size {density}')
         array = tqdm(indices)
@@ -156,3 +200,4 @@ def place_samples_in_bins(bin_axes, sample_coordinates):
     # print(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
+    
