@@ -178,9 +178,11 @@ def place_samples_in_bins(bin_axes, sample_coordinates, reshape=False):
         density = len(bin_axes[0]) - 1
 
     print(f'dimension = {dimension}, density = {density}')
-    _data_nd_bins = [jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
     if not reshape:
-        return jnp.array(_data_nd_bins)
+        return (jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension))
+    else:
+        _data_nd_bins = [jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
     #print(_data_nd_bins)
+    jnp.array(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
