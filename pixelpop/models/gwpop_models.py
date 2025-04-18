@@ -279,13 +279,13 @@ def chieff_lognormal_tukey(data, mu_x, sig_x, tx0_x, tr_x, tk_x, lamb_x):
     return model
 
 @jit
-def PowerlawRedshift(data, lamb, normalize=True):
+def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True):
     if isinstance(data, dict):
         z = data['redshift']
     else:
         z = data
 
-    zs_fixed = np.linspace(1e-5, 1.9, 1000)
+    zs_fixed = np.linspace(1e-5, max_z, 1000)
     fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
     ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
     ln_p = ln_dvc_dz + (lamb - 1) * jnp.log(1. + z)
@@ -295,7 +295,19 @@ def PowerlawRedshift(data, lamb, normalize=True):
         ln_norm = scs.logsumexp(test_ln_p) + jnp.log(dz)
         ln_p -= ln_norm
 
-    window = jnp.logical_and(z >= 0., z <= 1.9)
+    window = jnp.logical_and(z >= 0., z <= max_z)
+    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    return p
+
+@jit
+def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
+    if isinstance(data, dict):
+        z = data['redshift']
+    else:
+        z = data
+    ln_p = lamb * jnp.log(1. + z)
+
+    window = jnp.logical_and(z >= 0., z <= max_z)
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
