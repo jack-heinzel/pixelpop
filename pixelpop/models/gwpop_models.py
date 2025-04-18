@@ -35,7 +35,7 @@ def log_expit(x):
     posx_valid = jnp.where(condition, 0, x) # in forward differentiation, gradient is 0 for condition, 1 where false
     negx_valid = jnp.where(condition, x, 0) # in forward differentiation, gradient is 0 for condition, 1 where false
     
-    return jnp.where(condition, negx_valid-jnp.log(1+jnp.exp(negx_valid)), -jnp.log(1+jnp.exp(-posx_valid)))
+    return jnp.where(condition, negx_valid-jnp.log1p(jnp.exp(negx_valid)), -jnp.log1p(jnp.exp(-posx_valid)))
 
 def m_smoother(m1s, minimum, delta, buffer=1e-3):
     '''
@@ -72,7 +72,7 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
     peak = gaussian(m1, mpp, sigpp)
     pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
     
-    m1s_test = jnp.linspace(2.0, 100., 1000)
+    m1s_test = jnp.linspace(2.0, 200., 2000)
     dm1 = m1s_test[1] - m1s_test[0]
     power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
     smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
@@ -84,7 +84,7 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
-@jit
+
 def PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -108,7 +108,7 @@ def PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, minimum, maximum, delta_
         m1 = data
     power_law = powerlaw(m1, slope, minimum, maximum)
     smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
-    m1s_test = jnp.linspace(2.0, 100., 1000)
+    m1s_test = jnp.linspace(2.0, 200., 2000)
     dm1 = m1s_test[1] - m1s_test[0]
     power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
     smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
@@ -142,7 +142,7 @@ def NoSmoothedPowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, mpp, s
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
-@jit
+
 def powerlaw(data, slope, minimum, maximum):
     norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
     
@@ -150,14 +150,14 @@ def powerlaw(data, slope, minimum, maximum):
     p = jnp.where(window, slope*jnp.log(data), -100.*jnp.ones_like(data))
     return p - norm
 
-@jit
+
 def gaussian(data, mean, sig):
     
     px = -(data - mean)**2 / 2 / sig**2
     norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
 
-@jit
+
 def chieff_gaussian(data, mean, sig):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -165,7 +165,7 @@ def chieff_gaussian(data, mean, sig):
         x = data
     return gaussian(x, mean, sig)
 
-@jit
+
 def trunc_gaussian(data, mean, sig, lower, upper):
     px = -(data - mean)**2 / 2 / sig**2
     up = (upper - mean) / sig / jnp.sqrt(2)
@@ -175,7 +175,7 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     return px - norm
 
 # Sofia implements a truncated gaussian that cuts at the limits
-@jit
+
 def trunc_gaussian_lims(data, mean, sig, lower, upper):
     px = -(data - mean)**2 / 2 / sig**2
     width = 0.001 #Hardcoding it for now
@@ -188,14 +188,14 @@ def trunc_gaussian_lims(data, mean, sig, lower, upper):
     norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
     return px - norm
 
-@jit
+
 def ln_chieff(data, mean, sig):
     px = -(jnp.log(data) - mean)**2 / 2 / sig**2
     denom = jnp.log(data*sig*jnp.sqrt(2*jnp.pi))
     return px - denom
 
 # Sofia implements a mixture of two gaussians for the chieff model
-@jit
+
 def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -206,7 +206,7 @@ def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
     model = jnp.logaddexp(jnp.log(lamb_x) + gaussian_1, jnp.log(1 - lamb_x) + gaussian_2)    
     return model
 
-@jit
+
 def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -217,7 +217,7 @@ def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, l
     model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
     return model
 
-@jit
+
 def log_tukey(x, tx0, tr, tk, eps=1e-10, normalize=True):
     # Define parameters to add/subtract
     x0 = jnp.where(-1 > tx0 - tk, -1, tx0 - tk)
@@ -256,7 +256,7 @@ def log_tukey(x, tx0, tr, tk, eps=1e-10, normalize=True):
     
     return t
 
-@jit
+
 def chieff_gaussian_tukey(data, mean, sig, tx0, tr, tk, lamb_x):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -267,7 +267,7 @@ def chieff_gaussian_tukey(data, mean, sig, tx0, tr, tk, lamb_x):
     model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
     return model
 
-@jit
+
 def chieff_lognormal_tukey(data, mu_x, sig_x, tx0_x, tr_x, tk_x, lamb_x):
     if isinstance(data, dict):
         x = data['chi_eff']
@@ -278,7 +278,7 @@ def chieff_lognormal_tukey(data, mu_x, sig_x, tx0_x, tr_x, tk_x, lamb_x):
     model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
     return model
 
-@jit
+
 def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True):
     if isinstance(data, dict):
         z = data['redshift']
@@ -299,7 +299,7 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True):
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
-@jit
+
 def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     if isinstance(data, dict):
         z = data['redshift']
@@ -311,7 +311,7 @@ def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
-@jit
+
 def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True):
     if isinstance(data, dict):
         z = data['redshift']
@@ -332,7 +332,7 @@ def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
     return p
 
-@jit
+
 def skew_norm(data, mu_0, mu_1, sigma_0, sigma_1, alpha_0, alpha_1, z_max=1.9, normalize=True):
     redshift = data['redshift']
     chi_eff = data['chi_eff']
@@ -382,7 +382,7 @@ def skew_norm(data, mu_0, mu_1, sigma_0, sigma_1, alpha_0, alpha_1, z_max=1.9, n
     p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
     return p
 
-@jit
+
 def jhonson_su(data, gamma_0, gamma_1, xi_0, xi_1, delta_0, delta_1, lambda_0, lambda_1, z_max=1.9, normalize=True):
     redshift = data['redshift']
     chi_eff = data['chi_eff']
@@ -437,7 +437,7 @@ def jhonson_su(data, gamma_0, gamma_1, xi_0, xi_1, delta_0, delta_1, lambda_0, l
     p = jnp.where(window, ln_p, -100.*jnp.ones_like(redshift))
     return p
 
-@jit
+
 def PERT(data, a, b_0, b_1, c_0, c_1, z_max=1.9, normalize=True):
     redshift = data['redshift']
     chi_eff = data['chi_eff']
@@ -495,7 +495,7 @@ def PERT(data, a, b_0, b_1, c_0, c_1, z_max=1.9, normalize=True):
     p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
     return p
 
-@jit
+
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -551,14 +551,14 @@ def SimplePowerlaw_MassRatio(data, slope, qmin):
     power_law = powerlaw(q, slope, qmin, 1.)
     return power_law
 
-@jit
+
 def PowerlawPlusPeak(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
     pm1 = PowerlawPlusPeak_PrimaryMass(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
 
     return pm1 + pq
 
-@jit
+
 def PowerlawPlusPeak_NormFirst(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
     pm1 = PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
@@ -566,7 +566,7 @@ def PowerlawPlusPeak_NormFirst(data, alpha, beta, mmin, mmax, delta_m, mpp, sigp
     return pm1 + pq
 
 
-@jit
+
 def smooth(x, cutoff, width):
     # less than cutoff return 1
     # first derivative is continuous, so all good for autodiff
@@ -583,7 +583,7 @@ def beta_spin_mv(spin_mag, mu, var):
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(spin_mag, alpha, beta)
 
-@jit
+
 def beta_spin(spin_mag, alpha, beta):
     ln_a = jnp.log(spin_mag)
     ln_1ma = jnp.log(1. - spin_mag)
@@ -592,12 +592,12 @@ def beta_spin(spin_mag, alpha, beta):
     norm = scs.gammaln(alpha) + scs.gammaln(beta) - scs.gammaln(alpha + beta)
     return ln_p - norm
 
-@jit
+
 def iid_beta_spin(data, mu, var):
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(data['a_1'], alpha, beta) + beta_spin(data['a_2'], alpha, beta)
 
-@jit
+
 def tilt_model(data, mu, sig, zeta):
     '''
     Only difference here is that mu is allowed to be != 1, a free parameter
@@ -613,14 +613,14 @@ def tilt_model(data, mu, sig, zeta):
 
     return jnp.logaddexp(ln_zeta + pfield, ln_1mzeta + pisotropic)
 
-@jit
+
 def tilt_default(data, sig, zeta):
     '''
     Here the tilt distribution is NOT iid, either BOTH isotropic or BOTH from field, truncated gaussian
     '''
     return tilt_model(data, 1., sig, zeta)
 
-@jit
+
 def tilt_iid(data, mu, sig, zeta):
     '''
     here, the tilt distribution is assumed to be IID, a truncated normal plus a isotropic component
@@ -637,11 +637,11 @@ def tilt_iid(data, mu, sig, zeta):
     p2 = jnp.logaddexp(ln_zeta + pfield2, ln_1mzeta + pisotropic)
     return p1 + p2
     
-@jit
+
 def spin_iid(data, mu, var, mu_tilt, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_iid(data, mu_tilt, sig_tilt, zeta)
 
-@jit
+
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
@@ -682,7 +682,7 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
         return ln_likelihood, ln_likelihood_variance
     
 
-@jit
+
 def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1):
     '''
     event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
