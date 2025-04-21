@@ -32,7 +32,7 @@ parameter_to_hyperparameters = {
 }
 
 default_priors = {
-    'alpha': ([-4, 12], dist.Uniform), 'beta': ([-2, 7], dist.Uniform), 'qmin': ([0, 1], dist.Uniform), 'mmin': ([2, mmin_max], dist.Uniform), 'mmax': ([mmax_min, 100], dist.Uniform), 
+    'alpha': ([-4, 12], dist.Uniform), 'beta': ([-2, 7], dist.Uniform), 'qmin': ([0, 1], dist.Uniform), 'mmin': ([2, 10], dist.Uniform), 'mmax': ([60, 200], dist.Uniform), 
     'delta_m': ([0, 10], dist.Uniform), 'mpp': ([20, 50], dist.Uniform), 'sigpp': ([1, 10], dist.Uniform), 'lam': ([0, 1], dist.Uniform), 
     'lamb': ([-2, 10], dist.Uniform), 'mu_x': ([-1, 1], dist.Uniform), 'sig_x': ([0.005, 1.], dist.Uniform), 'mu_spin': ([0, 1], dist.Uniform),
     'var_spin': ([0.005, 0.25], dist.Uniform), 'mu_tilt': ([-1, 1], dist.Uniform), 'sig_tilt': ([0.1, 4], dist.Uniform), 
