@@ -6,6 +6,12 @@ import numpyro.distributions as dist
 import jax.numpy as jnp
 from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
+from numpyro.infer import MCMC, NUTS
+from tqdm import tqdm
+import sys
+from numpyro.diagnostics import summary, print_summary
+import pickle as pkl
+from jax import random
 
 parameter_to_gwpop_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
@@ -129,11 +135,10 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         inj_weights += merger_rate_density[inj_bins]
         return event_weights, inj_weights
 
-    def probabilistic_model(data, injections):
-        # draw 2d population grid
+    def probabilistic_model(posteriors, injections):
         
-        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-data['log_prior'], inj_ln_dVTc-injections['log_prior'])
-        event_weights, inj_weights = parametric_model(data, injections, event_weights, inj_weights)
+        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'])
+        event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
         # print(ln_likelihood, ln_likelihood_variance) # double check the uncertainty propagation AND the likelihood for rate
@@ -148,14 +153,6 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
 
     return probabilistic_model, initial_value
-
-
-from numpyro.infer import MCMC, NUTS
-from tqdm import tqdm
-import sys
-from numpyro.diagnostics import summary, print_summary
-import pickle as pkl
-from jax import random
 
 def get_worst_rhat_neff(chain_samples):
     chain_summary = summary(chain_samples)
@@ -187,12 +184,12 @@ def get_worst_rhat_neff(chain_samples):
 
 
 def inference_loop(
-    probabilistic_model, model_kwargs={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
+    probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, name='',
     print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance']
     ):
 
-    kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc)#, init_strategy=numpyro.infer.init_to_value(values=initial_value))
+    kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value))
 
     samples = None
     load_pkl = False
