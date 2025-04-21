@@ -12,6 +12,7 @@ import sys
 from numpyro.diagnostics import summary, print_summary
 import pickle as pkl
 from jax import random
+import os
 
 parameter_to_gwpop_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
@@ -185,7 +186,7 @@ def get_worst_rhat_neff(chain_samples):
 
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
-    num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, name='',
+    num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
     print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance']
     ):
 
@@ -232,8 +233,8 @@ def inference_loop(
                 summary_dict['worst n_eff: '+neff] = neff_chain
                 
                 print_summary(summary_dict)
-                
-                with open(f'chain_{chain_num}_{name}_samples.pkl', 'wb') as ff:
+                os.makedirs(run_dir, exist_ok=True)
+                with open(os.path.join(run_dir, f'chain_{chain_num}_{name}_samples.pkl'), 'wb') as ff:
                     pkl.dump(chain_samples, ff)
                     
         if samples is None:
