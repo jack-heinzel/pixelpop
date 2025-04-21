@@ -197,6 +197,7 @@ def inference_loop(
     for chain in range(parallel):
         print(f"Warming up chain #{chain + 1} out of {parallel}")
         mcmc = MCMC(kernel, thinning=thinning, num_warmup=warmup, num_samples=num_samples*thinning, num_chains=1)# , chain_method='vectorized')# , chain_method='sequential') # vectorized is an experimental method. We can pass 'parallel' which attempts to distribute the chains across multiple GPUs, e.g. on pcdev12 we could do num_chains = 4 across the a100s. If num_chains is too large, it defaults to 'sequential' which simply evaluates the chains in series.
+        chain_num = int(rng_key[1])
         rng_key_, rng_key = random.split(rng_key)
         mcmc.run(rng_key, **model_kwargs)#, extra_fields=('~z.cell_locations_unordered', '~z.cell_locations_all'))
         first_sample = mcmc.get_samples()
@@ -232,11 +233,8 @@ def inference_loop(
                 
                 print_summary(summary_dict)
                 
-                with open(f'chain_{int(rng_key[1])}_{name}_samples.pkl', 'wb') as ff:
+                with open(f'chain_{chain_num}_{name}_samples.pkl', 'wb') as ff:
                     pkl.dump(chain_samples, ff)
-
-                with open(f'chain_{int(rng_key[1])}_{name}_mcmc.pkl', 'wb') as ff:
-                    pkl.dump(mcmc, ff)
                     
         if samples is None:
             samples = chain_samples.copy()
