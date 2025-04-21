@@ -36,8 +36,10 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     
     bbh_minima.update(minima)
     bbh_maxima.update(maxima)
+    if jnp.ndim(bins) == 0:
+        bins = [bins] * len(parameters)
 
-    bin_axes = [jnp.linspace(bbh_minima[par], bbh_maxima[par], bins+1) for par in parameters]
+    bin_axes = [jnp.linspace(bbh_minima[par], bbh_maxima[par], bins[ii]+1) for ii, par in enumerate(parameters)]
     logdV = jnp.log(jnp.array([b[1] - b[0] for b in bin_axes]))
 
     sample_coordinates = [posteriors[par] for par in parameters]
