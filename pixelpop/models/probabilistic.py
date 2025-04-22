@@ -56,8 +56,11 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, minima={}, maxima={}, priors={}, UncertaintyCut=1.):
-    # define model
+def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1.):
+    '''
+    length scales: whether to use different length scales along different dimensions
+
+    '''
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
@@ -120,12 +123,15 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
             inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
         return event_weights, inj_weights
 
-    ICAR_length_scales = initialize_ICAR(dimension)
+    ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
 
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights):
 
-        lsigmas = numpyro.sample('lnsigmas', dist.Uniform(-3,3), sample_shape=(dimension,)) # log_prob + prior_sampling_factor
-        merger_rate_density = numpyro.sample('merger_rate_density', ICAR_length_scales(log_sigmas=lsigmas, single_dimension_adj_matrices=adj_matrices, is_sparse=True))
+        if length_scales:
+            lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
+        else:
+            lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
+        merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))
                     
         normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
         for ii, p in enumerate(parameters):

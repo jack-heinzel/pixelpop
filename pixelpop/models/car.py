@@ -13,7 +13,7 @@ from numpyro.distributions.util import (
 
 from functools import reduce
 
-def initialize_ICAR(dimension):
+def initialize_ICAR(dimension, length_scales=False):
 
     class _RealTensor(constraints._IndependentConstraint, constraints._SingletonConstraint):
         def __init__(self):
@@ -68,10 +68,13 @@ def initialize_ICAR(dimension):
             is_sparse=False,
             validate_args=None,
         ):
-            if jnp.ndim(log_sigmas) == 0:
-                assert dimension == 1
-                (log_sigmas,) = promote_shapes(log_sigmas, shape=(1,))
-
+            if length_scales:
+                if jnp.ndim(log_sigmas) == 0:
+                    assert dimension == 1
+                    (log_sigmas,) = promote_shapes(log_sigmas, shape=(1,))
+            else:
+                assert jnp.ndim(log_sigmas) == 0
+                (log_sigmas,) = promote_shapes(log_sigmas, shape=(dimension,))
             self.is_sparse = is_sparse
 
             batch_shape = ()
