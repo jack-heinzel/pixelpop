@@ -56,7 +56,7 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1.):
+def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False):
     '''
     length scales: whether to use different length scales along different dimensions
 
@@ -95,22 +95,26 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
                 print(f'Using default prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
                 hyperparameter_priors[h] = default_priors[h]
 
-    def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights):
+    def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, noise):
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
-        data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
         
-        initial_interpolation = np.sum([
-            parameter_to_gwpop_model[p](data_grid, *[plausible_hyperparameters[h] for h in parameter_to_hyperparameters[p]]) for ii, p in enumerate(parameters)
-        ], axis=0)
-        pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
-        Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
-        initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
-        return {'merger_rate_density': Rexp + initial_interpolation}
+        if noise:
+            return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
+        else:
+            data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
+            
+            initial_interpolation = np.sum([
+                parameter_to_gwpop_model[p](data_grid, *[plausible_hyperparameters[h] for h in parameter_to_hyperparameters[p]]) for ii, p in enumerate(parameters)
+            ], axis=0)
+            pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
+            Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
+            initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
+            return {'merger_rate_density': Rexp + initial_interpolation}
 
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
-    initial_value = get_initial_value(hyperparameters_plausible, parameters_psi, event_bins[0].shape[0], inj_ln_dVTc-injections['log_prior'])
+    initial_value = get_initial_value(hyperparameters_plausible, parameters_psi, event_bins[0].shape[0], inj_ln_dVTc-injections['log_prior'], noise=noise)
 
     def parametric_model(data, injections, event_weights, inj_weights):
         sample = {}
