@@ -99,7 +99,7 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
-        
+
         if noise:
             return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
         else:
@@ -197,10 +197,10 @@ def get_worst_rhat_neff(chain_samples):
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
-    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance']
+    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False
     ):
 
-    kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value))
+    kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = None
     load_pkl = False
