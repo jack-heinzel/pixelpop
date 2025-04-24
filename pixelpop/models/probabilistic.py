@@ -129,7 +129,8 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
     if lower_triangular:
-        lt_map = lower_triangular_map(bins)
+        lt_map = lower_triangular_map(bins[0])
+        tri_size = int(bins[0]*(bins[0]+1)/2)
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights):
         if length_scales:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
@@ -137,7 +138,6 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
 
         if lower_triangular:
-            tri_size = bins*bins+1
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, (tri_size,), ()))
             merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
             numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, tri_size, lsigma, adj_matrices))

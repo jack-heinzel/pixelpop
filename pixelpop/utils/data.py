@@ -1,7 +1,7 @@
 from jax import numpy as jnp
 from . import place_samples_in_bins
 
-def convert_m1q_to_lm1m2(data, min_m=3, max_m=200):
+def convert_m1q_to_lm1m2(data):
     m1 = data.pop('mass_1')
     q = data.pop('mass_ratio')
 
