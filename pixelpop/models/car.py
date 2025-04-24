@@ -218,3 +218,34 @@ def initialize_ICAR(dimension, length_scales=False):
             return d
 
     return ICAR_length_scales
+
+def lower_triangular_map(bins):
+    sym_shape = jnp.array([bins,bins])
+    a, b = jnp.unravel_index(jnp.arange(bins**2), sym_shape)
+    a, b = jnp.minimum(a, b), jnp.maximum(a, b)
+    map_arr = jnp.array((bins - (a+1)/2)*a + b, dtype=int)
+
+    def symmetric_from_tri(arr):
+        return arr[map_arr].reshape(bins, bins)
+    
+    return symmetric_from_tri
+
+def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
+                              
+    prec = jnp.exp(-2*log_sigma)
+    dimension = len(single_dimension_adj_matrices)
+    prec_mat = []
+    for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
+        D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
+        scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
+        prec_mat.append(jnp.asarray(scaled_single_prec))
+
+    logquad = 0.
+    for ii in range(dimension):
+        z = jnp.moveaxis(
+            jnp.tensordot(prec_mat[ii], jnp.moveaxis(phi,ii,0), axes=(0,0)), # tensordot requires a concrete axis ... can I get this in a jitted fn?
+            0,ii)
+        step = jnp.tensordot(z, phi, axes=dimension)
+        logquad += step * prec
+    
+    return 0.5 * (-n * jnp.log(2*jnp.pi) - logquad)

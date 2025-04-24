@@ -1,7 +1,7 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from .gwpop_models import * 
-from .car import initialize_ICAR
+from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from ..utils.data import place_in_bins
@@ -56,7 +56,7 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False):
+def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False, lower_triangular=False):
     '''
     length scales: whether to use different length scales along different dimensions
 
@@ -128,19 +128,26 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         return event_weights, inj_weights
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
-
+    if lower_triangular:
+        lt_map = lower_triangular_map(bins)
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights):
-
         if length_scales:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
         else:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
-        merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))
-                    
-        normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
-        for ii, p in enumerate(parameters):
-            sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
-            numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
+
+        if lower_triangular:
+            tri_size = bins*bins+1
+            base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, (tri_size,), ()))
+            merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
+            numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, tri_size, lsigma, adj_matrices))
+
+        else:
+            merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
+            for ii, p in enumerate(parameters):
+                sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
+                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
 
         event_weights += merger_rate_density[event_bins] # (69,3194)
         inj_weights += merger_rate_density[inj_bins]
@@ -192,7 +199,6 @@ def get_worst_rhat_neff(chain_samples):
     neff_chain = chain_samples[name[worst_neff]][...,*pos[worst_neff]]
     neff_key = f'{name[worst_neff]}{list(pos[worst_neff])}'.replace('[]','')
     return rhat_key, rhat_chain, neff_key, neff_chain
-
 
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
