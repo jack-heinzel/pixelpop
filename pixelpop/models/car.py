@@ -147,7 +147,6 @@ def initialize_ICAR(dimension, length_scales=False):
                     scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
                 else:
                     D = single_dimension_adj_matrix.sum(axis=-1)# .squeeze(axis=0)
-                    print(D.shape)
                     scaled_single_prec = jnp.diag(D) - single_dimension_adj_matrix
                 
                 n *= D.shape[-1]
@@ -236,7 +235,7 @@ def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
     dimension = len(single_dimension_adj_matrices)
     prec_mat = []
     for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
-        D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
+        D = np.asarray(single_dimension_adj_matrix.sum(axis=-1))
         scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
         prec_mat.append(jnp.asarray(scaled_single_prec))
 
