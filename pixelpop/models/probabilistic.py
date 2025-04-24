@@ -120,7 +120,10 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         sample = {}
         for key in hyperparameter_priors:
             args, distribution = hyperparameter_priors[key]
-            sample[key] = numpyro.sample(key, distribution(*args))
+            if distribution.__name__ == 'Delta':
+                sample[key] = args[0]
+            else:
+                sample[key] = numpyro.sample(key, distribution(*args))
 
         for p in other_parameters:
             event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
