@@ -22,7 +22,7 @@ parameter_to_gwpop_model = {
     'redshift_psi': PowerlawRedshiftPsi, #(data, lamb, minimum, maximum, normalize=False):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
-    'a': iid_beta_spin, #(data, mu, var)
+    'a': iid_normal_spin, #(data, mu, var)
     't': tilt_iid, #(data, mu, sig, zeta)
 }
 
@@ -56,7 +56,7 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False, lower_triangular=False):
+def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False, lower_triangular=False, prior_draw=False):
     '''
     length scales: whether to use different length scales along different dimensions
 
@@ -95,13 +95,20 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
                 print(f'Using default prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
                 hyperparameter_priors[h] = default_priors[h]
 
+    if lower_triangular:
+        lt_map = lower_triangular_map(bins[0])
+        tri_size = int(bins[0]*(bins[0]+1)/2)
+
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, noise):
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
 
         if noise:
-            return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
+            if lower_triangular:
+                return {'base_interpolation': np.random.normal(loc=0, scale=2, size=tri_size)}
+            else:
+                return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
@@ -124,16 +131,12 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
                 sample[key] = args[0]
             else:
                 sample[key] = numpyro.sample(key, distribution(*args))
-
         for p in other_parameters:
             event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
             inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
         return event_weights, inj_weights
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
-    if lower_triangular:
-        lt_map = lower_triangular_map(bins[0])
-        tri_size = int(bins[0]*(bins[0]+1)/2)
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights):
         if length_scales:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
@@ -162,16 +165,15 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
-        # print(ln_likelihood, ln_likelihood_variance) # double check the uncertainty propagation AND the likelihood for rate
         taper = smooth(total_var, UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
-        # print(ln_likelihood + taper)
-
+        
         numpyro.deterministic("log_likelihood", ln_likelihood)
         numpyro.deterministic("log_likelihood_variance", total_var) # save these values!
         numpyro.deterministic("pe_variance", pe_var) # save these values!
         numpyro.deterministic("vt_variance", vt_var) # save these values!
         numpyro.deterministic("Nexp", nexp) # save these values!
-        numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
+        if not prior_draw:
+            numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
 
     return probabilistic_model, initial_value
 
