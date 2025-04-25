@@ -231,7 +231,7 @@ def lower_triangular_map(bins):
 
 def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
                               
-    prec = jnp.exp(-2*log_sigma)
+    prec = jnp.exp(-2*log_sigma) 
     dimension = len(single_dimension_adj_matrices)
     prec_mat = []
     for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
@@ -247,4 +247,4 @@ def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
         step = jnp.tensordot(z, phi, axes=dimension)
         logquad += step * prec
     
-    return 0.5 * (-n * jnp.log(2*jnp.pi) - logquad)
+    return 0.5 * (-n * jnp.log(2*jnp.pi) - 2 * n * log_sigma - logquad)
