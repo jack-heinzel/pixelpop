@@ -597,6 +597,9 @@ def iid_beta_spin(data, mu, var):
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(data['a_1'], alpha, beta) + beta_spin(data['a_2'], alpha, beta)
 
+def iid_normal_spin(data, mu, var):
+    sig = jnp.sqrt(var)
+    return trunc_gaussian(data['a_1'], mu, sig, 0, 1) + trunc_gaussian(data['a_2'], mu, sig, 0, 1)
 
 def tilt_model(data, mu, sig, zeta):
     '''
@@ -639,8 +642,10 @@ def tilt_iid(data, mu, sig, zeta):
     
 
 def spin_iid(data, mu, var, mu_tilt, sig_tilt, zeta):
-    return iid_beta_spin(data, mu, var) + tilt_iid(data, mu_tilt, sig_tilt, zeta)
+    return iid_normal_spin(data, mu, var) + tilt_iid(data, mu_tilt, sig_tilt, zeta)
 
+def gwtc3_spin_default(data, mu, var, sig_tilt, zeta):
+    return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
