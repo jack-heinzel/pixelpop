@@ -97,7 +97,7 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
 
     if lower_triangular:
         lt_map = lower_triangular_map(bins[0])
-        tri_size = int(bins[0]*(bins[0]+1)/2)
+        tri_size = int(bins[0]*(bins[0]+1)/2) * int(np.prod(bins[2:])) # lower triangular in first two dimensions
 
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, noise):
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
