@@ -225,12 +225,13 @@ def lower_triangular_map(bins):
     map_arr = jnp.array((bins - (a+1)/2)*a + b, dtype=int)
 
     def symmetric_from_tri(arr):
-        return arr[map_arr].reshape(bins, bins)
+        s = arr.shape
+        return arr[map_arr,...].reshape((bins, bins)+s[1:])
     
     return symmetric_from_tri
 
 def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
-                              
+    
     prec = jnp.exp(-2*log_sigma) 
     dimension = len(single_dimension_adj_matrices)
     prec_mat = []
