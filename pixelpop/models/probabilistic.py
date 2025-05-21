@@ -97,7 +97,9 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
 
     if lower_triangular:
         lt_map = lower_triangular_map(bins[0])
-        tri_size = int(bins[0]*(bins[0]+1)/2) * int(np.prod(bins[2:])) # lower triangular in first two dimensions
+        tri_size = int(bins[0]*(bins[0]+1)/2) 
+        unique_sample_shape = (tri_size,) + tuple(bins[2:])
+        normalization_dof = tri_size * int(np.prod(bins[2:])) # lower triangular in first two dimensions
 
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, noise):
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
@@ -106,7 +108,7 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
 
         if noise:
             if lower_triangular:
-                return {'base_interpolation': np.random.normal(loc=0, scale=2, size=tri_size)}
+                return {'base_interpolation': np.random.normal(loc=0, scale=2, size=unique_sample_shape)}
             else:
                 return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
         else:
@@ -144,9 +146,9 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
 
         if lower_triangular:
-            base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, (tri_size,), ()))
+            base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
             merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
-            numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, tri_size, lsigma, adj_matrices))
+            numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
 
         else:
             merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
