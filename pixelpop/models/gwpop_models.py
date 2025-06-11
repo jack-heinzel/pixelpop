@@ -168,12 +168,13 @@ def chieff_gaussian(data, mean, sig):
 
 
 def trunc_gaussian(data, mean, sig, lower, upper):
+    in_support = jnp.logical_and(data < upper, data > lower)
     px = -(data - mean)**2 / 2 / sig**2
     up = (upper - mean) / sig / jnp.sqrt(2)
     lo = (lower - mean) / sig / jnp.sqrt(2)
     trunc = 0.5*(scs.erf(up) - scs.erf(lo))
     norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
-    return px - norm
+    return jnp.where(in_support, px - norm, -jnp.inf*jnp.ones_like(data))
 
 # Sofia implements a truncated gaussian that cuts at the limits
 

@@ -93,7 +93,7 @@ def setup_probabilistic_model(
 
     hyperparameters_plausible = _hyperparameters_plausible.copy()
     hyperparameters_plausible.update(plausible_hyperparameters)
-    
+
     parameter_to_gwpop_model = {}
     for p in other_parameters:
         if p in parametric_models:
@@ -101,7 +101,7 @@ def setup_probabilistic_model(
             print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
             parameter_to_gwpop_model[p] = parametric_models[p]
         else:
-            print(f'Using default {p} model {_parameter_to_gwpop_model[p]}')
+            print(f'Using default {p} model {_parameter_to_gwpop_model[p].__name__}')
             parameter_to_gwpop_model[p] = _parameter_to_gwpop_model[p]
 
     # default priors
