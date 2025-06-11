@@ -56,7 +56,12 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, prior_draw=False):
+def setup_probabilistic_model(
+        posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
+        minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, 
+        plausible_hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, 
+        prior_draw=False
+        ):
     '''
     length scales: whether to use different length scales along different dimensions
 
@@ -86,6 +91,9 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
     parameter_to_hyperparameters = _parameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
 
+    hyperparameters_plausible = _hyperparameters_plausible.copy()
+    hyperparameters_plausible.update(plausible_hyperparameters)
+    
     parameter_to_gwpop_model = {}
     for p in other_parameters:
         if p in parametric_models:
