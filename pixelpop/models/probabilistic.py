@@ -14,7 +14,7 @@ import pickle as pkl
 from jax import random
 import os
 
-parameter_to_gwpop_model = {
+_parameter_to_gwpop_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
@@ -26,7 +26,7 @@ parameter_to_gwpop_model = {
     't': tilt_iid, #(data, mu, sig, zeta)
 }
 
-hyperparameters_plausible = {
+_hyperparameters_plausible = {
     'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
     'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
     'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 'lnsigma':-1, 'lncor': -5, 
@@ -35,7 +35,7 @@ hyperparameters_plausible = {
 
 parameter_values = {'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 'redshift': 0.2, 'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0., 'cos_tilt_2': 0.}
 
-parameter_to_hyperparameters = {
+_parameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': ['beta', 'qmin'], #(data, slope, minimum, delta_m)
@@ -56,7 +56,7 @@ default_priors = {
 }
 
 
-def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, UncertaintyCut=1., noise=False, lower_triangular=False, prior_draw=False):
+def setup_probabilistic_model(posteriors, injections, parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, prior_draw=False):
     '''
     length scales: whether to use different length scales along different dimensions
 
@@ -82,6 +82,20 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
         inj_ln_dVTc = jnp.zeros_like(injections['log_prior'])
         
     event_bins, inj_bins, bin_axes, logdV = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
+    # update models
+    parameter_to_hyperparameters = _parameter_to_hyperparameters.copy()
+    parameter_to_hyperparameters.update(hyperparameters)
+
+    parameter_to_gwpop_model = {}
+    for p in other_parameters:
+        if p in parametric_models:
+            print(f'Updating {p} model from {_parameter_to_gwpop_model[p]} to {parametric_models[p]}')
+            print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
+            parameter_to_gwpop_model[p] = parametric_models[p]
+        else:
+            print(f'Using default {p} model {_parameter_to_gwpop_model[p]}')
+            parameter_to_gwpop_model[p] = _parameter_to_gwpop_model[p]
+
     # default priors
     hyperparameter_priors = {}
     for p in other_parameters:

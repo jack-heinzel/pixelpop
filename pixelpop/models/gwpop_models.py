@@ -607,6 +607,29 @@ def iid_normal_spin(data, mu, var):
     sig = jnp.sqrt(var)
     return trunc_gaussian(data['a_1'], mu, sig, 0, 1) + trunc_gaussian(data['a_2'], mu, sig, 0, 1)
 
+def iid_normal_spin_fms(data, mu, var):
+    sig = jnp.sqrt(var)
+    prob = jnp.zeros_like(data['a_1'])
+    keys = data.keys()
+    if 'mass_1' in keys:
+        m1 = data['mass_1']
+    elif 'log_mass_1' in keys:
+        m1 = jnp.exp(data['log_mass_1'])
+    if 'mass_ratio' in keys:
+        m2 = m1 * data['mass_ratio']
+    elif 'log_mass_2' in keys:
+        m2 = jnp.exp(data['log_mass_2'])
+    regions = {'mass_1': m1, 'mass_2': m2}
+    for ii in [1,2]:
+        probs = jnp.where(
+            regions[f'mass_{ii}'] < 2.5, 
+            trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 0.4), 
+            trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 1)
+            )
+        prob += probs
+    
+    return probs
+
 def tilt_model(data, mu, sig, zeta):
     '''
     Only difference here is that mu is allowed to be != 1, a free parameter
