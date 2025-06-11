@@ -89,7 +89,7 @@ def setup_probabilistic_model(posteriors, injections, parameters, other_paramete
     parameter_to_gwpop_model = {}
     for p in other_parameters:
         if p in parametric_models:
-            print(f'Updating {p} model from {_parameter_to_gwpop_model[p]} to {parametric_models[p]}')
+            print(f'Updating {p} model from {_parameter_to_gwpop_model[p].__name__} to {parametric_models[p].__name__}')
             print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
             parameter_to_gwpop_model[p] = parametric_models[p]
         else:
