@@ -610,7 +610,7 @@ def iid_normal_spin(data, mu, var):
 
 def iid_normal_spin_fms(data, mu, var):
     sig = jnp.sqrt(var)
-    prob = jnp.zeros_like(data['a_1'])
+    total_prob = jnp.zeros_like(data['a_1'])
     keys = data.keys()
     if 'mass_1' in keys:
         m1 = data['mass_1']
@@ -627,9 +627,9 @@ def iid_normal_spin_fms(data, mu, var):
             trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 0.4), 
             trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 1)
             )
-        prob += probs
+        total_prob += probs
     
-    return probs
+    return total_prob
 
 def tilt_model(data, mu, sig, zeta):
     '''

@@ -60,7 +60,7 @@ def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
         minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, 
-        prior_draw=False
+        prior_draw=False, skip_nonparametric=False
         ):
     '''
     length scales: whether to use different length scales along different dimensions
@@ -145,7 +145,10 @@ def setup_probabilistic_model(
             return {'merger_rate_density': Rexp + initial_interpolation}
 
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
-    initial_value = get_initial_value(hyperparameters_plausible, parameters_psi, event_bins[0].shape[0], inj_ln_dVTc-injections['log_prior'], noise=noise)
+    if skip_nonparametric:
+        initial_value = {}
+    else:
+        initial_value = get_initial_value(hyperparameters_plausible, parameters_psi, event_ln_dVTc.shape[0], inj_ln_dVTc-injections['log_prior'], noise=noise)
 
     def parametric_model(data, injections, event_weights, inj_weights):
         sample = {}
@@ -161,7 +164,10 @@ def setup_probabilistic_model(
         return event_weights, inj_weights
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
-    def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights):
+    def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
+        if skip:
+            R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
+            return event_weights + R[None,None], inj_weights + R[None]
         if length_scales:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
         else:
@@ -185,17 +191,19 @@ def setup_probabilistic_model(
 
     def probabilistic_model(posteriors, injections):
         
-        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'])
+        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'], skip=skip_nonparametric)
         event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
         taper = smooth(total_var, UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
         
+        # save these values!
         numpyro.deterministic("log_likelihood", ln_likelihood)
-        numpyro.deterministic("log_likelihood_variance", total_var) # save these values!
-        numpyro.deterministic("pe_variance", pe_var) # save these values!
-        numpyro.deterministic("vt_variance", vt_var) # save these values!
-        numpyro.deterministic("Nexp", nexp) # save these values!
+        numpyro.deterministic("log_likelihood_variance", total_var)
+        numpyro.deterministic("pe_variance", pe_var)
+        numpyro.deterministic("vt_variance", vt_var)
+        numpyro.deterministic("Nexp", nexp)
+
         if not prior_draw:
             numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
 

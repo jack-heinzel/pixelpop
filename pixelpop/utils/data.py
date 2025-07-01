@@ -8,11 +8,21 @@ def convert_m1q_to_lm1m2(data):
     data['log_mass_1'] = jnp.log(m1)
     data['log_mass_2'] = data['log_mass_1'] + jnp.log(q)
     data['log_prior'] = jnp.log(data.pop('prior')) + data['log_mass_2']
+    return data
 
 def convert_m1_to_lm1(data):
     m1 = data.pop('mass_1')
     data['log_mass_1'] = jnp.log(m1)
     data['log_prior'] = jnp.log(data.pop('prior')) + data['log_mass_1']
+    return data
+
+def convert_m1m2_to_lm1lm2(data):
+    m1 = data.pop('mass_1')
+    data['log_mass_1'] = jnp.log(m1)
+    m2 = data.pop('mass_2')
+    data['log_mass_2'] = jnp.log(m2)
+    data['log_prior'] = jnp.log(data.pop('prior')) + data['log_mass_1'] + data['log_mass_2']
+    return data
 
 def clean_par(data, par, minimum, maximum, remove=False):
     if par in data:
@@ -28,6 +38,7 @@ def clean_par(data, par, minimum, maximum, remove=False):
             geom = 0.5*(minimum + maximum) # geometric mean    
             data[par] = jnp.where(bad, geom*jnp.ones_like(m), data[par])
             data['log_prior'] = jnp.where(bad, jnp.inf, data['log_prior'])
+    return data
 
 def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxima={}):
 
