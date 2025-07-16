@@ -5,6 +5,7 @@ standard_events/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
+pixelpop/__pycache__
 *.py[cod]
 *$py.class
 
