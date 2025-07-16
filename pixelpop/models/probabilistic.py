@@ -60,7 +60,7 @@ def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
         minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, 
-        prior_draw=False, skip_nonparametric=False
+        prior_draw=False, skip_nonparametric=False, constraint_funcs=[],
         ):
     '''
     length scales: whether to use different length scales along different dimensions
@@ -158,6 +158,8 @@ def setup_probabilistic_model(
                 sample[key] = args[0]
             else:
                 sample[key] = numpyro.sample(key, distribution(*args))
+        for constraint_func in constraint_funcs:
+            numpyro.factor(constraint_func.__name__, constraint_func(sample))
         for p in other_parameters:
             event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
             inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
@@ -210,7 +212,7 @@ def setup_probabilistic_model(
     return probabilistic_model, initial_value
 
 def get_worst_rhat_neff(chain_samples):
-    chain_summary = summary(chain_samples)
+    chain_summary = summary(chain_samples, group_by_chain=False)
     rhats = [[key, chain_summary[key]['r_hat']] for key in chain_summary]
     neffs = [[key, chain_summary[key]['n_eff']] for key in chain_summary]
     
@@ -240,30 +242,27 @@ def get_worst_rhat_neff(chain_samples):
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
-    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False
+    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0,
     ):
 
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = None
-    load_pkl = False
-
+    rng_keys = random.split(rng_key, num=parallel)
     for chain in range(parallel):
+        rng_key = rng_keys[chain]
         print(f"Warming up chain #{chain + 1} out of {parallel}")
         mcmc = MCMC(kernel, thinning=thinning, num_warmup=warmup, num_samples=num_samples*thinning, num_chains=1)# , chain_method='vectorized')# , chain_method='sequential') # vectorized is an experimental method. We can pass 'parallel' which attempts to distribute the chains across multiple GPUs, e.g. on pcdev12 we could do num_chains = 4 across the a100s. If num_chains is too large, it defaults to 'sequential' which simply evaluates the chains in series.
-        chain_num = int(rng_key[1])
-        rng_key_, rng_key = random.split(rng_key)
-        mcmc.run(rng_key, **model_kwargs)#, extra_fields=('~z.cell_locations_unordered', '~z.cell_locations_all'))
-        first_sample = mcmc.get_samples()
-        chain_samples = {key:np.array(first_sample[key])[None,...] for key in first_sample}
+        
+        mcmc.warmup(rng_key, **model_kwargs)
         table_size = len(print_keys) + 2
         # mcmc.thinning = 10
         # mcmc.num_samples = 100
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
-
+        chain_samples = None
         mcmc.transfer_states_to_host()
         # mcmc.progress_bar = False
-        sample_iterator = tqdm(range(int(tot_samples/num_samples)+1))
+        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
@@ -271,29 +270,31 @@ def inference_loop(
             next_sample = mcmc.get_samples()
             sys.stdout.write("\x1b[1A\n\x1b[1A")
             #print([[key,chain_samples[key].shape] for key in chain_samples])
+
+            if chain_samples is None:
+                chain_samples = {key:np.array(next_sample[key]) for key in next_sample}
             for key in chain_samples:
-                chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])[None,...]), axis=1)
+                chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
             mcmc.transfer_states_to_host()
-            if (sample % cache_cadence == 0) and (chain_samples[key].shape[1] >= 4):
-                # print('\n')
+            if (sample % cache_cadence == 0) and (chain_samples[key].shape[0] >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
-                #sys.stdout.write(f"\n"*(table_size+3)) # clear the table?
-                #sys.stdout.write(f"\x1b[{table_size+3}A") # move the cursor up to overwrite the summary table for the NEXT print
                 
                 rhat, rhat_chain, neff, neff_chain = get_worst_rhat_neff(chain_samples)
                 summary_dict = {key: chain_samples[key] for key in print_keys}
                 summary_dict['worst r_hat: '+rhat] = rhat_chain
                 summary_dict['worst n_eff: '+neff] = neff_chain
                 
-                print_summary(summary_dict)
+                print_summary(summary_dict, group_by_chain=False)
                 os.makedirs(run_dir, exist_ok=True)
-                with open(os.path.join(run_dir, f'chain_{chain_num}_{name}_samples.pkl'), 'wb') as ff:
+                with open(os.path.join(run_dir, f'chain_{chain+chain_offset}_{name}_samples.pkl'), 'wb') as ff:
                     pkl.dump(chain_samples, ff)
-                    
+        
         if samples is None:
             samples = chain_samples.copy()
+            for k in samples.keys():
+                samples[k] = samples[k][None,...]
         else:
             for key in samples:
-                samples[key] = np.concatenate((samples[key], chain_samples[key]), axis=0)
+                samples[key] = np.concatenate((samples[key], chain_samples[key][None,...]), axis=0)
 
-        return samples, mcmc
+    return samples, mcmc
