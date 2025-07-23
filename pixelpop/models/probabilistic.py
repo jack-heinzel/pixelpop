@@ -13,6 +13,7 @@ from numpyro.diagnostics import summary, print_summary
 import pickle as pkl
 from jax import random
 import os
+from contextlib import redirect_stdout
 
 _parameter_to_gwpop_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
@@ -242,7 +243,7 @@ def get_worst_rhat_neff(chain_samples):
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
-    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0,
+    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0
     ):
 
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
@@ -285,8 +286,11 @@ def inference_loop(
                 summary_dict['worst n_eff: '+neff] = neff_chain
                 
                 print_summary(summary_dict, group_by_chain=False)
-                os.makedirs(run_dir, exist_ok=True)
-                with open(os.path.join(run_dir, f'chain_{chain+chain_offset}_{name}_samples.pkl'), 'wb') as ff:
+                os.makedirs(os.path.join(run_dir, name), exist_ok=True)
+                with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_metadata.txt'), 'w+') as f:
+                    with redirect_stdout(f):
+                        print_summary(summary_dict, group_by_chain=False)
+                with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.pkl'), 'wb') as ff:
                     pkl.dump(chain_samples, ff)
         
         if samples is None:
