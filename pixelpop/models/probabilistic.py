@@ -14,6 +14,7 @@ import pickle as pkl
 from jax import random
 import os
 from contextlib import redirect_stdout
+import h5ify
 
 _parameter_to_gwpop_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
@@ -290,8 +291,8 @@ def inference_loop(
                 with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_metadata.txt'), 'w+') as f:
                     with redirect_stdout(f):
                         print_summary(summary_dict, group_by_chain=False)
-                with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.pkl'), 'wb') as ff:
-                    pkl.dump(chain_samples, ff)
+                f = os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.h5')
+                h5ify.save(f, chain_samples)
         
         if samples is None:
             samples = chain_samples.copy()

@@ -5,7 +5,7 @@ setuptools.setup(name='pixelpop',
         description='Meant for use with numpyro and jax, package for fitting the GW population with a nonparameteric binning scheme, where bins are correlated with only their nearest neighbors. Meant for inferring the GW population distribution nonparameterically in higher dimensions.',
         url='#',
         author='Jack Heinzel',
-        install_requires=['numpy', 'scipy', 'jax', 'pandas', 'numpyro', 'gwspinpriors', 'astropy', 'nvidia-cusolver-cu12>=11.5'],
+        install_requires=['numpy', 'scipy', 'jax', 'pandas', 'numpyro', 'gwspinpriors', 'astropy', 'nvidia-cusolver-cu13>=11.5', 'h5ify'],
         author_email='heinzelj@mit.edu',
         packages=[
             "pixelpop",
