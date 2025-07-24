@@ -292,7 +292,7 @@ def inference_loop(
                     with redirect_stdout(f):
                         print_summary(summary_dict, group_by_chain=False)
                 f = os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.h5')
-                h5ify.save(f, chain_samples)
+                h5ify.save(f, chain_samples, mode='w')
         
         if samples is None:
             samples = chain_samples.copy()
