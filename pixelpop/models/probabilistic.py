@@ -4,6 +4,7 @@ from .gwpop_models import *
 from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
 import numpyro.distributions as dist
 import jax.numpy as jnp
+from jax.debug import print as jaxprint
 from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
 from numpyro.infer import MCMC, NUTS
@@ -57,12 +58,18 @@ default_priors = {
     'zeta_tilt': ([0, 1], dist.Uniform), 'z_minimum': ([0.], dist.Delta), 'max_z': ([2.4], dist.Delta),
 }
 
+map_to_gwpop_parameters = {
+    'mass_1': ['mass_1'], 'log_mass_1': ['log_mass_1'], 'mass_2': ['mass_2'], 'log_mass_2': ['log_mass_2'], 
+    'mass_ratio': ['mass_ratio'], 'redshift': ['redshift'], 'redshift_psi': ['redshift_psi'], 'chi_eff': ['chi_eff'], 
+    'a_1': ['a_1'], 'a_2': ['a_2'], 'cos_tilt_1': ['cos_tilt_1'], 'cos_tilt_2': ['cos_tilt_2'], 
+    'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'], 'a': ['a_1', 'a_2'], 't': ['cos_tilt_1', 'cos_tilt_2'],
+}
 
 def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
         minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., noise=False, lower_triangular=False, 
-        prior_draw=False, skip_nonparametric=False, constraint_funcs=[],
+        prior_draw=False, skip_nonparametric=False, constraint_funcs=[], log='default'
         ):
     '''
     length scales: whether to use different length scales along different dimensions
@@ -159,12 +166,29 @@ def setup_probabilistic_model(
             if distribution.__name__ == 'Delta':
                 sample[key] = args[0]
             else:
-                sample[key] = numpyro.sample(key, distribution(*args))
+                sample[key] = numpyro.sample(key, distribution(*args))        
+        if log == 'debug':
+            for p in other_parameters:
+                jaxprint('[DEBUG] =================================')
+                jaxprint('[DEBUG] parametric parameters: {p}', p=p)
+                jaxprint('[DEBUG] =================================')       
+                for k in parameter_to_hyperparameters[p]:
+                    jaxprint('[DEBUG] \t {k} sample: {s}', k=k, s=sample[k])
         for constraint_func in constraint_funcs:
             numpyro.factor(constraint_func.__name__, constraint_func(sample))
+            if log == 'debug':
+                jaxprint('[DEBUG] constraint functions:', constraint_func.__name__, constraint_func(sample))
         for p in other_parameters:
             event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
             inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
+            if log == 'debug':
+                jaxprint('[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(event_weights), iw=LSE(inj_weights))
+                if not jnp.isfinite(LSE(event_weights)):
+                    for parameter in map_to_gwpop_parameters[p]:
+                        jaxprint('[DEBUG] inf event weights at {p}={d}', p=parameter, d=data[parameter][jnp.where(event_weights == jnp.inf)])
+                if not jnp.isfinite(LSE(inj_weights)):
+                    for parameter in map_to_gwpop_parameters[p]:
+                        jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
         return event_weights, inj_weights
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
@@ -191,6 +215,8 @@ def setup_probabilistic_model(
 
         event_weights += merger_rate_density[event_bins] # (69,3194)
         inj_weights += merger_rate_density[inj_bins]
+        if log == 'debug':
+            jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
         return event_weights, inj_weights
 
     def probabilistic_model(posteriors, injections):
@@ -258,12 +284,9 @@ def inference_loop(
         
         mcmc.warmup(rng_key, **model_kwargs)
         table_size = len(print_keys) + 2
-        # mcmc.thinning = 10
-        # mcmc.num_samples = 100
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
-        # mcmc.progress_bar = False
         sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
@@ -271,7 +294,6 @@ def inference_loop(
             mcmc.run(mcmc.post_warmup_state.rng_key, **model_kwargs)
             next_sample = mcmc.get_samples()
             sys.stdout.write("\x1b[1A\n\x1b[1A")
-            #print([[key,chain_samples[key].shape] for key in chain_samples])
 
             if chain_samples is None:
                 chain_samples = {key:np.array(next_sample[key]) for key in next_sample}
