@@ -1,0 +1,224 @@
+import h5ify
+import pickle as pkl
+import numpy as np
+import popsummary
+import os
+from glob import glob
+from functools import reduce
+import json
+from ..models import gwpop_models
+from scipy.special import logsumexp as LSE
+
+def combine_chains(chain_1, chain_2):
+    for k in chain_1.keys():
+        assert k in chain_2.keys()
+    assert len(chain_1.keys()) == len(chain_2.keys())
+
+    x = {}
+    for k in chain_1.keys():
+        x[k] = np.concatenate((chain_1[k], chain_2[k]), axis=0)
+    return x
+
+def get_posterior(run, file_label="", rundir='../results/single_length_scale/o4b', result_file_type='h5'):
+    fpath = os.path.join(rundir, '_'.join([file_label, run]), 'chain_*_samples.'+result_file_type)
+    print(fpath)
+    paths = glob(fpath)
+    print(f"I got {len(paths)} unique chains")
+    chains = []
+    for p in paths:
+        if result_file_type == 'h5':
+            chain = h5ify.load(p)
+        elif result_file_type == 'pkl':
+            with open(p, 'rb') as ff:
+                chain = pkl.load(ff)
+        else:
+            print('h5 and pkl are only accepted result_file_type')
+            return
+        chains.append(chain)
+    combined_chains = reduce(combine_chains, chains)
+    for k in combined_chains:
+        print(k, combined_chains[k].shape)
+
+    return combined_chains
+
+def get_run_metadata(file_label, datadir='../data'):
+    file_path = os.path.join(datadir, file_label, 'event_data.json')
+    with open(file_path, 'r') as file:
+        metadata = json.load(file)
+    wf_paths = metadata.keys()
+    wfs = []
+    for p in wf_paths:
+        if 'S230529' in p or 'GW230529' in p:
+            wfs.append('GW230529')
+            continue
+        name = p.split('/')[-1]
+        if name.startswith('S'):
+            wfs.append(name.split('-')[0])
+        else:
+            wfs.append(name.split('-')[3].replace('_PEDataRelease_mixed_cosmo.h5', '').replace('_PEDataRelease_cosmo.h5', ''))
+    # print(wfs)
+    return wfs, wf_paths, metadata
+
+def create_popsummary(
+        posterior, run_name, pixelpop_parameters, other_parameters, bins=100, popsummary_path='../results/popsummary/', 
+        datadir='../data', metadata_label="", overwrite=False, minima={}, maxima={}, parametric_models={}, hyperparameters={}, 
+        lower_triangular=False, priors={},
+        ):
+    
+    parameter_to_hyperparameters = gwpop_models._parameter_to_hyperparameters.copy()
+    parameter_to_hyperparameters.update(hyperparameters)
+
+    hyperparameters_plausible = gwpop_models._hyperparameters_plausible.copy()
+    hyperparameters_plausible.update(gwpop_models.plausible_hyperparameters)
+
+    parameter_to_gwpop_model = {}
+    for p in other_parameters:
+        if p in parametric_models:
+            parameter_to_gwpop_model[p] = parametric_models[p]
+        else:
+            parameter_to_gwpop_model[p] = gwpop_models._parameter_to_gwpop_model[p]
+    
+    hyperparameter_priors = {}
+    delta_pars = {}
+    for p in other_parameters:
+        for h in parameter_to_hyperparameters[p]:
+            if h in priors:    
+                pprint = priors[h]
+                print(f'Using custom prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
+                hyperparameter_priors[h] = priors[h]
+            else:
+                pprint = gwpop_models.default_priors[h]
+                print(f'Using default prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
+                hyperparameter_priors[h] = gwpop_models.default_priors[h]
+            if hyperparameter_priors[h][1].__name__ == 'Delta':
+                delta_pars[h] = hyperparameter_priors[h][0][0]
+
+    if not os.path.exists(popsummary_path):
+        os.makedirs(popsummary_path)
+    popsummary_filepath = os.path.join(popsummary_path, run_name + '.h5')
+    Nsamples = len(posterior['log_likelihood'])
+    if not 'redshift' in pixelpop_parameters:
+        log_norms = np.array([
+            parametric_models['redshift'](
+                None, 
+                *[posterior[h][ii] for h in parameter_to_hyperparameters['redshift']],
+                return_normalization=True
+                )
+            for ii in range(Nsamples)])
+    else:
+        log_norms = np.zeros_like(Nsamples)
+    
+    parameters = pixelpop_parameters + other_parameters        
+    wfs, wf_paths, metadata = get_run_metadata(file_label=metadata_label, datadir=datadir)
+
+    h_keys = [x for x in posterior.keys() if posterior[x].ndim == 1]
+    if not overwrite:
+        if os.path.exists(popsummary_filepath):
+            popsummary_filepath 
+    result = popsummary.popresult.PopulationResult(
+        popsummary_filepath,
+        hyperparameters=h_keys,
+        events=wfs,
+        event_waveforms=[metadata[p]['waveform'] for p in wf_paths],
+        event_sample_IDs=[metadata[p]['label'] for p in wf_paths],
+        event_parameters=parameters
+        )
+    result.set_hyperparameter_samples(np.array([posterior[h] for h in h_keys]).T, overwrite=overwrite)
+
+    minima.update({k: gwpop_models.bbh_minima[k] for k in gwpop_models.bbh_minima if k not in minima})
+    maxima.update({k: gwpop_models.bbh_maxima[k] for k in gwpop_models.bbh_maxima if k not in maxima})
+
+    # set one dimensional rates
+    skip_parameters = []
+    pp_grids = []
+
+    if lower_triangular:
+        # do something special
+
+        skip_parameters = pixelpop_parameters[:2]
+
+        pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins+1))
+        pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins+1))
+        assert posterior['merger_rate_density'].ndim == 3 # assure only two parameters FOR NOW
+
+        dm1 = (maxima[pixelpop_parameters[0]] - minima[pixelpop_parameters[0]]) / bins
+        dm2 = (maxima[pixelpop_parameters[1]] - minima[pixelpop_parameters[1]]) / bins
+        
+        posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) - np.log(2) # divide by 2
+        posterior['merger_rate_density'] = np.log(np.tril(np.exp(posterior['merger_rate_density'])))
+        R = posterior['merger_rate_density'] - log_norms[:,None,None]
+        m1, m2 = LSE(R, axis=2) + np.log(dm2), LSE(R, axis=1) + np.log(dm1)
+    
+        m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)
+        m2 = np.concatenate((m2[:,0][:,None], m2), axis=1)
+        
+        result.set_rates_on_grids(
+            grid_key=pixelpop_parameters[0],
+            grid_params=pixelpop_parameters[0],
+            positions=pp_grids[0],
+            rates=np.exp(m1),
+            overwrite=overwrite
+            )
+        result.set_rates_on_grids(
+            grid_key=pixelpop_parameters[1],
+            grid_params=pixelpop_parameters[1],
+            positions=pp_grids[1],
+            rates=np.exp(m2),
+            overwrite=overwrite
+            )
+    
+    assert 'log_rate' in posterior
+    lrs = posterior['log_rate'] - log_norms
+    
+    for par in parameters:
+        if par in pixelpop_parameters:
+            if par in skip_parameters:
+                continue
+            pos = np.linspace(minima[par], maxima[par], bins+1)
+            pp_grids.append(pos)
+            if 'redshift' in pixelpop_parameters:
+                if par != 'redshift':
+                    # naive marginalization over redshift neglects implicit dVc/dz 1/1+z term
+                    continue
+            assert 'log_marginal_' + par in posterior
+            rates = posterior['log_marginal_'+par]
+            rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
+            rates += lrs[:,None]
+            print(par, rates.shape)
+            # to use in plt.step plots
+        else:
+            assert par in other_parameters # I mean... come on, obviously but OK
+            try:
+                pos = np.linspace(minima[par], maxima[par], 1000)
+                rate_func = parameter_to_gwpop_model[par]
+                required_keys = parameter_to_hyperparameters[par]
+                for k in required_keys:
+                    if not k in posterior:
+                        posterior[k] = delta_pars[k]*np.ones(Nsamples)
+                rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for ii in range(Nsamples)])
+                rates += lrs[:,None]
+            except:
+                print(f'Could not save {par} rates on grids, skipping...')
+                continue
+            
+        result.set_rates_on_grids(
+            grid_key=par,
+            grid_params=par,
+            positions=pos,
+            rates=np.exp(rates),
+            overwrite=overwrite
+            )
+    
+    # Nd stuff
+    x_axes = np.meshgrid(*pp_grids, indexing='ij')
+    pos = np.vstack([
+        x.flatten() for x in x_axes
+        ])
+    nd_pp = posterior['merger_rate_density'] - log_norms[:,None,None]
+    result.set_rates_on_grids(
+        grid_key='joint_pixelpop_rate',
+        grid_params=pixelpop_parameters,
+        positions=pos,
+        rates=np.exp(nd_pp.reshape(Nsamples,bins**len(pixelpop_parameters))),
+        overwrite=overwrite
+    )

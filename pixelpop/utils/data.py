@@ -1,5 +1,6 @@
 from jax import numpy as jnp
 from . import place_samples_in_bins
+from ..models import gwpop_models
 
 def convert_m1q_to_lm1m2(data):
     m1 = data.pop('mass_1')
@@ -42,8 +43,8 @@ def clean_par(data, par, minimum, maximum, remove=False):
 
 def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxima={}):
 
-    bbh_minima = {'log_mass_1': jnp.log(3), 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
-    bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
+    bbh_minima = gwpop_models.bbh_minima.copy()
+    bbh_maxima = gwpop_models.bbh_maxima.copy()
     
     bbh_minima.update(minima)
     bbh_maxima.update(maxima)

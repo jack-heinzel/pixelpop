@@ -17,54 +17,6 @@ import os
 from contextlib import redirect_stdout
 import h5ify
 
-_parameter_to_gwpop_model = {
-    'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
-    'redshift': PowerlawRedshift, #(data, lamb, minimum, maximum, normalize=False):
-    'redshift_psi': PowerlawRedshiftPsi, #(data, lamb, minimum, maximum, normalize=False):
-    'chi_eff': chieff_gaussian, #(data, mean, sig)
-    'spin': spin_default, #(data, mu, var, sig, zeta)
-    'a': iid_normal_spin, #(data, mu, var)
-    't': tilt_iid, #(data, mu, sig, zeta)
-}
-
-_hyperparameters_plausible = {
-    'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
-    'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
-    'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 'lnsigma':-1, 'lncor': -5, 
-    'mean': 0, 'qmin': 0.02, 'max_z': 2.4,
-}
-
-parameter_values = {'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 'redshift': 0.2, 'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0., 'cos_tilt_2': 0.}
-
-_parameter_to_hyperparameters = {
-    'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'mass_ratio': ['beta', 'qmin'], #(data, slope, minimum, delta_m)
-    'redshift': ['lamb', 'max_z'],# 'z_minimum', 'z_maximum'], #(data, lamb, minimum, maximum, normalize=False):
-    'redshift_psi': ['lamb', 'max_z'],# 'z_minimum', 'z_maximum'], #(data, lamb, minimum, maximum, normalize=False):
-    'chi_eff': ['mu_x', 'sig_x'], #(data, mean, sig)
-    'spin': ['mu_spin', 'var_spin', 'sig_tilt', 'zeta_tilt'], #(data, alpha, beta, sig, zeta)
-    'a': ['mu_spin', 'var_spin'],
-    't': ['mu_tilt', 'sig_tilt', 'zeta_tilt'],
-}
-
-default_priors = {
-    'alpha': ([-4, 12], dist.Uniform), 'beta': ([-2, 7], dist.Uniform), 'qmin': ([0, 1], dist.Uniform), 'mmin': ([2, 10], dist.Uniform), 'mmax': ([60, 200], dist.Uniform), 
-    'delta_m': ([0, 10], dist.Uniform), 'mpp': ([20, 50], dist.Uniform), 'sigpp': ([1, 10], dist.Uniform), 'lam': ([0, 1], dist.Uniform), 
-    'lamb': ([-2, 10], dist.Uniform), 'mu_x': ([-1, 1], dist.Uniform), 'sig_x': ([0.005, 1.], dist.Uniform), 'mu_spin': ([0, 1], dist.Uniform),
-    'var_spin': ([0.005, 0.25], dist.Uniform), 'mu_tilt': ([-1, 1], dist.Uniform), 'sig_tilt': ([0.1, 4], dist.Uniform), 
-    'zeta_tilt': ([0, 1], dist.Uniform), 'z_minimum': ([0.], dist.Delta), 'max_z': ([2.4], dist.Delta),
-}
-
-map_to_gwpop_parameters = {
-    'mass_1': ['mass_1'], 'log_mass_1': ['log_mass_1'], 'mass_2': ['mass_2'], 'log_mass_2': ['log_mass_2'], 
-    'mass_ratio': ['mass_ratio'], 'redshift': ['redshift'], 'redshift_psi': ['redshift_psi'], 'chi_eff': ['chi_eff'], 
-    'a_1': ['a_1'], 'a_2': ['a_2'], 'cos_tilt_1': ['cos_tilt_1'], 'cos_tilt_2': ['cos_tilt_2'], 
-    'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'], 'a': ['a_1', 'a_2'], 't': ['cos_tilt_1', 'cos_tilt_2'],
-}
-
 def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
         minima={}, maxima={}, priors={}, parametric_models={}, hyperparameters={}, 
@@ -275,7 +227,7 @@ def inference_loop(
 
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
-    samples = None
+    samples = []
     rng_keys = random.split(rng_key, num=parallel)
     for chain in range(parallel):
         rng_key = rng_keys[chain]
@@ -316,12 +268,6 @@ def inference_loop(
                 f = os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.h5')
                 h5ify.save(f, chain_samples, mode='w')
         
-        if samples is None:
-            samples = chain_samples.copy()
-            for k in samples.keys():
-                samples[k] = samples[k][None,...]
-        else:
-            for key in samples:
-                samples[key] = np.concatenate((samples[key], chain_samples[key][None,...]), axis=0)
+        samples.append(chain_samples[key])
 
     return samples, mcmc
