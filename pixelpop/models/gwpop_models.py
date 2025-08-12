@@ -55,11 +55,11 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
 def powerlaw(data, slope, minimum, maximum):
-    if jnp.isclose(slope, -1):
-        norm = jnp.log(jnp.log(maximum / minimum))
-    else:
-        norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
-    
+    norm = jnp.where(
+        jnp.isclose(slope, -1), 
+        jnp.log(jnp.log(maximum / minimum)),
+        -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
+    )
     window = jnp.logical_and(data >= minimum, data <= maximum)
     p = jnp.where(window, slope*jnp.log(data), -INF*jnp.ones_like(data))
     return p - norm
@@ -462,8 +462,33 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
     else:
         return ln_likelihood, ln_likelihood_variance
 
-bbh_minima = {'log_mass_1': jnp.log(3), 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
-bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
+def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1):
+    '''
+    event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
+    denominator weights are a 1d array of p(theta|lambda) / prior(theta)
+    '''
+    n_events, minimum_length = event_weights.shape
+    numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
+    denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
+
+    pe_ln_likelihood = jnp.sum(numerators)
+
+    nexp = live_time*jnp.exp(denominator)
+    vt_ln_likelihood = n_events*jnp.log(live_time) - nexp
+    ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
+    
+    square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
+    square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
+    
+    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
+    vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
+    
+    ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
+    return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
+
+
+bbh_minima = {'log_mass_1': jnp.log(3), 'mass_1': 3., 'mass_2': 3., 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
+bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
