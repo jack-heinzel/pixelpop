@@ -62,8 +62,59 @@ def get_run_metadata(file_label, datadir='../data'):
 def create_popsummary(
         posterior, run_name, pixelpop_parameters, other_parameters, bins=100, popsummary_path='../results/popsummary/', 
         datadir='../data', metadata_label="", overwrite=False, minima={}, maxima={}, parametric_models={}, hyperparameters={}, 
-        lower_triangular=False, priors={},
+        priors={}, lower_triangular=False, 
         ):
+    '''
+    Parameters
+    ----------
+    posterior: dict
+        A dictionary of the hyperposterior samples [np.NDarray shaped as 
+        (Nsamples,...)]
+    run_name: str
+        name for popsummary file
+    pixelpop_parameters: list
+        list of strings, containing the parameters over which the pixelpop model
+        was defined    
+    other_parameters: list
+        list of strings, containing the parameters for the other parameters 
+        necessary in the population model
+    bins: int (TODO: or list)
+        number of bins along each axis
+    popsummary_path: str
+        relative path from script directory where to save the popsummary file
+    datadir: str
+        relative path from the script directory where the gwpopulation_pipe 
+        data (posterior samples, injections, etc.) was stored
+    metadata_label: str
+        additional subdirectory of datadir where the gwpopulation_pipe data is 
+        stored, e.g., datadir/metadata_label/ contains gwpopulation_pipe metadata
+    overwrite: bool
+        whether to overwrite existing popsummary data
+    minima: dict
+        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to the 
+        minimum value in the space. If no key is passed, defaults to typical bbh 
+        values, e.g., mass_1: 3, mass_ratio: 0., chi_eff: -1
+    maxima: dict
+        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to the 
+        maximum value in the space. If no key is passed, defaults to typical bbh 
+        values, e.g., mass_1: 200, mass_ratio: 1., chi_eff: 1
+    parametric_models: dict    
+        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to 
+        parametric model function. If no key is passed, defaults to GWTC-3 default 
+        parametric models
+    hyperparameters: dict
+        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to a list 
+        of the (string) hyperparameter names for the corresponding parametric 
+        function
+    priors: dict
+        dictionary of hyperparmeter name to a tuple containing (zeroth index) the 
+        list of arguments for the numpyro distribution from which to sample the 
+        hyperparameter, and (first index) the numpyro distribution, e.g., 
+        'max_z': ([2.4], numpyro.distributions.Delta)
+    lower_triangular: bool
+        whether to use the lower_triangular formalism where p1 > p2 is assumed.
+        Usually this will only be used when joint mass_1, mass_2 inference is done 
+    '''
     
     if type(posterior) == list:
         if len(posterior) == 1:
