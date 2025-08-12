@@ -1,13 +1,16 @@
-from astropy.cosmology import Planck15
+import wcosmo
 from astropy import units
-from jax import jit, lax
+from jax import jit#, lax
+from jax.nn import log_sigmoid
 from numpyro import distributions as dist
 import jax.numpy as jnp
 import jax.scipy.special as scs
 import numpy as np
 from functools import partial
-from jax.scipy.special import erf
-from jax.scipy.special import gamma
+
+Planck15_LAL = wcosmo.FlatLambdaCDM(H0=67.90, Om0=0.3065, name="Planck15_LAL")
+COSMO = Planck15_LAL
+INF = 1e10 # avoid actual jnp.inf, otherwise we get nan gradients
 
 def log_expit(x):
     """
@@ -51,6 +54,21 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
+def powerlaw(data, slope, minimum, maximum):
+    if jnp.isclose(slope, -1):
+        norm = jnp.log(jnp.log(maximum / minimum))
+    else:
+        norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
+    
+    window = jnp.logical_and(data >= minimum, data <= maximum)
+    p = jnp.where(window, slope*jnp.log(data), -INF*jnp.ones_like(data))
+    return p - norm
+
+def gaussian(data, mean, sig):
+    px = -(data - mean)**2 / 2 / sig**2
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2)
+    return px - norm
+
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
     data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
@@ -85,19 +103,27 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
+def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
 
-def PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
-    '''
-    data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
-    of mass_1 samples
+    m_break = xmin + break_fraction * (xmax - xmin)
+    correction = powerlaw(m_break, slope_2, m_break, xmax) - powerlaw(
+        m_break, slope_1, xmin, m_break
+    )
+    low_part = powerlaw(data, slope_1, xmin, m_break)
+    high_part = powerlaw(data, slope_2, m_break, xmax)
+    
+    # this might be nan gradient?
+    prob = jnp.where(data < m_break, low_part + correction, high_part)
 
-    slope, minimum, maximum, delta_m, mpp, sigpp, and lam are the standard PP mass parameters
+    return prob + log_sigmoid(-correction) # - log(1+exp(correction))
 
-    This is NOT the standard PP model, this normalizes the smoothed powerlaw FIRST before adding the gaussian peak
-    This basically changes the definition of lam, but is equivalent up to a redefinition. That is, sampling with
-    this model will be identical to sampling with the conventional model.
-    '''
-    slope = -alpha
+def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
+    data, alpha_1, alpha_2, mmin, break_mass, delta_m_1, 
+    lam_0, lam_1, mpp_1, sigpp_1, mpp_2, sigpp_2, 
+    mmax=300., gaussian_mass_maximum=100.):
+    """
+    GWTC-4.0 population default mass model
+    """
     isLogMass = True
     if isinstance(data, dict):
         try:
@@ -106,58 +132,46 @@ def PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, minimum, maximum, delta_
             isLogMass = False
             m1 = data['mass_1']
     else:
+        isLogMass = False
         m1 = data
-    power_law = powerlaw(m1, slope, minimum, maximum)
-    smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
-    m1s_test = jnp.linspace(2.0, 200., 2000)
+    lam_2 = 1 - lam_1 - lam_0
+    break_fraction = (break_mass  - mmin) / (mmax - mmin)
+    p_pow = BrokenPowerLaw(m1, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
+    p_pow += m_smoother(m1, mmin, delta_m_1)
+
+    p_norm1 = trunc_gaussian(
+        m1, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
+    )
+    p_norm2 = trunc_gaussian(
+        m1, mpp_2, sigpp_2, mmin, gaussian_mass_maximum
+    )
+    pm1 = scs.logsumexp(jnp.array([
+        jnp.log(lam_0) + p_pow, 
+        jnp.log(lam_1) + p_norm1, 
+        jnp.log(lam_2) + p_norm2
+        ]), axis=0)
+    
+    # unnormalized, unsmoothed
+    m1s_test = jnp.linspace(3.0, 300.0, 2000)
     dm1 = m1s_test[1] - m1s_test[0]
-    power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
-    smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
-    smoothed_pl -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
-    peak = gaussian(m1, mpp, sigpp)
-    pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
+    p_powtest = BrokenPowerLaw(m1s_test, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
+    p_powtest += m_smoother(m1s_test, mmin, delta_m_1)
+
+    p_norm1test = trunc_gaussian(
+        m1s_test, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
+    )
+    p_norm2test = trunc_gaussian(
+        m1s_test, mpp_2, sigpp_2, mmin, gaussian_mass_maximum
+    )
+    pm1test = scs.logsumexp(jnp.array([
+        jnp.log(lam_0) + p_powtest, 
+        jnp.log(lam_1) + p_norm1test, 
+        jnp.log(lam_2) + p_norm2test
+        ]), axis=0)
+    pm1 -= scs.logsumexp(pm1test) + jnp.log(dm1) # simple Riemann rule. 
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
     return pm1
-
-def NoSmoothedPowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, mpp, sigpp, lam):
-    '''
-    Modifies how the PP model is smoothed, instead of using a numerically difficult log_expit function
-
-    slope, minimum, maximum, mpp, sigpp, and lam are the standard PP mass parameters
-    '''
-    slope = -alpha
-    isLogMass = True
-    if isinstance(data, dict):
-        try:
-            m1 = jnp.exp(data['log_mass_1'])
-        except KeyError:
-            isLogMass = False
-            m1 = data['mass_1']
-    else:
-        m1 = data
-    power_law = powerlaw(m1, slope, minimum, maximum)
-    peak = gaussian(m1, mpp, sigpp)
-    pm1 = jnp.logaddexp(power_law + jnp.log(1-lam), peak + jnp.log(lam))
-    if isLogMass: # include jacobian
-        pm1 = pm1 + data['log_mass_1']
-    return pm1
-
-
-def powerlaw(data, slope, minimum, maximum):
-    norm = -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
-    
-    window = jnp.logical_and(data >= minimum, data <= maximum)
-    p = jnp.where(window, slope*jnp.log(data), -100.*jnp.ones_like(data))
-    return p - norm
-
-
-def gaussian(data, mean, sig):
-    
-    px = -(data - mean)**2 / 2 / sig**2
-    norm = 0.5*jnp.log(2*jnp.pi*sig**2)
-    return px - norm
-
 
 def chieff_gaussian(data, mean, sig):
     if isinstance(data, dict):
@@ -165,7 +179,6 @@ def chieff_gaussian(data, mean, sig):
     else:
         x = data
     return gaussian(x, mean, sig)
-
 
 def trunc_gaussian(data, mean, sig, lower, upper):
     in_support = jnp.logical_and(data < upper, data > lower)
@@ -176,110 +189,10 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
     return jnp.where(in_support, px - norm, -jnp.inf*jnp.ones_like(data))
 
-# Sofia implements a truncated gaussian that cuts at the limits
-
-def trunc_gaussian_lims(data, mean, sig, lower, upper):
-    px = -(data - mean)**2 / 2 / sig**2
-    width = 0.001 #Hardcoding it for now
-    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
-    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
-    px = px + taper_l + taper_r
-    up = (upper - mean) / sig / jnp.sqrt(2)
-    lo = (lower - mean) / sig / jnp.sqrt(2)
-    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
-    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
-    return px - norm
-
-
-def ln_chieff(data, mean, sig):
+def lognormal(data, mean, sig):
     px = -(jnp.log(data) - mean)**2 / 2 / sig**2
     denom = jnp.log(data*sig*jnp.sqrt(2*jnp.pi))
     return px - denom
-
-# Sofia implements a mixture of two gaussians for the chieff model
-
-def chieff_two_gaussians(data, mean1, sig1, mean2, sig2, lamb_x):
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    gaussian_1 = gaussian(x, mean1, sig1)
-    gaussian_2 = gaussian(x, mean2, sig2)
-    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian_1, jnp.log(1 - lamb_x) + gaussian_2)    
-    return model
-
-
-def chieff_two_trunc_gaussians(data, mean1, sig1, lower1, upper1, mean2, sig2, lower2, upper2, lamb_x):
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    trunc_gaussian_1 = trunc_gaussian_lims(x, mean1, sig1, lower1, upper1)
-    trunc_gaussian_2 = trunc_gaussian_lims(x, mean2, sig2, lower2, upper2)
-    model = jnp.logaddexp(jnp.log(lamb_x) + trunc_gaussian_1, jnp.log(1 - lamb_x) + trunc_gaussian_2)
-    return model
-
-
-def log_tukey(x, tx0, tr, tk, eps=1e-10, normalize=True):
-    # Define parameters to add/subtract
-    x0 = jnp.where(-1 > tx0 - tk, -1, tx0 - tk)
-    x1 = tx0 - tk * (1 - tr)
-    x2 = tx0 + tk * (1 - tr)
-    x3 = jnp.where(1 < tx0 + tk, 1, tx0 + tk)
-    
-    # Adding an epsilon to avoid numerical errors
-    ln_t01 = jnp.log((1 + jnp.cos((x - x1) * jnp.pi / tk / tr)) / 2 + eps)
-    ln_t23 = jnp.log((1 + jnp.cos((x - x2) * jnp.pi / tk / tr)) / 2 + eps)
-    
-    # Applying the windowing
-    ln_t = jnp.ones(x.shape)*(-100) # All values outside near -inf
-    ln_t = jnp.where((x0 <= x) * (x < x1), ln_t01, ln_t)
-    ln_t = jnp.where((x1 <= x) * (x < x2), 0, ln_t)
-    ln_t = jnp.where((x2 <= x) * (x < x3), ln_t23, ln_t)
-    
-    
-    # Calculate the normalization
-    if normalize:
-        xs_fixed = jnp.linspace(-1, 1, 1000)
-        dx = xs_fixed[1] - xs_fixed[0]
-        ln_t01_n = jnp.log((1 + jnp.cos((xs_fixed - x1) * jnp.pi / tk / tr)) / 2 + eps)
-        ln_t23_n = jnp.log((1 + jnp.cos((xs_fixed - x2) * jnp.pi / tk / tr)) / 2 + eps)
-    
-        t_n = jnp.ones(xs_fixed.shape)*(-100) # All values outside near -inf
-        t_n = jnp.where((x0 <= xs_fixed) * (xs_fixed < x1), ln_t01_n, t_n)
-        t_n = jnp.where((x1 <= xs_fixed) * (xs_fixed < x2), 0, t_n)
-        t_n = jnp.where((x2 <= xs_fixed) * (xs_fixed < x3), ln_t23_n, t_n) 
-    
-        t_norm = scs.logsumexp(t_n) + jnp.log(dx)
-        ln_t -= t_norm
-        
-    window = jnp.logical_and(x >= -1, x <= 1)
-    t = jnp.where(window, ln_t, -100.*jnp.ones_like(x))
-    
-    return t
-
-
-def chieff_gaussian_tukey(data, mean, sig, tx0, tr, tk, lamb_x):
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    gaussian = trunc_gaussian_lims(x, mean, sig, lower=-1, upper=-1)
-    tukey = log_tukey(x, tx0, tr, tk)
-    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
-    return model
-
-
-def chieff_lognormal_tukey(data, mu_x, sig_x, tx0_x, tr_x, tk_x, lamb_x):
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    gaussian = ln_chieff(x, mu_x, sig_x)
-    tukey = log_tukey(x, tx0_x, tr_x, tk_x)
-    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
-    return model
-
 
 def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization=False):
     if isinstance(data, dict):
@@ -288,7 +201,7 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
         z = data
     zs_fixed = np.linspace(1e-5, max_z, 1000)
     fixed_ln_dvc_dz = jnp.log(
-        4*jnp.pi*Planck15.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
+        4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
         )
     if normalize:
         dz = zs_fixed[1] - zs_fixed[0]
@@ -303,7 +216,7 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
     ln_p -= ln_norm
         
     window = jnp.logical_and(z >= 0., z <= max_z)
-    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
 
 
@@ -315,193 +228,34 @@ def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     ln_p = lamb * jnp.log(1. + z)
 
     window = jnp.logical_and(z >= 0., z <= max_z)
-    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
 
 
-def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True):
+def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True, return_normalization=False):
     if isinstance(data, dict):
         z = data['redshift']
     else:
         z = data
     zs_fixed = np.linspace(1e-5, z_max, 1000)
-    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
-    ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
-    ln_p = ln_dvc_dz + (gamma - 1)* jnp.log(1. + z) - jnp.log(1 + ((1 + z)/(1 + z_peak))**kappa)
+    fixed_ln_dvc_dz = jnp.log(
+        4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
+        )
     if normalize:
         dz = zs_fixed[1] - zs_fixed[0]
         test_ln_p = fixed_ln_dvc_dz + (gamma - 1)* jnp.log(1. + zs_fixed) - jnp.log(1 + ((1 + zs_fixed)/(1 + z_peak))**kappa)
-        # Calculate the normalization
         ln_norm = scs.logsumexp(test_ln_p) + jnp.log(dz)
-        # Divide in logspace (=subtract) by normalization
-        ln_p -= ln_norm
+        if return_normalization:
+            return ln_norm
+    else:
+        ln_norm = 0.
+    ln_dvc_dz = jnp.interp(z, zs_fixed, fixed_ln_dvc_dz)
+    ln_p = ln_dvc_dz + (gamma - 1)* jnp.log(1. + z) - jnp.log(1 + ((1 + z)/(1 + z_peak))**kappa)
+    ln_p -= ln_norm
+
     window = jnp.logical_and(z >= 0., z <= z_max)
-    p = jnp.where(window, ln_p, -100.*jnp.ones_like(z))
+    p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
-
-
-def skew_norm(data, mu_0, mu_1, sigma_0, sigma_1, alpha_0, alpha_1, z_max=1.9, normalize=True):
-    redshift = data['redshift']
-    chi_eff = data['chi_eff']
-    
-    mu = mu_0 + chi_eff * mu_1
-    sigma = sigma_0 + chi_eff * sigma_1
-    alpha = alpha_0 + chi_eff * alpha_1
-    
-    zs_fixed = np.linspace(1e-5, z_max, 1000)
-    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
-    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
-    cdf = jnp.log(1 + erf(alpha * (redshift - mu) / (sigma * jnp.sqrt(2))))
-    exp = -(redshift - mu) ** 2 / (2 * sigma ** 2)
-    norm = jnp.log(sigma * jnp.sqrt(2 * jnp.pi))
-    result = ln_dvc_dz - jnp.log(1. + redshift) + cdf + exp - norm
-    
-    if normalize:
-        # Define fixed values of chi_eff for normalization
-        chi_eff_fixed = np.linspace(-1, 1, 1000)
-        dz = zs_fixed[1] - zs_fixed[0]
-        
-        # Precompute variables for chi_eff_fixed
-        mu_fixed = mu_0 + chi_eff_fixed * mu_1
-        sigma_fixed = sigma_0 + chi_eff_fixed * sigma_1
-        alpha_fixed = alpha_0 + chi_eff_fixed * alpha_1
-        
-        zs_fixed_ = zs_fixed[:, None]
-        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
-        mu_ = mu_fixed[None, ...]
-        sigma_ = sigma_fixed[None, ...]
-        alpha_ = alpha_fixed[None, ...]
-        
-        cdf_t = jnp.log(1 + erf(alpha_ * (zs_fixed_ - mu_) / (sigma_ * jnp.sqrt(2))))
-        exp_t = -(zs_fixed_ - mu_) ** 2 / (2 * sigma_ ** 2)
-        result_t = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + cdf_t + exp_t - jnp.log(sigma_ * jnp.sqrt(2 * jnp.pi))
-        ln_norm_fixed = scs.logsumexp(result_t, axis=0) + jnp.log(dz)
-        
-        # Interpolate normalization to original chi_eff
-        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
-    
-    ln_p = result - ln_norm
-    conditions = jnp.stack([redshift >= 0., 
-                                        redshift <= z_max,
-                                        mu >= 0, mu <= 1.9, sigma > 0,
-                                        np.isfinite(ln_p)], axis=0)
-    window = jnp.all(conditions, axis=0)
-    p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
-    return p
-
-
-def jhonson_su(data, gamma_0, gamma_1, xi_0, xi_1, delta_0, delta_1, lambda_0, lambda_1, z_max=1.9, normalize=True):
-    redshift = data['redshift']
-    chi_eff = data['chi_eff']
-    
-    gamma = gamma_0 + chi_eff*gamma_1
-    xi = xi_0 + chi_eff*xi_1
-    delta = delta_0 + chi_eff*delta_1
-    lambd = lambda_0 + chi_eff*lambda_1
-    
-    zs_fixed = np.linspace(1e-5, z_max, 1000)
-    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
-    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
-    
-    f = jnp.log(delta) - jnp.log(lambd * jnp.sqrt(2*jnp.pi))
-    s = -0.5*jnp.log(1 + ((redshift - xi)/lambd)**2)
-    t = -0.5*(gamma + delta*np.arcsinh((redshift - xi)/lambd))**2
-    result =ln_dvc_dz - jnp.log(1. + redshift) + f + s + t
-    
-    if normalize:
-        # Define fixed values of chi_eff for normalization
-        chi_eff_fixed = np.linspace(-1, 1, 1000)
-        dz = zs_fixed[1] - zs_fixed[0]
-        
-        # Precompute variables for chi_eff_fixed
-        gamma_fixed = gamma_0 + chi_eff_fixed*gamma_1
-        xi_fixed = xi_0 + chi_eff_fixed*xi_1
-        delta_fixed = delta_0 + chi_eff_fixed*delta_1
-        lambd_fixed = lambda_0 + chi_eff_fixed*lambda_1
-
-        zs_fixed_ = zs_fixed[:,None]
-        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
-        gamma_ = gamma_fixed[None,...]
-        xi_ = xi_fixed[None,...]
-        delta_ = delta_fixed[None,...]
-        lambd_ = lambd_fixed[None, ...]
-        
-        f_fixed = jnp.log(delta_) - jnp.log(lambd_ * jnp.sqrt(2*jnp.pi))
-        s_fixed = -0.5*jnp.log(1 + ((zs_fixed_ - xi_)/lambd_)**2)
-        t_fixed = -0.5*(gamma_ + delta_*np.arcsinh((zs_fixed_ - xi_)/lambd_))**2
-        result_fixed = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + f_fixed + s_fixed + t_fixed
-        ln_norm_fixed = scs.logsumexp(result_fixed, axis=0) + jnp.log(dz)
-        
-        # Interpolate normalization to original chi_eff
-        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
-        
-    ln_p = result - ln_norm
-    conditions = jnp.stack([redshift >= 0., 
-                                        redshift <= z_max,
-                                        delta > 0, lambd > 0,
-                                        np.isfinite(ln_p)], axis=0)
-    window = jnp.all(conditions, axis=0)
-    p = jnp.where(window, ln_p, -100.*jnp.ones_like(redshift))
-    return p
-
-
-def PERT(data, a, b_0, b_1, c_0, c_1, z_max=1.9, normalize=True):
-    redshift = data['redshift']
-    chi_eff = data['chi_eff']
-    
-    b = b_0 + chi_eff * b_1
-    c = c_0 + chi_eff * c_1
-
-    alpha = 1 + 4 * ((b - a) / (c - a))
-    beta = 1 + 4 * ((c - b) / (c - a))
-    gamma_factor = gamma(alpha) * gamma(beta) / gamma(alpha + beta)
-    
-    zs_fixed = np.linspace(1e-5, z_max, 1000)
-    fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed).value)
-    ln_dvc_dz = jnp.interp(redshift, zs_fixed, fixed_ln_dvc_dz)
-    
-    pos = (alpha - 1) * jnp.log(redshift - a) + (beta - 1) * jnp.log(c - redshift)
-    neg = jnp.log(gamma_factor) + (alpha + beta - 1) * jnp.log(c - a)
-    result = ln_dvc_dz - jnp.log(1. + redshift) + pos - neg
-    
-    if normalize:
-        # Define fixed values of chi_eff for normalization
-        chi_eff_fixed = np.linspace(-1, 1, 1000)
-        dz = zs_fixed[1] - zs_fixed[0]
-        
-        # Precompute variables for chi_eff_fixed
-        b_fixed = b_0 + chi_eff_fixed * b_1
-        c_fixed = c_0 + chi_eff_fixed * c_1
-        alpha_fixed = 1 + 4 * ((b_fixed - a) / (c_fixed - a))
-        beta_fixed = 1 + 4 * ((c_fixed - b_fixed) / (c_fixed - a))
-        gamma_factor_fixed = gamma(alpha_fixed) * gamma(beta_fixed) / gamma(alpha_fixed + beta_fixed)
-        
-        zs_fixed_ = zs_fixed[:, None]
-        fixed_ln_dvc_dz = jnp.log(Planck15.differential_comoving_volume(zs_fixed_).value)
-        a_ = a
-        b_ = b_fixed[None, ...]
-        c_ = c_fixed[None, ...]
-        alpha_ = alpha_fixed[None, ...]
-        beta_ = beta_fixed[None, ...]
-        gamma_factor_ = gamma_factor_fixed[None, ...]
-        
-        pos_t = (alpha_ - 1) * jnp.log(zs_fixed_ - a_) + (beta_ - 1) * jnp.log(c_ - zs_fixed_)
-        neg_t = jnp.log(gamma_factor_) + (alpha_ + beta_ - 1) * jnp.log(c_ - a_)
-        result_t = fixed_ln_dvc_dz - jnp.log(1. + zs_fixed_) + pos_t - neg_t
-        ln_norm_fixed = scs.logsumexp(result_t, axis=0) + jnp.log(dz)
-        
-        # Interpolate normalization to original chi_eff
-        ln_norm = jnp.interp(chi_eff, chi_eff_fixed, ln_norm_fixed)
-    
-    ln_p = result - ln_norm
-    conditions = jnp.stack([redshift >= 0., 
-                            redshift <= z_max,
-                            b > a, c > b,
-                            np.isfinite(ln_p)], axis=0)
-    window = jnp.all(conditions, axis=0)
-    p = jnp.where(window, ln_p, -100. * jnp.ones_like(redshift))
-    return p
-
 
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     '''
@@ -564,15 +318,6 @@ def PowerlawPlusPeak(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
 
     return pm1 + pq
-
-
-def PowerlawPlusPeak_NormFirst(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
-    pm1 = PowerlawPlusPeak_PrimaryMass_NormFirst(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
-    pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
-
-    return pm1 + pq
-
-
 
 def smooth(x, cutoff, width):
     # less than cutoff return 1
@@ -715,32 +460,6 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
         return ln_likelihood, ln_likelihood_variance, ln_likelihoods, ln_likelihood_variances
     else:
         return ln_likelihood, ln_likelihood_variance
-    
-
-
-def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1):
-    '''
-    event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
-    denominator weights are a 1d array of p(theta|lambda) / prior(theta)
-    '''
-    n_events, minimum_length = event_weights.shape
-    numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
-    denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
-
-    pe_ln_likelihood = jnp.sum(numerators)
-
-    nexp = live_time*jnp.exp(denominator)
-    vt_ln_likelihood = n_events*jnp.log(live_time) - nexp
-    ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
-    
-    square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
-    square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
-    
-    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
-    vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
-    
-    ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
-    return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
 
 bbh_minima = {'log_mass_1': jnp.log(3), 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
 bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
