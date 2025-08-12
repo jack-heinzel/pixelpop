@@ -10,7 +10,8 @@ setuptools.setup(name='pixelpop',
         packages=[
             "pixelpop",
             "pixelpop.utils",
-            "pixelpop.models"
+            "pixelpop.models",
+            "pixelpop.result"
         ],
         package_dir={'pixelpop': 'pixelpop'},
         zip_safe=False)

@@ -65,18 +65,23 @@ def create_popsummary(
         lower_triangular=False, priors={},
         ):
     
-    parameter_to_hyperparameters = gwpop_models._parameter_to_hyperparameters.copy()
+    if type(posterior) == list:
+        if len(posterior) == 1:
+            posterior = posterior[0]
+        else:
+            posterior = reduce(combine_chains, posterior)
+
+    parameter_to_hyperparameters = gwpop_models.gwparameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
 
-    hyperparameters_plausible = gwpop_models._hyperparameters_plausible.copy()
-    hyperparameters_plausible.update(gwpop_models.plausible_hyperparameters)
+    # hyperparameters_plausible = gwpop_models.typical_hyperparameters.copy()
 
     parameter_to_gwpop_model = {}
     for p in other_parameters:
         if p in parametric_models:
             parameter_to_gwpop_model[p] = parametric_models[p]
         else:
-            parameter_to_gwpop_model[p] = gwpop_models._parameter_to_gwpop_model[p]
+            parameter_to_gwpop_model[p] = gwpop_models.gwparameter_to_model[p]
     
     hyperparameter_priors = {}
     delta_pars = {}
@@ -93,13 +98,19 @@ def create_popsummary(
             if hyperparameter_priors[h][1].__name__ == 'Delta':
                 delta_pars[h] = hyperparameter_priors[h][0][0]
 
+    Nsamples = len(posterior['log_likelihood'])
+    for par in other_parameters:
+        required_keys = parameter_to_hyperparameters[par]
+        for k in required_keys:
+            if not k in posterior:
+                posterior[k] = delta_pars[k]*np.ones(Nsamples)
+
     if not os.path.exists(popsummary_path):
         os.makedirs(popsummary_path)
     popsummary_filepath = os.path.join(popsummary_path, run_name + '.h5')
-    Nsamples = len(posterior['log_likelihood'])
     if not 'redshift' in pixelpop_parameters:
         log_norms = np.array([
-            parametric_models['redshift'](
+            parameter_to_gwpop_model['redshift'](
                 None, 
                 *[posterior[h][ii] for h in parameter_to_hyperparameters['redshift']],
                 return_normalization=True
@@ -114,7 +125,9 @@ def create_popsummary(
     h_keys = [x for x in posterior.keys() if posterior[x].ndim == 1]
     if not overwrite:
         if os.path.exists(popsummary_filepath):
-            popsummary_filepath 
+            for counter in range(100):
+                new_name = os.path.join(popsummary_path, 'old_' + f'{counter}_' + run_name + '.h5')
+            os.rename(popsummary_filepath, new_name)
     result = popsummary.popresult.PopulationResult(
         popsummary_filepath,
         hyperparameters=h_keys,
@@ -192,9 +205,6 @@ def create_popsummary(
                 pos = np.linspace(minima[par], maxima[par], 1000)
                 rate_func = parameter_to_gwpop_model[par]
                 required_keys = parameter_to_hyperparameters[par]
-                for k in required_keys:
-                    if not k in posterior:
-                        posterior[k] = delta_pars[k]*np.ones(Nsamples)
                 rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for ii in range(Nsamples)])
                 rates += lrs[:,None]
             except:

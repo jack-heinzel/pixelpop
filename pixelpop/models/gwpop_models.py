@@ -1,7 +1,7 @@
 from astropy.cosmology import Planck15
 from astropy import units
 from jax import jit, lax
-import numpyro
+from numpyro import distributions as dist
 import jax.numpy as jnp
 import jax.scipy.special as scs
 import numpy as np
@@ -742,8 +742,10 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
     return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
 
+bbh_minima = {'log_mass_1': jnp.log(3), 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
+bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
 
-_parameter_to_gwpop_model = {
+gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
@@ -755,7 +757,7 @@ _parameter_to_gwpop_model = {
     't': tilt_iid, #(data, mu, sig, zeta)
 }
 
-_hyperparameters_plausible = {
+typical_hyperparameters = {
     'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
     'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
     'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 'lnsigma':-1, 'lncor': -5, 
@@ -767,7 +769,7 @@ parameter_values = {
     'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0., 'cos_tilt_2': 0.
     }
 
-_parameter_to_hyperparameters = {
+gwparameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], # slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': ['beta', 'qmin'], #(data, slope, minimum, delta_m)

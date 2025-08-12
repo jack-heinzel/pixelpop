@@ -7,11 +7,11 @@ import jax.numpy as jnp
 from jax.debug import print as jaxprint
 from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
+import numpyro
 from numpyro.infer import MCMC, NUTS
 from tqdm import tqdm
 import sys
 from numpyro.diagnostics import summary, print_summary
-import pickle as pkl
 from jax import random
 import os
 from contextlib import redirect_stdout
@@ -49,21 +49,21 @@ def setup_probabilistic_model(
         
     event_bins, inj_bins, bin_axes, logdV = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
     # update models
-    parameter_to_hyperparameters = _parameter_to_hyperparameters.copy()
+    parameter_to_hyperparameters = gwparameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
 
-    hyperparameters_plausible = _hyperparameters_plausible.copy()
+    hyperparameters_plausible = typical_hyperparameters.copy()
     hyperparameters_plausible.update(plausible_hyperparameters)
 
     parameter_to_gwpop_model = {}
     for p in other_parameters:
         if p in parametric_models:
-            print(f'Updating {p} model from {_parameter_to_gwpop_model[p].__name__} to {parametric_models[p].__name__}')
+            print(f'Updating {p} model from {gwparameter_to_model[p].__name__} to {parametric_models[p].__name__}')
             print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
             parameter_to_gwpop_model[p] = parametric_models[p]
         else:
-            print(f'Using default {p} model {_parameter_to_gwpop_model[p].__name__}')
-            parameter_to_gwpop_model[p] = _parameter_to_gwpop_model[p]
+            print(f'Using default {p} model {gwparameter_to_model[p].__name__}')
+            parameter_to_gwpop_model[p] = gwparameter_to_model[p]
 
     # default priors
     hyperparameter_priors = {}
@@ -268,6 +268,6 @@ def inference_loop(
                 f = os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.h5')
                 h5ify.save(f, chain_samples, mode='w')
         
-        samples.append(chain_samples[key])
+        samples.append(chain_samples)
 
     return samples, mcmc
