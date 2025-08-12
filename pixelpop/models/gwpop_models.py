@@ -119,10 +119,11 @@ def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
 
 def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     data, alpha_1, alpha_2, mmin, break_mass, delta_m_1, 
-    lam_0, lam_1, mpp_1, sigpp_1, mpp_2, sigpp_2, 
+    lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, 
     mmax=300., gaussian_mass_maximum=100.):
     """
     GWTC-4.0 population default mass model
+    NOTE: lam_fractions should be a tuple of length 3
     """
     isLogMass = True
     if isinstance(data, dict):
@@ -134,7 +135,7 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     else:
         isLogMass = False
         m1 = data
-    lam_2 = 1 - lam_1 - lam_0
+    lam_0, lam_1, lam_2 = lam_fractions
     break_fraction = (break_mass  - mmin) / (mmax - mmin)
     p_pow = BrokenPowerLaw(m1, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
     p_pow += m_smoother(m1, mmin, delta_m_1)

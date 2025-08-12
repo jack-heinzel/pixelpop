@@ -20,9 +20,9 @@ import h5ify
 def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
         minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
-        plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=False, 
+        plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default'
+        constraint_funcs=[], log='default',
         ):
     '''
     Parameters
