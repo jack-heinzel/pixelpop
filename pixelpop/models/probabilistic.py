@@ -16,6 +16,7 @@ from jax import random
 import os
 from contextlib import redirect_stdout
 import h5ify
+from numpyro import handlers
 
 def setup_probabilistic_model(
         posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
@@ -291,6 +292,20 @@ def get_worst_rhat_neff(chain_samples):
     neff_key = f'{name[worst_neff]}{list(pos[worst_neff])}'.replace('[]','')
     return rhat_key, rhat_chain, neff_key, neff_chain
 
+def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys):
+    
+    conditioned_model = handlers.condition(probabilistic_model, data=initial_value)
+    with handlers.seed(rng_seed=0):
+        trace = handlers.trace(conditioned_model).get_trace(**model_kwargs)
+
+    size = 2
+    for name in print_keys:
+        try:
+            size += trace[name]["value"].size
+        except KeyError:
+            raise KeyError(f"You are trying to print {name}, valid print_keys are {list(trace.keys())}")
+    return size
+
 def inference_loop(
     probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
@@ -349,6 +364,8 @@ def inference_loop(
         completed MCMC sampler (probably we don't need to return this)
     '''
 
+    table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
+
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = []
@@ -359,7 +376,6 @@ def inference_loop(
         mcmc = MCMC(kernel, thinning=thinning, num_warmup=warmup, num_samples=num_samples*thinning, num_chains=1)# , chain_method='vectorized')# , chain_method='sequential') # vectorized is an experimental method. We can pass 'parallel' which attempts to distribute the chains across multiple GPUs, e.g. on pcdev12 we could do num_chains = 4 across the a100s. If num_chains is too large, it defaults to 'sequential' which simply evaluates the chains in series.
         
         mcmc.warmup(rng_key, **model_kwargs)
-        table_size = len(print_keys) + 2
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
