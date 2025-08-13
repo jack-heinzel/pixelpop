@@ -303,7 +303,7 @@ def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
         try:
             size += trace[name]["value"].size
         except KeyError:
-            raise KeyError(f"You are trying to print {name}, valid print_keys are {list(trace.keys())}")
+            raise KeyError(f'You are trying to print \"{name}\", valid print_keys are {list(trace.keys())}')
     return size
 
 def inference_loop(
