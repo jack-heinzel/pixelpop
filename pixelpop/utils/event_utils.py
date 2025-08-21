@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from gwspinpriors import chi_effective_prior_from_isotropic_spins as x_isotropic
+# from gwspinpriors import chi_effective_prior_from_isotropic_spins as x_isotropic
+from gwpopulation_pipe.analytic_spin_prior import chi_effective_prior_from_isotropic_spins as x_isotropic
 import os
 import glob
 import astropy
@@ -210,7 +211,8 @@ def load_injection_data(vt_file, ifar_threshold=1, snr_threshold=10, chi_eff=Fal
 
             qs = gwpop_data["mass_ratio"]
             xs = gwpop_data["chi_eff"]
-            chi_eff_prior = x_isotropic(np.array(qs),0.998,np.array(xs)) 
+            # chi_eff_prior = x_isotropic(np.array(qs),0.998,np.array(xs))
+            chi_eff_prior = x_isotropic(np.array(xs), np.array(qs), amax=0.998)
             # https://zenodo.org/record/5546676#.ZEwH4XbMKUk
 
             chi_eff_prior = np.array(chi_eff_prior)
@@ -381,7 +383,8 @@ def evaluate_prior(posts, posterior_names, max_redshift=1.9, distance_prior='euc
     
     elif spin_prior.lower() == "chieff-isotropic":
         print(f"Assuming uniform in component spin and isotropic, with samples in chi-eff")
-        chieff_prior = x_isotropic(np.array(posts["mass_ratio"]), 0.99, np.array(posts["chi_eff"]))
+        # chieff_prior = x_isotropic(np.array(posts["mass_ratio"]), 0.99, np.array(posts["chi_eff"]))
+        chieff_prior = x_isotropic(np.array(posts["chi_eff"]), np.array(posts["mass_ratio"]), amax=0.99)
         posts["isotropic_chieff_prior"] = chieff_prior
         posts["prior"] *= chieff_prior
     else:
