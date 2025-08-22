@@ -71,10 +71,30 @@ def gaussian(data, mean, sig):
 
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     '''
-    data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
-    of mass_1 samples
-
-    slope, minimum, maximum, delta_m, mpp, sigpp, and lam are the standard PP mass parameters
+    Parameters
+    ----------
+    data: dict or jax.numpy.ndarray
+        Either a dictionary containing 'log_mass_1' or 'mass_1' OR a jax.numpy.ndarray
+        containing the mass_1 samples
+    alpha: float
+        -alpha is the slope of the powerlaw index in the powerlaw continuum
+    minimum: float
+        minimum BH mass
+    maximum: float
+        maximum BH mass
+    delta_m: float
+        smoothing length, between minimum and minimum+delta_m
+    mpp: float
+        location parameter of the Gaussian peak
+    sigpp: float
+        width parameter of the Gaussian peak
+    lam: float
+        the fraction of sources in the Gaussian peak
+    
+    Returns
+    -------
+    pm1: jax.numpy.ndarray
+        array of shape m1 of ln probability densities
     '''
     slope = -alpha
     isLogMass = True
@@ -86,6 +106,7 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
             m1 = data['mass_1']
     else:
         m1 = data
+        isLogMass = False
     power_law = powerlaw(m1, slope, minimum, maximum)
     smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
     peak = gaussian(m1, mpp, sigpp)
@@ -122,8 +143,49 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, 
     mmax=300., gaussian_mass_maximum=100.):
     """
-    GWTC-4.0 population default mass model
+    GWTC-4.0 population default mass model, 
     NOTE: lam_fractions should be a tuple of length 3
+
+    Parameters
+    ----------
+    data: dict or jax.numpy.ndarray
+        Either a dictionary containing 'log_mass_1' or 'mass_1' OR a jax.numpy.ndarray
+        containing the mass_1 samples
+    alpha_1: float
+        -alpha_1 is the slope of the powerlaw index in the powerlaw continuum below 
+        break_mass (m_1 < break_mass)
+    alpha_2: float
+        -alpha_2 is the slope of the powerlaw index in the powerlaw continuum above 
+        break_mass (m_1 > break_mass)
+    mmin: float
+        minimum (primary) BH mass
+    break_mass: float
+        mass at which powerlaw continuum transitions from slope -alpha_1 to -alpha_2
+    delta_m_1: float
+        smoothing length for primary mass, between mmin and mmin+delta_m_1
+    lam_fractions: tuple of length 3
+        lam_fractions[0] is the fraction of sources in the powerlaw continuum,
+        lam_fractions[1] is the fraction of sources in the low-mass Gaussian component,
+        lam_fractions[2] is the fraction of sources in the high-mass Gaussian component. 
+        These are sampled from a distribution with support on the 3-simplex, so 
+        lam_fractions[0] + lam_fractions[1] + lam_fractions[2] = 1
+    mpp_1: float
+        location parameter of the low-mass Gaussian peak
+    sigpp_1: float
+        width parameter of the low-mass Gaussian peak
+    mpp_2: float
+        location parameter of the high-mass Gaussian peak
+    sigpp_2: float
+        width parameter of the high-mass Gaussian peak
+    mmax: float
+        maximum BH mass
+    gaussian_mass_maximum:
+        mass at which to truncate the gaussians.
+    
+    Returns
+    -------
+    pm1: jax.numpy.ndarray
+        array of shape m1 of ln probability densities
     """
     isLogMass = True
     if isinstance(data, dict):
