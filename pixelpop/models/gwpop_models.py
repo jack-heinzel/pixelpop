@@ -14,26 +14,24 @@ INF = 1e10 # avoid actual jnp.inf, otherwise we get nan gradients
 
 def log_expit(x):
     """
-    if (x < 0.0) {
-        return x - std::log1p(std::exp(x));
-    }
-    else {
-        return -std::log1p(std::exp(-x));
-    }
-    exact same expression, just more numerically stable for each side of 0
-    log(1 / [1 + exp(-x)]) = log(exp(x) / (exp(x) + 1)) = x - log(1 + exp(x))
+    Numerically stable implementation of log(sigmoid(x)).
 
-    exactly as done in scipy.special.log_expit
+    This avoids overflow/underflow by applying a branch split:
+    - For x < 0:  x - log1p(exp(x))
+    - For x >= 0: -log1p(exp(-x))
 
-    DANGEROUS: https://github.com/google/jax/issues/1052 gradients will be nan.
+    Equivalent to `scipy.special.log_expit`, but implemented with
+    JAX-safe `where` to prevent NaN gradients.
 
-    cannot use a single `where', must use the "double-where" trick
+    Parameters
+    ----------
+    x : float or jnp.ndarray
+        Input value(s).
 
-    consider differentiating this function for x = -1000, using naive single-where method
-    the arguments of where are (True, -1000, jnp.inf). This causes trouble for gradients as the 
-    divergence is propagated along, eventually it is multiplied by 0 to remove it, but 0*inf is an issue.
-    With the double where method, now evaulating the function for x=-1000 gives you (True, -1000, 0.)
-    and this works because the forward differentiation is done serially, so we never get an inf
+    Returns
+    -------
+    jnp.ndarray
+        log(sigmoid(x)) evaluated elementwise.
     """
     condition = x < 0
     posx_valid = jnp.where(condition, 0, x) # in forward differentiation, gradient is 0 for condition, 1 where false
@@ -42,19 +40,53 @@ def log_expit(x):
     return jnp.where(condition, negx_valid-jnp.log1p(jnp.exp(negx_valid)), -jnp.log1p(jnp.exp(-posx_valid)))
 
 def m_smoother(m1s, minimum, delta, buffer=1e-3):
-    '''
-    remember, logspace
-    return log(1) if greater than minimum + delta
-    return log(0) if less than minimum
-    return log(1 / 1+f(m-mmin, delta)) if inside minimum and minimum + delta
+    """
+    Apply a smoothing function at the minimum mass cutoff.
 
-    standard powerlaw + peak smoother: https://arxiv.org/pdf/2111.03634.pdf B5
-    '''
+    Implements the standard smoothing of a power-law at the low-mass
+    edge, following Eq. (B5) of arXiv:2111.03634. Ensures continuity
+    across [m_min, m_min + delta].
 
+    Parameters
+    ----------
+    m1s : jnp.ndarray
+        Primary mass values.
+    minimum : float
+        Minimum allowed mass.
+    delta : float
+        Width of smoothing region.
+    buffer : float, optional
+        Small offset to avoid division-by-zero.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-smoothing factor applied to the mass distribution.
+    """
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
 def powerlaw(data, slope, minimum, maximum):
+    """
+    Compute the log-PDF of a truncated power-law distribution.
+
+    Parameters
+    ----------
+    data : jnp.ndarray
+        Evaluation points.
+    slope : float
+        Power-law exponent.
+    minimum : float
+        Lower bound of support.
+    maximum : float
+        Upper bound of support.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density evaluated at `data`.
+        Returns -INF outside [minimum, maximum].
+    """
     norm = jnp.where(
         jnp.isclose(slope, -1), 
         jnp.log(jnp.log(maximum / minimum)),
@@ -65,37 +97,61 @@ def powerlaw(data, slope, minimum, maximum):
     return p - norm
 
 def gaussian(data, mean, sig):
+    """
+    Compute the log-PDF of a Gaussian distribution.
+
+    Parameters
+    ----------
+    data : jnp.ndarray
+        Evaluation points.
+    mean : float
+        Gaussian mean.
+    sig : float
+        Standard deviation.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density evaluated at `data`.
+    """
     px = -(data - mean)**2 / 2 / sig**2
     norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
 
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
-    '''
+    """
+    Power-law + Gaussian-peak model for primary BH masses.
+
+    This is the "PP" model used in GWTC catalogs, consisting of:
+    - A smoothed power-law at low masses.
+    - A Gaussian peak centered at `mpp` with width `sigpp`.
+    - A mixture fraction `lam` between the two components.
+    - Normalization via simple Riemann integration.
+
     Parameters
     ----------
-    data: dict or jax.numpy.ndarray
-        Either a dictionary containing 'log_mass_1' or 'mass_1' OR a jax.numpy.ndarray
-        containing the mass_1 samples
-    alpha: float
-        -alpha is the slope of the powerlaw index in the powerlaw continuum
-    minimum: float
-        minimum BH mass
-    maximum: float
-        maximum BH mass
-    delta_m: float
-        smoothing length, between minimum and minimum+delta_m
-    mpp: float
-        location parameter of the Gaussian peak
-    sigpp: float
-        width parameter of the Gaussian peak
-    lam: float
-        the fraction of sources in the Gaussian peak
-    
+    data : dict or jnp.ndarray
+        Event data containing 'log_mass_1' or 'mass_1'.
+    alpha : float
+        Power-law slope (negative exponent).
+    minimum : float
+        Minimum mass cutoff.
+    maximum : float
+        Maximum mass cutoff.
+    delta_m : float
+        Smoothing width at the low-mass edge.
+    mpp : float
+        Mean of Gaussian peak.
+    sigpp : float
+        Std. dev. of Gaussian peak.
+    lam : float
+        Mixture fraction of Gaussian component.
+
     Returns
     -------
-    pm1: jax.numpy.ndarray
-        array of shape m1 of ln probability densities
-    '''
+    jnp.ndarray
+        Log-probability density for primary mass.
+    """
     slope = -alpha
     isLogMass = True
     if isinstance(data, dict):
@@ -124,8 +180,35 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
-def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
 
+def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
+    """
+    Broken power-law distribution with a single spectral break.
+
+    Defines a continuous piecewise power-law across [xmin, xmax] with
+    slopes `slope_1` (below the break) and `slope_2` (above the break).
+    The break location is determined by `break_fraction` of the interval.
+
+    Parameters
+    ----------
+    data : jnp.ndarray
+        Evaluation points.
+    slope_1 : float
+        Power-law slope below the break.
+    slope_2 : float
+        Power-law slope above the break.
+    xmin : float
+        Lower support bound.
+    xmax : float
+        Upper support bound.
+    break_fraction : float
+        Fractional location of the break within [xmin, xmax].
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the broken power-law distribution.
+    """
     m_break = xmin + break_fraction * (xmax - xmin)
     correction = powerlaw(m_break, slope_2, m_break, xmax) - powerlaw(
         m_break, slope_1, xmin, m_break
@@ -143,50 +226,49 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, 
     mmax=300., gaussian_mass_maximum=100.):
     """
-    GWTC-4.0 population default mass model, 
-    NOTE: lam_fractions should be a tuple of length 3
+    Primary mass distribution: broken power-law + two Gaussian peaks.
+
+    Implements the default GWTC-4.0 primary mass population model:
+    a mixture of (1) a smoothed broken power-law, and (2–3) two
+    truncated Gaussians representing additional features.
 
     Parameters
     ----------
-    data: dict or jax.numpy.ndarray
-        Either a dictionary containing 'log_mass_1' or 'mass_1' OR a jax.numpy.ndarray
-        containing the mass_1 samples
-    alpha_1: float
-        -alpha_1 is the slope of the powerlaw index in the powerlaw continuum below 
-        break_mass (m_1 < break_mass)
-    alpha_2: float
-        -alpha_2 is the slope of the powerlaw index in the powerlaw continuum above 
-        break_mass (m_1 > break_mass)
-    mmin: float
-        minimum (primary) BH mass
-    break_mass: float
-        mass at which powerlaw continuum transitions from slope -alpha_1 to -alpha_2
-    delta_m_1: float
-        smoothing length for primary mass, between mmin and mmin+delta_m_1
-    lam_fractions: tuple of length 3
-        lam_fractions[0] is the fraction of sources in the powerlaw continuum,
-        lam_fractions[1] is the fraction of sources in the low-mass Gaussian component,
-        lam_fractions[2] is the fraction of sources in the high-mass Gaussian component. 
-        These are sampled from a distribution with support on the 3-simplex, so 
-        lam_fractions[0] + lam_fractions[1] + lam_fractions[2] = 1
-    mpp_1: float
-        location parameter of the low-mass Gaussian peak
-    sigpp_1: float
-        width parameter of the low-mass Gaussian peak
-    mpp_2: float
-        location parameter of the high-mass Gaussian peak
-    sigpp_2: float
-        width parameter of the high-mass Gaussian peak
-    mmax: float
-        maximum BH mass
-    gaussian_mass_maximum:
-        mass at which to truncate the gaussians.
-    
+    data : dict or jnp.ndarray
+        Either a dict with key 'mass_1' or 'log_mass_1',
+        or a direct array of primary masses.
+    alpha_1 : float
+        Low-mass slope of the power-law.
+    alpha_2 : float
+        High-mass slope of the power-law.
+    mmin : float
+        Minimum primary mass cutoff.
+    break_mass : float
+        Break mass separating the two slopes.
+    delta_m_1 : float
+        Smoothing width at the low-mass cutoff.
+    lam_fractions : tuple of floats
+        Mixture fractions (lam_0, lam_1, lam_2) for
+        {power-law, first Gaussian, second Gaussian}.
+    mpp_1 : float
+        Mean of the first Gaussian peak.
+    sigpp_1 : float
+        Std. deviation of the first Gaussian peak.
+    mpp_2 : float
+        Mean of the second Gaussian peak.
+    sigpp_2 : float
+        Std. deviation of the second Gaussian peak.
+    mmax : float, optional
+        Maximum primary mass cutoff (default 300).
+    gaussian_mass_maximum : float, optional
+        Upper truncation for Gaussian peaks (default 100).
+
     Returns
     -------
-    pm1: jax.numpy.ndarray
-        array of shape m1 of ln probability densities
+    jnp.ndarray
+        Log-probability density of the normalized mass distribution.
     """
+
     isLogMass = True
     if isinstance(data, dict):
         try:
@@ -237,6 +319,23 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     return pm1
 
 def chieff_gaussian(data, mean, sig):
+    """
+    Effective spin distribution: Gaussian in chi_eff.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'chi_eff', or direct array of chi_eff values.
+    mean : float
+        Mean of the Gaussian.
+    sig : float
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density under the Gaussian distribution.
+    """
     if isinstance(data, dict):
         x = data['chi_eff']
     else:
@@ -244,6 +343,29 @@ def chieff_gaussian(data, mean, sig):
     return gaussian(x, mean, sig)
 
 def trunc_gaussian(data, mean, sig, lower, upper):
+    """
+    Truncated Gaussian distribution.
+
+    Parameters
+    ----------
+    data : jnp.ndarray
+        Evaluation points.
+    mean : float
+        Mean of the Gaussian.
+    sig : float
+        Standard deviation of the Gaussian.
+    lower : float
+        Lower truncation bound.
+    upper : float
+        Upper truncation bound.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the truncated Gaussian,
+        with −INF outside [lower, upper].
+    """
+
     in_support = jnp.logical_and(data < upper, data > lower)
     px = -(data - mean)**2 / 2 / sig**2
     up = (upper - mean) / sig / jnp.sqrt(2)
@@ -253,11 +375,52 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     return jnp.where(in_support, px - norm, -jnp.inf*jnp.ones_like(data))
 
 def lognormal(data, mean, sig):
+    """
+    Log-normal distribution.
+
+    Parameters
+    ----------
+    data : jnp.ndarray
+        Evaluation points (must be > 0).
+    mean : float
+        location parameter of lognormal (mean  of ln(X) if X~LogNormal)
+    sig : float
+        width parameter of lognormal (standard deviation of ln(X) if X~LogNormal)
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the log-normal distribution.
+    """
     px = -(jnp.log(data) - mean)**2 / 2 / sig**2
     denom = jnp.log(data*sig*jnp.sqrt(2*jnp.pi))
     return px - denom
 
+# TODO: base Redshift function that takes in Psi evolution and returns log density
+
 def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization=False):
+    """
+    Redshift distribution model: power law in (1+z) weighted by comoving volume.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'redshift', or direct array of redshifts.
+    lamb : float
+        Power-law index on (1+z).
+    max_z : float, optional
+        Maximum redshift cutoff (default 1.9).
+    normalize : bool, optional
+        If True, normalize the distribution (default True).
+    return_normalization : bool, optional
+        If True, return only the log-normalization constant.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the redshift distribution.
+        If `return_normalization=True`, returns the log-normalization only.
+    """
     if isinstance(data, dict):
         z = data['redshift']
     else:
@@ -282,8 +445,24 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
     p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
 
-
 def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
+    """
+    Power-law redshift distribution: proportional to (1+z)^lamb.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'redshift', or direct array of redshifts.
+    lamb : float
+        Power-law index on (1+z).
+    max_z : float, optional
+        Maximum redshift cutoff (default 1.9).
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density, with −INF outside [0, max_z].
+    """
     if isinstance(data, dict):
         z = data['redshift']
     else:
@@ -294,8 +473,33 @@ def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
 
-
 def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True, return_normalization=False):
+    """
+    Madau–Dickinson star-formation rate redshift distribution.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'redshift', or direct array of redshifts.
+    gamma : float
+        Low-redshift power-law index.
+    kappa : float
+        High-redshift suppression exponent.
+    z_peak : float
+        Characteristic peak redshift.
+    z_max : float, optional
+        Maximum redshift cutoff (default 1.9).
+    normalize : bool, optional
+        If True, normalize the distribution (default True).
+    return_normalization : bool, optional
+        If True, return only the log-normalization constant.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the redshift distribution.
+        If `return_normalization=True`, returns the log-normalization only.
+    """
     if isinstance(data, dict):
         z = data['redshift']
     else:
@@ -321,12 +525,26 @@ def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True
     return p
 
 def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
-    '''
-    data is either a dictionary containing 'log_mass_1' or 'mass_1', or an jax.numpy array 
-    of mass_1 samples
+    """
+    Mass-ratio distribution: smoothed power law with minimum mass cut.
 
-    slope, minimum, maximum, delta_m, mpp, sigpp, and lam are the standard PP mass parameters
-    '''
+    Parameters
+    ----------
+    data : dict
+        Must contain 'mass_ratio' and either 'mass_1' or 'log_mass_1'.
+    slope : float
+        Power-law slope on the mass ratio q.
+    minimum : float
+        Global minimum BH mass.
+    delta_m : float
+        Mass smoothing scale at the minimum cutoff.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the smoothed mass-ratio distribution.
+    """
+
     try:
         m1 = jnp.exp(data['log_mass_1'])
     except KeyError:
@@ -352,10 +570,23 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     return smoothed_pl - norms
 
 def Powerlaw_MassRatio(data, slope, minimum):
-    '''
-    Simple powerlaw function for fitting mass ratio distribution, using a global
-    minimum BH mass
-    '''
+    """
+    Simple power-law mass-ratio distribution with a global minimum mass.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'mass_ratio' and either 'mass_1' or 'log_mass_1'.
+    slope : float
+        Power-law slope on q.
+    minimum : float
+        Global minimum BH mass.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the mass-ratio distribution.
+    """
     try:
         m1 = jnp.exp(data['log_mass_1'])
     except KeyError:
@@ -366,10 +597,23 @@ def Powerlaw_MassRatio(data, slope, minimum):
     return power_law
 
 def SimplePowerlaw_MassRatio(data, slope, qmin):
-    '''
-    Simple function for fitting mass ratio distribution, using no global minimum
-    BH mass, can be as low as 0.02
-    '''
+    """
+    Simple power-law mass-ratio distribution without a global minimum mass.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'mass_ratio'.
+    slope : float
+        Power-law slope on q.
+    qmin : float
+        Minimum mass ratio allowed.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the mass-ratio distribution.
+    """
     q = data['mass_ratio']
 
     power_law = powerlaw(q, slope, qmin, 1.)
@@ -377,29 +621,100 @@ def SimplePowerlaw_MassRatio(data, slope, qmin):
 
 
 def PowerlawPlusPeak(data, alpha, beta, mmin, mmax, delta_m, mpp, sigpp, lam):
+    """
+    Joint primary-mass and mass-ratio distribution: power law plus Gaussian peak.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'mass_1' or 'log_mass_1', and 'mass_ratio'.
+    alpha : float
+        Power-law slope for primary mass.
+    beta : float
+        Power-law slope for mass ratio.
+    mmin, mmax : float
+        Minimum and maximum primary masses.
+    delta_m : float
+        Smoothing scale at lower mass cutoff.
+    mpp : float
+        Peak mass location.
+    sigpp : float
+        Standard deviation of the peak Gaussian.
+    lam : float
+        Fraction in the Gaussian peak.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the joint distribution.
+    """
+
     pm1 = PowerlawPlusPeak_PrimaryMass(data, alpha, mmin, mmax, delta_m, mpp, sigpp, lam)
     pq = PowerlawPlusPeak_MassRatio(data, beta, mmin, delta_m)
 
     return pm1 + pq
 
 def smooth(x, cutoff, width):
-    # less than cutoff return 1
-    # first derivative is continuous, so all good for autodiff
-    # interestingly cannot do this as a if statement...
+    """
+    Smooth cutoff function with continuous derivative.
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Evaluation points.
+    cutoff : float
+        Cutoff location.
+    width : float
+        Width of smoothing region.
+
+    Returns
+    -------
+    jnp.ndarray
+        Smooth step function, transitioning quadratically at cutoff.
+    """
     return jnp.where(x<cutoff, 0., -((x-cutoff)/width)**2)
 
 def mu_var_to_alpha_beta(mu, var):
+    """
+    Convert mean and variance to Beta distribution parameters.
+
+    Parameters
+    ----------
+    mu : float
+        Mean of the Beta distribution.
+    var : float
+        Variance of the Beta distribution.
+
+    Returns
+    -------
+    alpha : float
+        Beta shape parameter alpha.
+    beta : float
+        Beta shape parameter beta.
+    """
     nu = (mu*(1-mu)/var) - 1
     alpha = mu * nu
     beta = (1-mu) * nu
     return alpha, beta
 
-def beta_spin_mv(spin_mag, mu, var):
-    alpha, beta = mu_var_to_alpha_beta(mu, var)
-    return beta_spin(spin_mag, alpha, beta)
-
-
 def beta_spin(spin_mag, alpha, beta):
+    """
+    Beta distribution for spin magnitudes.
+
+    Parameters
+    ----------
+    spin_mag : jnp.ndarray
+        Spin magnitudes in [0, 1].
+    alpha : float
+        Beta distribution parameter alpha.
+    beta : float
+        Beta distribution parameter beta.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the Beta distribution.
+    """
     ln_a = jnp.log(spin_mag)
     ln_1ma = jnp.log(1. - spin_mag)
     ln_p = (alpha - 1) * ln_a + (beta - 1) * ln_1ma
@@ -407,16 +722,92 @@ def beta_spin(spin_mag, alpha, beta):
     norm = scs.gammaln(alpha) + scs.gammaln(beta) - scs.gammaln(alpha + beta)
     return ln_p - norm
 
+def beta_spin_mv(spin_mag, mu, var):
+    """
+    Beta distribution for spin magnitudes.
+
+    Parameters
+    ----------
+    spin_mag : jnp.ndarray
+        Spin magnitudes in [0, 1].
+    mu : float
+        Beta distribution mean.
+    var : float
+        Beta distribution variance.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the Beta distribution.
+    """
+    alpha, beta = mu_var_to_alpha_beta(mu, var)
+    return beta_spin(spin_mag, alpha, beta)
 
 def iid_beta_spin(data, mu, var):
+    """
+    Beta distribution for spin magnitudes.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'a_1' and 'a_2'
+    mu : float
+        Beta distribution mean.
+    var : float
+        Beta distribution variance.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the Beta distribution.
+    """
     alpha, beta = mu_var_to_alpha_beta(mu, var)
     return beta_spin(data['a_1'], alpha, beta) + beta_spin(data['a_2'], alpha, beta)
 
 def iid_normal_spin(data, mu, var):
+    """
+    Truncated normal distribution for spin magnitudes.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'a_1' and 'a_2'
+    mu : float
+        Truncated normal location parameter.
+    var : float
+        Truncated normal width parameter.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the truncated normal distribution.
+    """
     sig = jnp.sqrt(var)
     return trunc_gaussian(data['a_1'], mu, sig, 0, 1) + trunc_gaussian(data['a_2'], mu, sig, 0, 1)
 
-def iid_normal_spin_fms(data, mu, var):
+def iid_normal_spin_fms(data, mu, var, NS_amax=0.4, NS_mmax=2.5):
+    """
+    Truncated normal distribution for spin magnitudes. Enforces the truncation to be 
+    between 0 and 0.4 wherever the mass is less than 2.5 Msun.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'a_1' and 'a_2'
+    mu : float
+        Truncated normal location parameter.
+    var : float
+        Truncated normal width parameter.
+    NS_amax : float
+        Maximum spin for neutron stars
+    NS_mmax : float
+        Maximum mass for neutron stars
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the truncated normal distribution.
+    """
     sig = jnp.sqrt(var)
     total_prob = jnp.zeros_like(data['a_1'])
     keys = data.keys()
@@ -431,8 +822,8 @@ def iid_normal_spin_fms(data, mu, var):
     regions = {'mass_1': m1, 'mass_2': m2}
     for ii in [1,2]:
         probs = jnp.where(
-            regions[f'mass_{ii}'] < 2.5, 
-            trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 0.4), 
+            regions[f'mass_{ii}'] < NS_mmax, 
+            trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, NS_amax), 
             trunc_gaussian(data[f'a_{ii}'], mu, sig, 0, 1)
             )
         total_prob += probs
@@ -440,9 +831,30 @@ def iid_normal_spin_fms(data, mu, var):
     return total_prob
 
 def tilt_model(data, mu, sig, zeta):
-    '''
-    Only difference here is that mu is allowed to be != 1, a free parameter
-    '''
+    """
+    Tilt distribution model allowing a free mean tilt parameter.
+
+    Models the joint distribution of the cosine tilts of both black holes
+    (`cos_tilt_1`, `cos_tilt_2`) as either:
+      - a truncated Gaussian centered at `mu` with width `sig`, with probability `zeta`, or
+      - an isotropic distribution, with probability `1 - zeta`.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'cos_tilt_1' and 'cos_tilt_2'.
+    mu : float
+        Mean of the truncated Gaussian.
+    sig : float
+        Standard deviation of the truncated Gaussian.
+    zeta : float
+        Mixture fraction for the field (truncated Gaussian) component.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probabilities of the tilt distribution.
+    """
     pfield1 = trunc_gaussian(data['cos_tilt_1'], mu, sig, -1, 1)
     pfield2 = trunc_gaussian(data['cos_tilt_2'], mu, sig, -1, 1)
 
@@ -456,16 +868,49 @@ def tilt_model(data, mu, sig, zeta):
 
 
 def tilt_default(data, sig, zeta):
-    '''
-    Here the tilt distribution is NOT iid, either BOTH isotropic or BOTH from field, truncated gaussian
-    '''
+    """
+    Default tilt distribution model.
+
+    Assumes the tilt distribution is not independent across components:
+    either both tilts are isotropic or both follow a truncated Gaussian
+    centered at `mu=1`.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'cos_tilt_1' and 'cos_tilt_2'.
+    sig : float
+        Standard deviation of the truncated Gaussian (mean fixed to 1).
+    zeta : float
+        Mixture fraction for the field (truncated Gaussian) component.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probabilities of the tilt distribution.
+    """
     return tilt_model(data, 1., sig, zeta)
 
 
 def tilt_iid(data, mu, sig, zeta):
-    '''
-    here, the tilt distribution is assumed to be IID, a truncated normal plus a isotropic component
-    '''
+    """
+    Assumes the tilt distribution is independent and identically
+    distributed across components, using the isotropic + gaussian model
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'cos_tilt_1' and 'cos_tilt_2'.
+    sig : float
+        Standard deviation of the truncated Gaussian (mean fixed to 1).
+    zeta : float
+        Mixture fraction for the field (truncated Gaussian) component.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probabilities of the tilt distribution.
+    """
     pfield1 = trunc_gaussian(data['cos_tilt_1'], mu, sig, -1, 1)
     pfield2 = trunc_gaussian(data['cos_tilt_2'], mu, sig, -1, 1)
 
@@ -490,10 +935,32 @@ def spin_default(data, mu, var, sig_tilt, zeta):
 
 @partial(jit, static_argnames=['rate_likelihood','return_likelihood_info'])
 def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
-    '''
-    event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
-    denominator weights are a 1d array of p(theta|lambda) / prior(theta)
-    '''
+    """
+    Hierarchical Bayesian likelihood for population inference.
+
+    Parameters
+    ----------
+    event_weights : jnp.ndarray
+        Array (n_events, n_samples) of log[p(θ|pop)/pi(θ|PE)] for each event posterior sample.
+    denominator_weights : jnp.ndarray
+        Array of log[p(θ|pop)/pi(θ|draw)] for injections.
+    total_injections : int
+        Number of injection samples.
+    live_time : float, optional
+        Observing time in years (default 1).
+    rate_likelihood : bool, optional
+        If True, include rate likelihood (default False).
+    return_likelihood_info : bool, optional
+        If True, return decomposition of likelihood and variances.
+
+    Returns
+    -------
+    tuple
+        If `return_likelihood_info=True`:
+            (lnL, var, [pe_lnL, vt_lnL], [pe_var, vt_var])
+        else:
+            (lnL, var)
+    """
     n_events, minimum_length = event_weights.shape
     numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
@@ -525,10 +992,25 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
         return ln_likelihood, ln_likelihood_variance
 
 def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1):
-    '''
-    event weights are a n_events by minimum_length 2d array of ln[p(theta | lambda) / prior(theta)]
-    denominator weights are a 1d array of p(theta|lambda) / prior(theta)
-    '''
+    """
+    Poisson rate likelihood for hierarchical inference.
+
+    Parameters
+    ----------
+    event_weights : jnp.ndarray
+        Array (n_events, n_samples) of log[p(θ|pop)/pi(θ|PE)] for each event posterior sample.
+    denominator_weights : jnp.ndarray
+        Array of log[p(θ|pop)/pi(θ|draw)] for injections.
+    total_injections : int
+        Number of injection samples.
+    live_time : float, optional
+        Observing time in years (default 1).
+
+    Returns
+    -------
+    tuple
+        (lnL, expected_events, pe_var, vt_var, total_var)
+    """
     n_events, minimum_length = event_weights.shape
     numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
