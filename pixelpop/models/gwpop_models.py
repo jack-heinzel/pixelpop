@@ -162,6 +162,7 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
             m1 = data['mass_1']
     else:
         m1 = data
+        isLogMass = False
     power_law = powerlaw(m1, slope, minimum, maximum)
     smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
     peak = gaussian(m1, mpp, sigpp)
