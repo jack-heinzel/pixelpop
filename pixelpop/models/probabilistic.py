@@ -25,81 +25,64 @@ def setup_probabilistic_model(
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
         constraint_funcs=[], log='default',
         ):
-    '''
+    """
+    Construct a hierarchical probabilistic model for GW population inference.
+
+    This function sets up both parametric and nonparametric (CAR/ICAR) components
+    of a gravitational-wave population model, returning a NumPyro-compatible model
+    along with suitable initial values for MCMC warmup.
+
     Parameters
     ----------
-    posteriors: dict
-        A dictionary of the posterior samples, gwparameter key (e.g., mass_1)
-        to (j)np.NDarray shaped as (Nobs,Nsample). Should also contain a 
-        'ln_prior' entry
-    injections: dict
-        A dictionary of the found injections, gwparameter key (e.g., mass_1)
-        to (j)np.NDarray shaped as (Nfound). Should also contain a 'ln_prior'
-        entry, and 'total_generated': float/int and 'analysis_time': float
-        entry
-    parameters: list
-        list of strings, containing the parameters over which the pixelpop model
-        was defined    
-    other_parameters: list
-        list of strings, containing the parameters for the other parameters 
-        necessary in the population model
-    bins: int or list
-        number of bins along each axis
-    length_scales: bool
-        whether to assume a different coupling parameter along each direction.
-        By default is set to false, e.g., uses the same universal coupling 
-        between nearest neighbor bins
-    minima: dict
-        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to the 
-        minimum value in the space. If no key is passed, defaults to typical bbh 
-        values, e.g., mass_1: 3, mass_ratio: 0., chi_eff: -1
-    maxima: dict
-        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to the 
-        maximum value in the space. If no key is passed, defaults to typical bbh 
-        values, e.g., mass_1: 200, mass_ratio: 1., chi_eff: 1
-    parametric_models: dict    
-        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to 
-        parametric model function. If no key is passed, defaults to GWTC-3 default 
-        parametric models
-    hyperparameters: dict
-        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to a list 
-        of the (string) hyperparameter names for the corresponding parametric 
-        function
-    priors: dict
-        dictionary of hyperparmeter name to a tuple containing (zeroth index) the 
-        list of arguments for the numpyro distribution from which to sample the 
-        hyperparameter, and (first index) the numpyro distribution, e.g., 
-        'max_z': ([2.4], numpyro.distributions.Delta)
-    plausible_hyperparameters: dict
-        dictionary of gwparameter keys (mass_1, mass_ratio, chi_eff, etc.) to a 
-        plausible value of the parameter. Used for initializing the pixelpop model
-        to a reasonable place.
-    UncertaintyCut: float
-        value above which the likelihood uncertainty is regarded as too large, and 
-        is regularized sharply
-    random_initialization: bool
-        whether to initialize to a "reasonable" pixelpop model or a random white noise
-        for warmup
-    lower_triangular: bool
-        whether to use the lower_triangular formalism where p1 > p2 is assumed.
-        Usually this will only be used when joint mass_1, mass_2 inference is done 
-    prior_draw: bool
-        whether to include the likelihood in the probabilistic model
-    skip_nonparametric: bool
-        whether to only sample the parametric models
-    constraint_funcs: list
-        extra constraints on the hyperparameter prior spaces
-    log: str
-        Either "default" or "debug". In debug mode, print more values along the way
-        for debugging
-    
+    posteriors : dict
+        Posterior samples keyed by parameter name. Each entry is shaped
+        (Nobs, Nsample). Must also include 'ln_prior'.
+    injections : dict
+        Injection data keyed by parameter name. Each entry is shaped (Nfound).
+        Must include 'ln_prior', 'total_generated' (int/float), and
+        'analysis_time' (float).
+    parameters : list of str
+        Parameters for the nonparametric pixelized model (e.g., ["mass_1", "chi_eff"]).
+    other_parameters : list of str
+        Additional parameters modeled with parametric forms.
+    bins : int or list of int
+        Number of bins along each axis in the pixelized model.
+    length_scales : bool, optional
+        If True, use independent CAR coupling parameters per axis.
+    minima : dict, optional
+        Mapping of parameter → minimum value. Defaults to typical BBH values.
+    maxima : dict, optional
+        Mapping of parameter → maximum value. Defaults to typical BBH values.
+    parametric_models : dict, optional
+        Mapping of parameter → callable defining parametric model.
+    hyperparameters : dict, optional
+        Mapping of parameter → list of hyperparameter names for its parametric model.
+    priors : dict, optional
+        Mapping of hyperparameter → (args, distribution) prior specification.
+    plausible_hyperparameters : dict, optional
+        Mapping of parameter → plausible hyperparameter values (for initialization).
+    UncertaintyCut : float, optional
+        Cutoff for regularizing large likelihood uncertainties (default 1.0).
+    random_initialization : bool, optional
+        If True, initialize ICAR model with random noise instead of plausible values.
+    lower_triangular : bool, optional
+        If True, enforce p1 > p2 triangular support (used for joint m1–m2 models).
+    prior_draw : bool, optional
+        If True, construct model without likelihood factor.
+    skip_nonparametric : bool, optional
+        If True, disable the pixelized (nonparametric) component.
+    constraint_funcs : list of callables, optional
+        Extra constraint functions applied to hyperparameters.
+    log : {"default", "debug"}, optional
+        Logging verbosity.
+
     Returns
     -------
-    probabilistic_model: function
-        numpyro probabilistic model for use in numpyro MCMC methods
-    initial_value: dict
-        dictionary of initial values for starting warmup of MCMC
-    '''
+    probabilistic_model : callable
+        NumPyro-compatible probabilistic model.
+    initial_value : dict
+        Suggested initial values for MCMC warmup.
+    """
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
@@ -158,6 +141,27 @@ def setup_probabilistic_model(
         normalization_dof = tri_size * int(np.prod(bins[2:])) # lower triangular in first two dimensions
 
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, random_initialization):
+        """
+        Construct initial values for the pixelized (nonparametric) merger rate density.
+
+        Parameters
+        ----------
+        plausible_hyperparameters : dict
+            Plausible hyperparameter values used for initialization if not random.
+        parameters : list of str
+            Parameters included in the nonparametric model.
+        Nobs : int
+            Number of observed events.
+        inj_weights : ndarray
+            Logarithmic weights from injections, adjusted for prior volume.
+        random_initialization : bool
+            If True, initialize randomly; otherwise use plausible hyperparameters.
+
+        Returns
+        -------
+        initial_value : dict
+            Dictionary containing initial 'merger_rate_density' or 'base_interpolation'.
+        """
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
@@ -185,6 +189,30 @@ def setup_probabilistic_model(
         initial_value = get_initial_value(hyperparameters_plausible, parameters_psi, event_ln_dVTc.shape[0], inj_ln_dVTc-injections['log_prior'], random_initialization=random_initialization)
 
     def parametric_model(data, injections, event_weights, inj_weights):
+        """
+        Evaluate the parametric population model contribution.
+
+        Draws hyperparameters from their priors and adds the corresponding
+        parametric model values to the event and injection weights.
+
+        Parameters
+        ----------
+        data : dict
+            Event data, keyed by parameter name.
+        injections : dict
+            Injection data, keyed by parameter name.
+        event_weights : ndarray
+            Current accumulated event log-weights.
+        inj_weights : ndarray
+            Current accumulated injection log-weights.
+
+        Returns
+        -------
+        event_weights : ndarray
+            Updated event log-weights including parametric contributions.
+        inj_weights : ndarray
+            Updated injection log-weights including parametric contributions.
+        """
         sample = {}
         for key in hyperparameter_priors:
             args, distribution = hyperparameter_priors[key]
@@ -218,6 +246,33 @@ def setup_probabilistic_model(
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
+        """
+        Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
+
+        Either samples the log merger rate density from an intrinsic CAR prior
+        (with optional length scales) or falls back to a log-rate-only model if
+        skipped.
+
+        Parameters
+        ----------
+        event_bins : ndarray
+            Indices mapping events into multidimensional bins.
+        inj_bins : ndarray
+            Indices mapping injections into multidimensional bins.
+        event_weights : ndarray
+            Current accumulated event log-weights.
+        inj_weights : ndarray
+            Current accumulated injection log-weights.
+        skip : bool, optional
+            If True, skip the ICAR model and use only a single log-rate parameter.
+
+        Returns
+        -------
+        event_weights : ndarray
+            Updated event log-weights including nonparametric contributions.
+        inj_weights : ndarray
+            Updated injection log-weights including nonparametric contributions.
+        """
         if skip:
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
@@ -245,7 +300,33 @@ def setup_probabilistic_model(
         return event_weights, inj_weights
 
     def probabilistic_model(posteriors, injections):
-        
+        """
+        Full probabilistic model for hierarchical GW population inference.
+
+        Combines the nonparametric pixelized rate density with parametric models,
+        applies detection efficiency corrections, and evaluates the likelihood.
+
+        Parameters
+        ----------
+        posteriors : dict
+            Posterior samples from detected events.
+        injections : dict
+            Injection data including selection effects.
+
+        Side Effects
+        ------------
+        Stores deterministic nodes in NumPyro for logging:
+        - log_likelihood
+        - log_likelihood_variance
+        - pe_variance
+        - vt_variance
+        - Nexp
+
+        Returns
+        -------
+        None
+            (Factors likelihood into NumPyro’s computation graph.)
+        """
         event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'], skip=skip_nonparametric)
         event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
 
@@ -265,6 +346,25 @@ def setup_probabilistic_model(
     return probabilistic_model, initial_value
 
 def get_worst_rhat_neff(chain_samples):
+    """
+    Identify the parameter with the worst R-hat and effective sample size (Neff).
+
+    Parameters
+    ----------
+    chain_samples : dict
+        Dictionary of chain samples from NumPyro MCMC, with parameter name keys
+
+    Returns
+    -------
+    rhat_key : str
+        Name of parameter with the largest R-hat.
+    rhat_chain : ndarray
+        Sample chain of the worst R-hat parameter.
+    neff_key : str
+        Name of parameter with the smallest Neff.
+    neff_chain : ndarray
+        Sample chain of the worst Neff parameter.
+    """
     chain_summary = summary(chain_samples, group_by_chain=False)
     rhats = [[key, chain_summary[key]['r_hat']] for key in chain_summary]
     neffs = [[key, chain_summary[key]['n_eff']] for key in chain_summary]
@@ -293,7 +393,25 @@ def get_worst_rhat_neff(chain_samples):
     return rhat_key, rhat_chain, neff_key, neff_chain
 
 def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys):
-    
+    """
+    Calculate the size of the in-progress summary table.
+
+    Parameters
+    ----------
+    probabilistic_model : callable
+        NumPyro probabilistic model.
+    initial_value : dict
+        Dictionary of initial parameter values.
+    model_kwargs : dict
+        Keyword arguments for the probabilistic model (e.g., posterior and injection data).
+    print_keys : list of str
+        Keys for which to include values in the summary table.
+
+    Returns
+    -------
+    size : int
+        Number of rows expected in the summary table.
+    """
     conditioned_model = handlers.condition(probabilistic_model, data=initial_value)
     with handlers.seed(rng_seed=0):
         trace = handlers.trace(conditioned_model).get_trace(**model_kwargs)
@@ -311,58 +429,56 @@ def inference_loop(
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
     print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0
     ):
-    '''
+    """
+    Run MCMC inference with a probabilistic model and return posterior samples.
+
+    This function manages warmup, thinning, caching, diagnostics, and saving of
+    posterior samples across multiple independent chains.
+
     Parameters
     ----------
-    probabilistic_model: function
-        numpyro probabilistic model for use in numpyro MCMC methods
-    model_kwargs: dict
-        dictionary of kwargs for use in probabilistic model, usually will be 
-        'posteriors': dict of gwposterior, 'injections': dict of found injections
-    initial_value: dict
-        dictionary of initial value to initialize to before warmup phase
-    warmup: int
-        number of warmup iterations
-    tot_samples: int
-        total number of posterior samples to save per chain
-    thinning: int
-        number of steps between which each sample is recorded
-    pacc: float
-        target acceptance probability for NUTS sampler
-    maxtreedepth: int
-        take no more than 2^maxtreedepth - 1 steps in a particular iteration
-    num_samples: int
-        number of samples between which the chain metadata is printed (e.g., Neff, 
-        rhats, means of hyperparameters)
-    parallel: int
-        number of independent sequential chains to sample
-    rng_key: `jax.random.PRNGKey` object
-    cache_cadence: int
-        number of samples between which the chain is saved
-    run_dir: str
-        path to directory where to save the posterior samples
-    name: str
-        name of directory where to save the posterior samples, if this doesn't 
-        exist, create a new one with this name
-    print_keys: list
-        list of hyperparameter names to always print in intermediate numpyro summary
-        tables, e.g., ['Nexp', 'log_likelihood_variance'], etc.
-    dense_mass: bool
-        whether to optimize a mass matrix including off-diagonal terms. Definitely you
-        should basically always keep this off.
-    chain_offset: int
-        when saving new chains, offset the chain_num in the name 
-        f'chain_{chain_num}_samples.h5' by this offset. Useful whenever there are 
-        existing chains that you want to keep. Otherwise, chains are silently over-
-        written.
+    probabilistic_model : callable
+        NumPyro probabilistic model to sample from.
+    model_kwargs : dict, optional
+        Arguments passed to the probabilistic model (e.g., posterior and injection data).
+    initial_value : dict, optional
+        Initial parameter values for warmup.
+    warmup : int, optional
+        Number of warmup iterations (default 10000).
+    tot_samples : int, optional
+        Total number of posterior samples to save per chain.
+    thinning : int, optional
+        Interval between recorded samples (default 100).
+    pacc : float, optional
+        Target acceptance probability for NUTS (default 0.65).
+    maxtreedepth : int, optional
+        Maximum tree depth for NUTS (default 10).
+    num_samples : int, optional
+        Frequency of printing chain diagnostics (default 1).
+    parallel : int, optional
+        Number of independent chains to run (default 1).
+    rng_key : jax.random.PRNGKey, optional
+        Random key for reproducibility.
+    cache_cadence : int, optional
+        Interval (in samples) between checkpoint saves (default 1).
+    run_dir : str, optional
+        Directory to save output chains (default "./").
+    name : str, optional
+        Subdirectory name for this run.
+    print_keys : list of str, optional
+        Keys to include in periodic summaries (default ["Nexp", "log_likelihood", "log_likelihood_variance"]).
+    dense_mass : bool, optional
+        Whether to use a dense mass matrix in NUTS (default False).
+    chain_offset : int, optional
+        Offset applied to chain index when saving outputs (default 0).
 
     Returns
     -------
-    samples: list
-        list of dictionaries of samples in independent chains
-    mcmc: `numpyro.infer.mcmc.MCMC` object
-        completed MCMC sampler (probably we don't need to return this)
-    '''
+    samples : list of dict
+        List of posterior samples for each chain.
+    mcmc : numpyro.infer.MCMC
+        Completed MCMC sampler instance.
+    """
 
     table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
 

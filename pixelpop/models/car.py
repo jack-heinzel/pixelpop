@@ -14,6 +14,34 @@ from numpyro.distributions.util import (
 from functools import reduce
 
 def initialize_ICAR(dimension, length_scales=False):
+    """
+    Construct an Intrinsic Conditional Autoregressive (ICAR) distribution class.
+
+    The returned class defines a NumPyro-compatible ICAR prior with optional
+    length-scale parameters. The ICAR is a special case of a Gaussian Markov
+    random field where the precision matrix is determined by adjacency
+    matrices of spatial sites.
+
+    Parameters
+    ----------
+    dimension : int
+        Number of spatial dimensions.
+    length_scales : bool, optional (default=False)
+        If True, allows dimension-specific log-scale parameters. If False,
+        a single log-scale parameter is shared.
+
+    Returns
+    -------
+    ICAR_length_scales : class
+        A NumPyro `Distribution` subclass implementing the ICAR prior, with
+        methods for `log_prob`, shape inference, and JAX pytree compatibility.
+
+    Notes
+    -----
+    - The distribution is improper (cannot sample directly).
+    - Adjacency matrices must be symmetric with all sites having neighbors.
+    - Sparse and dense adjacency matrix representations are supported.
+    """
 
     class _RealTensor(constraints._IndependentConstraint, constraints._SingletonConstraint):
         def __init__(self):
@@ -30,23 +58,55 @@ def initialize_ICAR(dimension, length_scales=False):
         )
 
     class ICAR_length_scales(Distribution):
-        r"""
-        The Intrinsic Conditional Autoregressive (ICAR) distribution is a special case of the multivariate
-        normal in which the precision matrix is structured according to the adjacency matrix of
-        sites. The amount of autocorrelation between sites is controlled by ``correlation``. The
-        distribution is a popular prior for areal spatial data.
+        """
+        Intrinsic Conditional Autoregressive (ICAR) distribution with optional
+        length-scale parameters for each spatial dimension.
 
-        :param float or ndarray loc: mean of the multivariate normal
-        :param float correlation: autoregression parameter. For most cases, the value should lie
-            between 0 (sites are independent, collapses to an iid multivariate normal) and
-            1 (perfect autocorrelation between sites), but the specification allows for negative
-            correlations.
-        :param float conditional_precision: positive precision for the multivariate normal
-        :param ndarray or scipy.sparse.csr_matrix adj_matrix: symmetric adjacency matrix where 1
-            indicates adjacency between sites and 0 otherwise. :class:`jax.numpy.ndarray` ``adj_matrix`` is
-            supported but is **not** recommended over :class:`numpy.ndarray` or :class:`scipy.sparse.spmatrix`.
-        :param bool is_sparse: whether to use a sparse form of ``adj_matrix`` in calculations (must be True if
-            ``adj_matrix`` is a :class:`scipy.sparse.spmatrix`)
+        The ICAR distribution is a Gaussian Markov random field with a precision
+        matrix determined by adjacency matrices of sites.
+
+        Parameters
+        ----------
+        log_sigmas : array-like, shape (dimension,) or scalar
+            Logarithm of the standard deviation(s) of the ICAR prior. If `length_scales`
+            is True, can provide a separate log_sigma for each dimension; otherwise,
+            a single log_sigma is broadcast to all dimensions.
+        single_dimension_adj_matrices : list of ndarray or sparse matrices
+            List of adjacency matrices, one per spatial dimension. Each matrix must
+            be symmetric, with all sites having at least one neighbor.
+        is_sparse : bool, optional (default=False)
+            Whether to treat the adjacency matrices as sparse. Must be True if the
+            adjacency matrices are `scipy.sparse` objects.
+        validate_args : bool, optional
+            Whether to validate input arguments.
+
+        Attributes
+        ----------
+        log_sigmas : jnp.ndarray
+            Broadcasted log-scale parameters for each dimension.
+        single_dimension_adj_matrices : list
+            List of adjacency matrices (sparse or dense) for each dimension.
+        is_sparse : bool
+            Indicates whether sparse operations are used.
+
+        Methods
+        -------
+        log_prob(phi)
+            Compute the log-probability of the field `phi` under the ICAR prior.
+        sample(key, sample_shape=())
+            Not implemented; ICAR is improper and cannot be sampled directly.
+        infer_shapes(log_sigmas, single_dimension_adj_matrices)
+            Utility method to infer batch and event shapes.
+        tree_flatten()
+            Support for JAX pytree flattening.
+        tree_unflatten(aux_data, params)
+            Support for JAX pytree unflattening.
+
+        Notes
+        -----
+        - The ICAR prior is improper; its log-probability is defined up to a constant.
+        - Sparse adjacency matrices can be used for efficiency but must be symmetric.
+        - The distribution is suitable as a prior in hierarchical models.
         """
 
         arg_constraints = {
@@ -219,6 +279,30 @@ def initialize_ICAR(dimension, length_scales=False):
     return ICAR_length_scales
 
 def lower_triangular_map(bins):
+    """
+    Build a mapping from vectorized lower-triangular indices to a full symmetric matrix.
+
+    Given the number of bins (matrix size), this returns a function that reconstructs
+    a symmetric matrix from an array storing only the unique lower-triangular entries.
+
+    Parameters
+    ----------
+    bins : int
+        Size of the symmetric matrix (number of rows/columns).
+
+    Returns
+    -------
+    symmetric_from_tri : function
+        A function that takes an array of lower-triangular elements and
+        returns a symmetric `(bins, bins, ...)` array.
+
+    Examples
+    --------
+    >>> sym_from_tri = lower_triangular_map(3)
+    >>> arr = jnp.arange(6)  # lower-triangular entries
+    >>> sym_from_tri(arr).shape
+    (3, 3)
+    """
     sym_shape = jnp.array([bins,bins])
     a, b = jnp.unravel_index(jnp.arange(bins**2), sym_shape)
     a, b = jnp.minimum(a, b), jnp.maximum(a, b)
@@ -231,7 +315,29 @@ def lower_triangular_map(bins):
     return symmetric_from_tri
 
 def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
-    
+    """
+    Compute the log-probability for an ICAR prior with a lower-triangular parameterization.
+
+    This function evaluates the quadratic form and normalization term of the
+    ICAR log-density given adjacency matrices and a scalar log-scale.
+
+    Parameters
+    ----------
+    phi : jnp.ndarray
+        Field values on the spatial grid.
+    n : int
+        Total number of sites, e.g., the number of degrees of freedom, n = bins * (bins+1) / 2).
+    log_sigma : float
+        Log standard deviation of the prior.
+    single_dimension_adj_matrices : list of ndarray or sparse matrices
+        List of adjacency matrices, one for each spatial dimension.
+
+    Returns
+    -------
+    float
+        The log-probability of `phi` under the ICAR prior.
+    """
+
     prec = jnp.exp(-2*log_sigma) 
     dimension = len(single_dimension_adj_matrices)
     prec_mat = []
