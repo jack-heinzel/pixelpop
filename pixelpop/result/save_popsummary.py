@@ -43,8 +43,13 @@ def get_posterior(run, file_label="", rundir='../results/single_length_scale/o4b
 
 def get_run_metadata(file_label, datadir='../data'):
     file_path = os.path.join(datadir, file_label, 'event_data.json')
-    with open(file_path, 'r') as file:
-        metadata = json.load(file)
+    try:
+        with open(file_path, 'r') as file:
+            metadata = json.load(file)
+    except FileNotFoundError:
+        file_path = os.path.join(datadir, file_label, 'data', 'event_data.json')
+        with open(file_path, 'r') as file:
+            metadata = json.load(file)
     wf_paths = metadata.keys()
     wfs = []
     for p in wf_paths:
@@ -170,9 +175,12 @@ def create_popsummary(
     else:
         log_norms = np.zeros_like(Nsamples)
     
-    parameters = pixelpop_parameters + other_parameters        
-    wfs, wf_paths, metadata = get_run_metadata(file_label=metadata_label, datadir=datadir)
-
+    parameters = pixelpop_parameters + other_parameters
+    try:
+        wfs, wf_paths, metadata = get_run_metadata(file_label=metadata_label, datadir=datadir)
+    except Exception as e:
+        print(f'Warning: {e}\nCould not load run metadata, skipping.')
+        wfs=[], wf_paths=[], metadata=[]
     h_keys = [x for x in posterior.keys() if posterior[x].ndim == 1]
     if not overwrite:
         if os.path.exists(popsummary_filepath):
