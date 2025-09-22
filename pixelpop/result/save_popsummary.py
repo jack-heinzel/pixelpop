@@ -208,18 +208,22 @@ def create_popsummary(
         # do something special
 
         skip_parameters = pixelpop_parameters[:2]
+        axes = tuple(range(3, len(pixelpop_parameters)+1))
 
         pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins+1))
         pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins+1))
-        assert posterior['merger_rate_density'].ndim == 3 # assure only two parameters FOR NOW
+        # assert posterior['merger_rate_density'].ndim == 3 # assure only two parameters FOR NOW
 
         dm1 = (maxima[pixelpop_parameters[0]] - minima[pixelpop_parameters[0]]) / bins
         dm2 = (maxima[pixelpop_parameters[1]] - minima[pixelpop_parameters[1]]) / bins
-        
-        posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) - np.log(2) # divide by 2
+        lda = np.log(np.array([
+            (maxima[pixelpop_parameters[ii]] - minima[pixelpop_parameters[ii]]) / bins for ii in range(2, len(pixelpop_parameters))
+            ]))
+
+        posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2
         posterior['merger_rate_density'] = np.log(np.tril(np.exp(posterior['merger_rate_density'])))
-        R = posterior['merger_rate_density'] - log_norms[:,None,None]
-        m1, m2 = LSE(R, axis=2) + np.log(dm2), LSE(R, axis=1) + np.log(dm1)
+        R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=(1,2)+axes)
+        m1, m2 = LSE(R, axis=(2,)+axes) + np.log(dm2) + np.sum(lda), LSE(R, axis=(1,)+axes) + np.log(dm1) + np.sum(lda)
     
         m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)
         m2 = np.concatenate((m2[:,0][:,None], m2), axis=1)
@@ -238,7 +242,12 @@ def create_popsummary(
             rates=np.exp(m2),
             overwrite=overwrite
             )
-    
+        for ii_par, par in enumerate(pixelpop_parameters[2:]):
+            sum_axes = (1,2) + axes[:ii_par] + axes[ii_par+1:]
+            total_d = np.log(dm1) + np.log(dm2) + np.sum(lda[:ii_par]) + np.sum(lda[ii_par+1:])
+            marginal = LSE(R, axis=sum_axes) + total_d - np.log(2)
+            posterior[f'log_marginal_{par}'] = marginal
+
     assert 'log_rate' in posterior
     lrs = posterior['log_rate'] - log_norms
     
@@ -283,7 +292,7 @@ def create_popsummary(
     pos = np.vstack([
         x.flatten() for x in x_axes
         ])
-    nd_pp = posterior['merger_rate_density'] - log_norms[:,None,None]
+    nd_pp = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=tuple(range(1, len(pixelpop_parameters)+1)))
     result.set_rates_on_grids(
         grid_key='joint_pixelpop_rate',
         grid_params=pixelpop_parameters,
