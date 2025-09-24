@@ -23,7 +23,7 @@ def setup_probabilistic_model(
         minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default',
+        constraint_funcs=[], log='default', scale_by_selection=False,
         ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -75,7 +75,9 @@ def setup_probabilistic_model(
         Extra constraint functions applied to hyperparameters.
     log : {"default", "debug"}, optional
         Logging verbosity.
-
+    scale_by_selection : bool, optional
+        If True, sample R' := R*\alpha(\Lambda) in each bin and rescale afterwards,
+        in order to remove correlations in the hyperposterior
     Returns
     -------
     probabilistic_model : callable
@@ -280,24 +282,24 @@ def setup_probabilistic_model(
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
         else:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
-
+        
+        if scale_by_selection:
+            scaled_site_name = 'scaled_rate_density'
+        else:
+            scaled_site_name = 'merger_rate_density'
         if lower_triangular:
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
-            merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
+            merger_rate_density = numpyro.deterministic(scaled_site_name, lt_map(base_interpolation))
             numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
 
         else:
-            merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
-            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
-            for ii, p in enumerate(parameters):
-                sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
-                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
+            merger_rate_density = numpyro.sample(scaled_site_name, ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
 
         event_weights += merger_rate_density[event_bins] # (69,3194)
         inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
-        return event_weights, inj_weights
+        return event_weights, inj_weights, merger_rate_density
 
     def probabilistic_model(posteriors, injections):
         """
@@ -327,8 +329,19 @@ def setup_probabilistic_model(
         None
             (Factors likelihood into NumPyro’s computation graph.)
         """
-        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'], skip=skip_nonparametric)
+        event_weights, inj_weights, merger_rate_density = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'], skip=skip_nonparametric)
         event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
+
+        if scale_by_selection:
+            log_scale = 0.5 * LSE(inj_weights) - 0.5*jnp.log(injections['total_generated'])
+            event_weights -= log_scale
+            inj_weights -= log_scale
+            numpyro.deterministic('merger_rate_density', merger_rate_density - log_scale)
+        if not lower_triangular:
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
+            for ii, p in enumerate(parameters):
+                sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
+                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
         taper = smooth(total_var, UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
