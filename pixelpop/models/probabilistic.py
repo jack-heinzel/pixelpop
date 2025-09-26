@@ -142,6 +142,11 @@ def setup_probabilistic_model(
         unique_sample_shape = (tri_size,) + tuple(bins[2:])
         normalization_dof = tri_size * int(np.prod(bins[2:])) # lower triangular in first two dimensions
 
+    if scale_by_selection:
+        scaled_site_name = 'scaled_rate_density'
+    else:
+        scaled_site_name = 'merger_rate_density'
+
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, random_initialization):
         """
         Construct initial values for the pixelized (nonparametric) merger rate density.
@@ -172,7 +177,7 @@ def setup_probabilistic_model(
             if lower_triangular:
                 return {'base_interpolation': np.random.normal(loc=0, scale=2, size=unique_sample_shape)}
             else:
-                return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
+                return {scaled_site_name: np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
@@ -182,7 +187,7 @@ def setup_probabilistic_model(
             pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
             Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
             initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
-            return {'merger_rate_density': Rexp + initial_interpolation}
+            return {scaled_site_name: Rexp + initial_interpolation}
 
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
     if skip_nonparametric:
@@ -283,10 +288,6 @@ def setup_probabilistic_model(
         else:
             lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
         
-        if scale_by_selection:
-            scaled_site_name = 'scaled_rate_density'
-        else:
-            scaled_site_name = 'merger_rate_density'
         if lower_triangular:
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
             merger_rate_density = numpyro.deterministic(scaled_site_name, lt_map(base_interpolation))
