@@ -23,7 +23,7 @@ def setup_probabilistic_model(
         minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default',
+        constraint_funcs=[], log='default', scale_by_sigma=None,
         ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -75,6 +75,9 @@ def setup_probabilistic_model(
         Extra constraint functions applied to hyperparameters.
     log : {"default", "debug"}, optional
         Logging verbosity.
+    scale_by_sigma : None or bool
+        If true, sample from CAR model with sigma = 1 and scale by sigma. If None,
+        defaults to prior_draw boolean value
 
     Returns
     -------
@@ -83,6 +86,10 @@ def setup_probabilistic_model(
     initial_value : dict
         Suggested initial values for MCMC warmup.
     """
+    if scale_by_sigma is None:
+        scale_by_sigma = prior_draw
+    if scale_by_sigma and length_scales:
+        raise ValueError("Cannot scale by different sigmas in different axes")
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
@@ -165,12 +172,15 @@ def setup_probabilistic_model(
         bin_med = [(bin_axes[ii][:-1] + bin_axes[ii][1:])/2 for ii in range(dimension)]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
-
+        if scale_by_sigma:
+            return_key = 'latent_density'
+        else:
+            return_key = 'merger_rate_density'
         if random_initialization:
             if lower_triangular:
                 return {'base_interpolation': np.random.normal(loc=0, scale=2, size=unique_sample_shape)}
             else:
-                return {'merger_rate_density': np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
+                return {return_key: np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
@@ -180,8 +190,8 @@ def setup_probabilistic_model(
             pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
             Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
             initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
-            return {'merger_rate_density': Rexp + initial_interpolation}
-
+            return {return_key: Rexp + initial_interpolation}    
+            
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
     if skip_nonparametric:
         initial_value = {}
@@ -283,11 +293,20 @@ def setup_probabilistic_model(
 
         if lower_triangular:
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
-            merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
-            numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
+            if scale_by_sigma:
+                merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation*jnp.exp(lsigma)))
+                numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, 0., adj_matrices))
+            else:
+                merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
+                numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
+            
 
         else:
-            merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
+            if scale_by_sigma:
+                latent_density = numpyro.sample('latent_density', ICAR_model(log_sigmas=0., single_dimension_adj_matrices=adj_matrices, is_sparse=True))
+                merger_rate_density = numpyro.deterministic('merger_rate_density', jnp.exp(lsigma) * latent_density) 
+            else:
+                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
             for ii, p in enumerate(parameters):
                 sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
@@ -297,6 +316,8 @@ def setup_probabilistic_model(
         inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
+        if prior_draw:
+            numpyro.factor("effective_likelihood", -jnp.mean(merger_rate_density)**2 / 2 / jnp.exp(2*lsigma))
         return event_weights, inj_weights
 
     def probabilistic_model(posteriors, injections):
