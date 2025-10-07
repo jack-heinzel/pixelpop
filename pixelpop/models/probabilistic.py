@@ -317,7 +317,7 @@ def setup_probabilistic_model(
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
         if prior_draw:
-            numpyro.factor("effective_likelihood", -jnp.mean(merger_rate_density)**2 / 2 / jnp.exp(2*lsigma))
+            numpyro.factor("effective_likelihood", -jnp.mean(merger_rate_density**2) / 2 / jnp.exp(2*lsigma))
         return event_weights, inj_weights
 
     def probabilistic_model(posteriors, injections):
