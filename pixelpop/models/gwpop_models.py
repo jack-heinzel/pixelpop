@@ -344,7 +344,8 @@ def chieff_gaussian(data, mean, sig):
 
 def trunc_gaussian(data, mean, sig, lower, upper):
     """
-    Truncated Gaussian distribution.
+    Truncated Gaussian distribution. Numerically stable implementation adapted from
+    https://github.com/ColmTalbot/gwpopulation/blob/6e60056be9ae809515eb4576e1ab581c5607a49c/gwpopulation/utils.py#L133-L183
 
     Parameters
     ----------
@@ -365,13 +366,27 @@ def trunc_gaussian(data, mean, sig, lower, upper):
         Log-probability density of the truncated Gaussian,
         with −INF outside [lower, upper].
     """
+    
+    def logsubexp(log_p, log_q):
+        return log_p + jnp.log(1 - jnp.exp(log_q - log_p))
 
+    up = (upper - mean) / sig
+    lo = (lower - mean) / sig
+
+    px = -(data - mean)**2 / 2 / sig**2 - np.log(2.0 * np.pi) / 2.0 - jnp.log(sig)
+
+    # cf https://github.com/scipy/scipy/blob/v1.15.1/scipy/stats/_continuous_distns.py#L10189
+    log_norm = jnp.select(
+        [up <= 0, lo > 0, up > 0],
+        [
+            logsubexp(scs.log_ndtr(up), scs.log_ndtr(lo)),
+            logsubexp(scs.log_ndtr(-lo), scs.log_ndtr(-up)),
+            jnp.log1p(-scs.ndtr(lo) - scs.ndtr(-up)),
+        ],
+        jnp.nan,
+    )
+    px -= log_norm
     in_support = jnp.logical_and(data < upper, data > lower)
-    px = -(data - mean)**2 / 2 / sig**2
-    up = (upper - mean) / sig / jnp.sqrt(2)
-    lo = (lower - mean) / sig / jnp.sqrt(2)
-    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
-    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
     return jnp.where(in_support, px - norm, -jnp.inf*jnp.ones_like(data))
 
 def lognormal(data, mean, sig):
