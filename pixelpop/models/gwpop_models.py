@@ -387,7 +387,7 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     )
     px -= log_norm
     in_support = jnp.logical_and(data < upper, data > lower)
-    return jnp.where(in_support, px - norm, -jnp.inf*jnp.ones_like(data))
+    return jnp.where(in_support, px, -jnp.inf*jnp.ones_like(data))
 
 def lognormal(data, mean, sig):
     """
