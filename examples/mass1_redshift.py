@@ -6,10 +6,6 @@ Author: Jack Heinzel
 '''
 
 import jax
-if jax.__version__ == '0.7.0':
-    import jax.experimental.pjit
-    from jax.extend.core.primitives import jit_p
-    jax.experimental.pjit.pjit_p = jit_p
 import numpyro
 import numpy as np
 from jax import numpy as jnp
