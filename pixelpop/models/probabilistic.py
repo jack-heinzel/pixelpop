@@ -23,7 +23,7 @@ def setup_probabilistic_model(
         minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default', scale_by_sigma=None,
+        constraint_funcs=[], log='default', scale_by_sigma=None, coupling_prior=[(-3,3), dist.Uniform]
         ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -287,9 +287,9 @@ def setup_probabilistic_model(
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
         if length_scales:
-            lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=(dimension,))
+            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
         else:
-            lsigma = numpyro.sample('lnsigma', dist.Uniform(-3,3), sample_shape=()) 
+            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
 
         if lower_triangular:
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
