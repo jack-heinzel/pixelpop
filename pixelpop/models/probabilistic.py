@@ -516,7 +516,7 @@ def inference_loop(
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
-        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
+        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)-1))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
