@@ -230,10 +230,6 @@ def setup_probabilistic_model(
             Event data, keyed by parameter name.
         injections : dict
             Injection data, keyed by parameter name.
-        event_weights : ndarray
-            Current accumulated event log-weights.
-        inj_weights : ndarray
-            Current accumulated injection log-weights.
 
         Returns
         -------
@@ -313,10 +309,6 @@ def setup_probabilistic_model(
             Indices mapping events into multidimensional bins.
         inj_bins : ndarray
             Indices mapping injections into multidimensional bins.
-        event_weights : ndarray
-            Current accumulated event log-weights.
-        inj_weights : ndarray
-            Current accumulated injection log-weights.
         skip : bool, optional
             If True, skip the ICAR model and use only a single log-rate parameter.
 
@@ -350,6 +342,8 @@ def setup_probabilistic_model(
 
             # S: need to have only triangle to calculate normalization and don't add twice.
             # S: TODO: ask Jack
+            # S: todo: check that this makes sense actually bc merger_rate_density actually has shape (69,3194) = (numevents, numsamples)
+            # S: ask about scale_by_sigma
             tri_mask_2d = jnp.tril(jnp.ones((bins[0], bins[1]), dtype=bool))
             extra = (1,) * (merger_rate_density.ndim - 2)
             tri_mask = tri_mask_2d.reshape((bins[0], bins[1]) + extra)
@@ -373,8 +367,8 @@ def setup_probabilistic_model(
                 sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
                 numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
 
-        event_weights_PP += merger_rate_density[event_bins] # (69,3194)
-        inj_weights_PP += merger_rate_density[inj_bins]
+        event_weights_PP = merger_rate_density[event_bins] # (69,3194)
+        inj_weights_PP = merger_rate_density[inj_bins]
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights_PP), iw=LSE(inj_weights_PP))
         if prior_draw:
