@@ -19,12 +19,28 @@ import h5ify
 from numpyro import handlers
 
 def setup_probabilistic_model(
-        posteriors, injections, parameters, other_parameters, bins, length_scales=False, 
-        minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
-        plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
-        lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default', scale_by_sigma=None, coupling_prior=[(-3,3), dist.Uniform]
-        ):
+    posteriors, 
+    injections, 
+    parameters, 
+    other_parameters, 
+    bins, 
+    length_scales=False, 
+    minima={}, 
+    maxima={}, 
+    parametric_models={}, 
+    hyperparameters={}, 
+    priors={}, 
+    plausible_hyperparameters={}, 
+    UncertaintyCut=1., 
+    random_initialization=True, 
+    lower_triangular=False, 
+    prior_draw=False, 
+    skip_nonparametric=False, 
+    constraint_funcs=[], 
+    log='default', 
+    scale_by_sigma=None, 
+    coupling_prior=[(-3,3), dist.Uniform]
+):
     """
     Construct a hierarchical probabilistic model for GW population inference.
 
@@ -111,6 +127,7 @@ def setup_probabilistic_model(
         inj_ln_dVTc = jnp.zeros_like(injections['log_prior'])
         
     event_bins, inj_bins, bin_axes, logdV = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
+    
     # update models
     parameter_to_hyperparameters = gwparameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
@@ -119,7 +136,8 @@ def setup_probabilistic_model(
     hyperparameters_plausible.update(plausible_hyperparameters)
 
     parameter_to_gwpop_model = {}
-    for p in other_parameters:
+    # S: update all possible models, including those of PP parameters
+    for p in parameters+other_parameters:
         if p in parametric_models:
             print(f'Updating {p} model from {gwparameter_to_model[p].__name__} to {parametric_models[p].__name__}')
             print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
@@ -130,7 +148,8 @@ def setup_probabilistic_model(
 
     # default priors
     hyperparameter_priors = {}
-    for p in other_parameters:
+    # S: update all possible models, including those of PP parameters
+    for p in parameters+other_parameters:
         for h in parameter_to_hyperparameters[p]:
             if h in priors:    
                 pprint = priors[h]
@@ -224,6 +243,14 @@ def setup_probabilistic_model(
             Updated injection log-weights including parametric contributions.
         """
         sample = {}
+        common_param_event = 0.
+        common_param_inj = 0.
+        strong_param_event = 0.
+        strong_param_inj = 0.
+
+        # S: sample log_R_strong
+        log_R_strong = numpyro.sample('log_R_strong', dist.Uniform(-60.0, 60.0))
+        
         for key in hyperparameter_priors:
             args, distribution = hyperparameter_priors[key]
             if distribution.__name__ == 'Delta':
@@ -231,31 +258,47 @@ def setup_probabilistic_model(
             else:
                 sample[key] = numpyro.sample(key, distribution(*args))        
         if log == 'debug':
-            for p in other_parameters:
+            # S: need to debug all parameters
+            for p in parameters+other_parameters:
                 jaxprint('[DEBUG] =================================')
                 jaxprint('[DEBUG] parametric parameters: {p}', p=p)
                 jaxprint('[DEBUG] =================================')       
                 for k in parameter_to_hyperparameters[p]:
                     jaxprint('[DEBUG] \t {k} sample: {s}', k=k, s=sample[k])
+                    
         for constraint_func in constraint_funcs:
             numpyro.factor(constraint_func.__name__, constraint_func(sample))
             if log == 'debug':
                 jaxprint('[DEBUG] constraint functions:', constraint_func.__name__, constraint_func(sample))
+                
         for p in other_parameters:
-            event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
-            inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
+            common_param_event += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
+            common_param_inj += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
+
+        for sp in parameters:
+            strong_param_event += parameter_to_gwpop_model[sp](data, *[sample[h] for h in parameter_to_hyperparameters[sp]])
+            strong_param_inj += parameter_to_gwpop_model[sp](injections, *[sample[h] for h in parameter_to_hyperparameters[sp]])
+            
             if log == 'debug':
-                jaxprint('[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(event_weights), iw=LSE(inj_weights))
-                if not jnp.isfinite(LSE(event_weights)):
+                jaxprint('[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(common_param_event), iw=LSE(common_param_inj))
+                jaxprint('[DEBUG] strong parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(strong_param_event), iw=LSE(strong_param_inj))
+                if not jnp.isfinite(LSE(common_param_event)):
                     for parameter in map_to_gwpop_parameters[p]:
-                        jaxprint('[DEBUG] inf event weights at {p}={d}', p=parameter, d=data[parameter][jnp.where(event_weights == jnp.inf)])
-                if not jnp.isfinite(LSE(inj_weights)):
+                        jaxprint('[DEBUG] inf event weights at {p}={d}', p=parameter, d=data[parameter][jnp.where(common_param_event == jnp.inf)])
+                if not jnp.isfinite(LSE(strong_param_event)):
                     for parameter in map_to_gwpop_parameters[p]:
-                        jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
-        return event_weights, inj_weights
+                        jaxprint('[DEBUG] inf event weights at {p}={d}', p=parameter, d=data[parameter][jnp.where(strong_param_event == jnp.inf)])
+                if not jnp.isfinite(LSE(common_param_inj)):
+                    for parameter in map_to_gwpop_parameters[p]:
+                        jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(common_param_inj == jnp.inf)])
+                if not jnp.isfinite(LSE(strong_param_inj)):
+                    for parameter in map_to_gwpop_parameters[p]:
+                        jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(strong_param_inj == jnp.inf)])
+        return common_param_event, common_param_inj, strong_param_event, strong_param_inj, log_R_strong
 
     ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
-    def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
+    
+    def nonparametric_model(event_bins, inj_bins, skip=False):
         """
         Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
 
@@ -283,9 +326,13 @@ def setup_probabilistic_model(
         inj_weights : ndarray
             Updated injection log-weights including nonparametric contributions.
         """
+        event_weights_PP = 0
+        inj_weights_PP = 0
+        
         if skip:
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
-            return event_weights + R[None,None], inj_weights + R[None]
+            return event_weights_PP + R[None,None], inj_weights_PP + R[None]
+            
         if length_scales:
             lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
         else:
@@ -293,32 +340,40 @@ def setup_probabilistic_model(
 
         if lower_triangular:
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
+            
             if scale_by_sigma:
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation*jnp.exp(lsigma)))
                 numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, 0., adj_matrices))
             else:
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
-                numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
-            
+                numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))   
 
+            # S: can still calculate the log_rate for mixture model purposes 
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density) + jnp.sum(logdV))
+            # S: add this line for mixture model diagnostics
+            log_R_pixel = numpyro.deterministic('log_R_pixel', normalization) 
+        
         else:
+            
             if scale_by_sigma:
                 latent_density = numpyro.sample('latent_density', ICAR_model(log_sigmas=0., single_dimension_adj_matrices=adj_matrices, is_sparse=True))
                 merger_rate_density = numpyro.deterministic('merger_rate_density', jnp.exp(lsigma) * latent_density) 
             else:
-                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
+                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))   
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
+            # S: add this line for mixture model diagnostics
+            log_R_pixel = numpyro.deterministic('log_R_pixel', normalization) 
             for ii, p in enumerate(parameters):
                 sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
                 numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
 
-        event_weights += merger_rate_density[event_bins] # (69,3194)
-        inj_weights += merger_rate_density[inj_bins]
+        event_weights_PP += merger_rate_density[event_bins] # (69,3194)
+        inj_weights_PP += merger_rate_density[inj_bins]
         if log == 'debug':
-            jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
+            jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights_PP), iw=LSE(inj_weights_PP))
         if prior_draw:
             numpyro.factor("effective_likelihood", -jnp.mean(merger_rate_density**2) / 2 / jnp.exp(2*lsigma))
-        return event_weights, inj_weights
+        return event_weights_PP, inj_weights_PP, log_R_pixel
 
     def probabilistic_model(posteriors, injections):
         """
@@ -348,8 +403,20 @@ def setup_probabilistic_model(
         None
             (Factors likelihood into NumPyro’s computation graph.)
         """
-        event_weights, inj_weights = nonparametric_model(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'], skip=skip_nonparametric)
-        event_weights, inj_weights = parametric_model(posteriors, injections, event_weights, inj_weights)
+        # S: calculate base event
+        base_event = event_ln_dVTc-posteriors['log_prior']
+        base_inj = inj_ln_dVTc-injections['log_prior']
+
+        # S: calculate event, inj weights from PixelPop
+        event_weights_PP, inj_weights_PP, log_R_pixel = nonparametric_model(event_bins, inj_bins, skip=skip_nonparametric)
+        common_param_event, common_param_inj, strong_param_event, strong_param_inj, log_R_strong = parametric_model(posteriors, injections)
+
+        # S: Mixture model. See notebook for details
+        event_weights = base_event + common_param_event + jnp.logaddexp(event_weights_PP, log_R_strong + strong_param_event)
+        inj_weights = base_inj + common_param_inj +  jnp.logaddexp(inj_weights_PP, log_R_strong + strong_param_inj)
+
+        # S: Diagnostics for the mixture model
+        numpyro.deterministic('xi_rate', jax.nn.sigmoid(log_R_pixel - log_R_strong))
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
         taper = smooth(total_var, UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
@@ -365,6 +432,7 @@ def setup_probabilistic_model(
             numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
 
     return probabilistic_model, initial_value
+
 
 def get_worst_rhat_neff(chain_samples):
     """
@@ -538,6 +606,7 @@ def inference_loop(
                 summary_dict['worst n_eff: '+neff] = neff_chain
                 
                 print_summary(summary_dict, group_by_chain=False)
+
                 os.makedirs(os.path.join(run_dir, name), exist_ok=True)
                 with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_metadata.txt'), 'w+') as f:
                     with redirect_stdout(f):

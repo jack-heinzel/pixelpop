@@ -10,36 +10,31 @@ import numpyro
 import numpy as np
 from jax import numpy as jnp
 import pandas as pd
+import pickle as pkl
 import pixelpop
 import h5py
 
 varcut = 1
 mmin = 3
 
-# dictionary of injections, containing 1D arrays. Must contain 
-# 'prior', 'total_generated' and 'analysis_time' keys in addition to GW parameters
-# adapted from publicly available GW injections at https://zenodo.org/records/7890398
-with h5py.File('data/GWTC3_injections.h5') as f:
-    injections = {k: f[k][()] for k in f.keys()}
-    
-# dictionary of gw samples, containing 2D arrays of shape (Nobs, NPE). Must contain 'prior' key 
-# in addition to GW parameters
-# adapted from publicly available GW posteriors at https://zenodo.org/records/6513631 and https://zenodo.org/records/8177023
-with h5py.File('data/GWTC3_posteriors.h5') as f:
-    _posteriors = {k: f[k][()] for k in f.keys()}
-    
-keys = ['mass_1', 'mass_ratio', 'a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2', 'redshift', 'prior']
-posteriors = {k: jnp.array([p[k] for p in _posteriors]) for k in keys}
+with open('data/posteriors_chieff.pkl', 'rb') as ff:
+    _posteriors = pkl.load(ff)
 
-print(f"I have {posteriors['mass_1'].shape[0]} events")
+with open('data/injection_set_chieff.pkl', 'rb') as ff:
+    injections = pkl.load(ff)
 
 def clean_data(data, min_m=mmin, max_m=200, max_z=2.3, remove=False):
     pixelpop.utils.data.clean_par(data, 'log_mass_1', jnp.log(min_m), jnp.log(max_m), remove=remove)
     pixelpop.utils.data.clean_par(data, 'redshift', 0., max_z, remove=remove)
     
+keys = ['mass_1', 'mass_ratio', 'a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2', 'redshift', 'prior']
+#posteriors = {k: jnp.array([p[k] for p in _posteriors]) for k in keys}
+
+print(f"I have {_posteriors['mass_1'].shape[0]} events")
+    
 # convert to log m1, log m2 space
 
-posteriors = pixelpop.utils.data.convert_m1_to_lm1(posteriors)
+posteriors = pixelpop.utils.data.convert_m1_to_lm1(_posteriors)
 injections = pixelpop.utils.data.convert_m1_to_lm1(injections)
 
 clean_data(posteriors)
@@ -72,13 +67,13 @@ output = pixelpop.models.probabilistic.inference_loop(
     probabilistic_model, 
     model_kwargs={'posteriors': posteriors, 'injections': injections}, 
     initial_value=initial_value,
-    warmup=500_000, 
-    tot_samples=1000,
-    thinning=1000,
+    warmup=500, 
+    tot_samples=100,
+    thinning=1,
     pacc=0.65,
     maxtreedepth=5,
-    num_samples=4,
-    parallel=5,
+    num_samples=1,
+    parallel=1,
     run_dir='../../results/',
     name=f'm1z_varcut{varcut}',
     print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance', 'lnsigma', 'beta'], 
