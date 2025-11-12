@@ -412,7 +412,6 @@ def lognormal(data, mean, sig):
     return px - denom
 
 # TODO: base Redshift function that takes in Psi evolution and returns log density
-
 def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization=False):
     """
     Redshift distribution model: power law in (1+z) weighted by comoving volume.
@@ -441,9 +440,13 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
     else:
         z = data
     zs_fixed = np.linspace(1e-5, max_z, 1000)
-    fixed_ln_dvc_dz = jnp.log(
-        4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
-        )
+    dvs = COSMO.differential_comoving_volume(zs_fixed)
+    if isinstance(dvs, units.quantity.Quantity):
+        dvs = 4*jnp.pi*dvs.to(units.Gpc**3 / units.sr).value
+    else:
+        dvs = 4*jnp.pi* 1e-9 * dvs
+    fixed_ln_dvc_dz = jnp.log(dvs)
+
     if normalize:
         dz = zs_fixed[1] - zs_fixed[0]
         test_ln_p = fixed_ln_dvc_dz + (lamb - 1) * jnp.log(1. + zs_fixed)
