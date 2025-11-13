@@ -19,9 +19,8 @@ def combine_chains(chain_1, chain_2):
         x[k] = np.concatenate((chain_1[k], chain_2[k]), axis=0)
     return x
 
-def get_posterior(run, file_label="", rundir='../results/single_length_scale/o4b', result_file_type='h5'):
-    fpath = os.path.join(rundir, '_'.join([file_label, run]), 'chain_*_samples.'+result_file_type)
-    print(fpath)
+def get_posterior(rundir, chain_regex='chain_*_samples', result_file_type='h5'):
+    fpath = os.path.join(rundir, chain_regex+'.'+result_file_type)
     paths = glob(fpath)
     print(f"I got {len(paths)} unique chains")
     chains = []
