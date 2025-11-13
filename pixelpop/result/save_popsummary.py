@@ -180,7 +180,7 @@ def create_popsummary(
         wfs, wf_paths, metadata = get_run_metadata(file_label=metadata_label, datadir=datadir)
     except Exception as e:
         print(f'Warning: {e}\nCould not load run metadata, skipping.')
-        wfs=[], wf_paths=[], metadata=[]
+        wfs, wf_paths, metadata = [], [], []
     h_keys = [x for x in posterior.keys() if posterior[x].ndim == 1]
     if not overwrite:
         if os.path.exists(popsummary_filepath):
