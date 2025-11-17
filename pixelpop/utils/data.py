@@ -50,16 +50,23 @@ def check_bins(event_bins, injection_bins, bins=100):
     if isinstance(bins, int):
         bins = (bins,)*len(event_bins)
 
+    problematic_posterior_samples = jnp.zeros_like(event_bins[0])
+    problematic_injections = jnp.zeros_like(injection_bins[0])
+    print(problematic_posterior_samples.shape, problematic_injections.shape)
     # first check if any -1 or (bins=100) in the list
     success = True
     for ii, b in enumerate(event_bins):
-        if jnp.any(jnp.logical_or(b == -1, b == bins[ii])):
+        bad = jnp.logical_or(b == -1, b == bins[ii])
+        if jnp.any(bad):
             warnings.warn('Some posterior samples are outside the PixelPop range. User should clean samples.')
             success = False
+            problematic_posterior_samples = problematic_posterior_samples[bad].set(jnp.inf)
     for ii, b in enumerate(injection_bins):
-        if jnp.any(jnp.logical_or(b == -1, b == bins[ii])):
+        bad = jnp.logical_or(b == -1, b == bins[ii])
+        if jnp.any(bad):
             warnings.warn('Some injection samples are outside the PixelPop range. User should clean samples.')
             success = False
+            problematic_injections = problematic_injections[bad].set(jnp.inf)
     
     # check if any posterior samples are in injection-free bins. Causes instabilities in PixelPop
     
@@ -68,18 +75,26 @@ def check_bins(event_bins, injection_bins, bins=100):
     flattened_ebins = jnp.ravel_multi_index(event_bins, bins)
     flattened_ibins = jnp.ravel_multi_index(injection_bins, bins)
 
-    isin = jnp.isin(flattened_ebins, flattened_ibins, kind='table')
+    isin = jnp.isin(flattened_ebins, flattened_ibins)
     if jnp.any(~isin):
         warnings.warn(
-            'Some posterior samples are in bins with no detectability.' \
-            'PixelPop is unstable to these Monte Carlo issues, and may put a spike at this bin.'
+            f'\n\tSome ({jnp.sum(~isin)}, {int(10_000*jnp.mean(~isin)+0.001)/100}%) posterior samples are in bins with no detectability.\n',
+            RuntimeWarning,
+            stacklevel=1
+            )
+        worst_ev_i, worst_ev = jnp.argsort(jnp.mean(~isin, axis=1))[-3:], jnp.array(jnp.sort(1e4*jnp.mean(~isin, axis=1))[-3:], dtype=int)/100
+        warnings.warn(
+            f'\n\tEvent #{worst_ev_i} has {worst_ev}% posterior samples in bins with no detectability.\n',
+            RuntimeWarning,
+            stacklevel=1
             )
         success = False
+        problematic_posterior_samples = problematic_posterior_samples.at[~isin].set(jnp.inf)
 
-    return success
+    return success, problematic_posterior_samples, problematic_injections
             
 
-def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxima={}, exit_on_error=True):
+def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxima={}, exit_on_error=False):
 
     bbh_minima = gwpop_models.bbh_minima.copy()
     bbh_maxima = gwpop_models.bbh_maxima.copy()
@@ -99,10 +114,15 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     inj_coordinates = [injections[par] for par in parameters]
     inj_bins = place_samples_in_bins(bin_axes, inj_coordinates)
 
-    # TODO: implement check for bin = -1 or bin = maximum (100=bins)
-    # TODO: implement check if event bins where inj bins are not
-    success = check_bins(event_bins, inj_bins, bins)
-    if exit_on_error and (not success):
-        raise IndexError('Event indices incompatible with injection indices in PixelPop.')
+    success, e_prior_mod, i_prior_mod = check_bins(event_bins, inj_bins, bins)
+    if not success:
+        if exit_on_error:
+            raise IndexError('Some event indices incompatible with injection indices in PixelPop.')
+        else:
+            warnings.warn(
+                '\n\tSome event indices incompatible with injection indices in PixelPop, setting prior values to jnp.inf\n',
+                RuntimeWarning,
+                stacklevel=6
+                )
 
-    return event_bins, inj_bins, bin_axes, logdV
+    return event_bins, inj_bins, bin_axes, logdV, e_prior_mod, i_prior_mod

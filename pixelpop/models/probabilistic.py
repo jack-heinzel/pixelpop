@@ -110,7 +110,11 @@ def setup_probabilistic_model(
         event_ln_dVTc = jnp.zeros_like(posteriors['log_prior'])
         inj_ln_dVTc = jnp.zeros_like(injections['log_prior'])
         
-    event_bins, inj_bins, bin_axes, logdV = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
+    event_bins, inj_bins, bin_axes, logdV, eprior, iprior = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
+    
+    posteriors['log_prior'] += eprior
+    injections['log_prior'] += iprior
+    
     # update models
     parameter_to_hyperparameters = gwparameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
