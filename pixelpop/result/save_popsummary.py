@@ -172,7 +172,7 @@ def create_popsummary(
                 )
             for ii in range(Nsamples)])
     else:
-        log_norms = np.zeros_like(Nsamples)
+        log_norms = np.zeros(Nsamples)
     
     parameters = pixelpop_parameters + other_parameters
     try:
