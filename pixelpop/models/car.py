@@ -356,6 +356,181 @@ class DiagonalizedICARTransform:
         std_lp = -jnp.sum(eigenbasis**2) / 2 - np.log(2*np.pi) * eigenbasis.size / 2
         return std_lp + 0.5*jnp.sum(jnp.log(self.multiD_eigenvalues))
 
+
+class _LogSimplex(constraints.ParameterFreeConstraint):
+    event_dim = 1
+    def __init__(self, logsumexp: ArrayLike) -> None:
+        self.logsumexp = logsumexp
+
+    def __call__(self, x: ArrayLike) -> ArrayLike:
+        x_sum = jax.scipy.special.logsumexp(x, axis=-1)
+        return (x <= 0).all(axis=-1) & (x_sum < self.logsumexp + 1e-6) & (x_sum > self.logsumexp - 1e-6)
+
+    def feasible_like(self, prototype: ArrayLike) -> ArrayLike:
+        return jnp.full_like(prototype, self.logsumexp - jnp.log(prototype.shape[-1]))
+
+logsimplex = _LogSimplex
+biject_to = numpyro.distributions.transforms.biject_to
+
+@biject_to.register(logsimplex)
+def _transform_to_logsimplex(constraint):
+    return ComposeTransform([
+        StickBreakingTransform(), 
+        ExpTransform().inv, 
+        AffineTransform(constraint.logsumexp, 1.)
+        ])
+
+
+class ICAR_normalized(Distribution):
+    '''
+    
+    TODO IMPLEMENT IN TERMS OF ONE D ADJ MATRICES
+
+    '''
+    arg_constraints = {
+        "log_sigma": constraints.real,
+        "adj_matrix": constraints.dependent(is_discrete=False, event_dim=2),
+        "dx": constraints.positive,
+    }
+    reparametrized_params = [
+        "log_sigma",
+        "adj_matrix",
+        "dx",
+    ]
+
+    pytree_aux_fields = ("is_sparse", "adj_matrix", "dx")
+
+    def __init__(
+        self,
+        log_sigma,
+        adj_matrix,
+        *,
+        is_sparse=False,
+        dx=1., 
+        validate_args=None,
+    ):
+        
+        assert jnp.ndim(log_sigma) == 0
+        self.is_sparse = is_sparse
+        self.dx = dx
+        batch_shape = ()
+        # print('batch shape is ', batch_shape)
+        if self.is_sparse:
+            if adj_matrix.ndim != 2:
+                raise ValueError(
+                    "Currently, we only support 2-dimensional adj_matrix. Please make a feature request",
+                    " if you need higher dimensional adj_matrix.",
+                )
+            if not (isinstance(adj_matrix, np.ndarray) or _is_sparse(adj_matrix)):
+                raise ValueError(
+                    "adj_matrix needs to be a numpy array or a scipy sparse matrix. Please make a feature",
+                    " request if you need to support jax ndarrays.",
+                )
+            self.adj_matrix = adj_matrix
+            # TODO: look into future jax sparse csr functionality and other developments
+        else:
+            assert not _is_sparse(adj_matrix), (
+                "single_dimension_adj_matrix is a sparse matrix so please specify `is_sparse=True`."
+            )
+                # TODO: look into static jax ndarray representation
+            (adj_matrix,) = promote_shapes(
+                adj_matrix, shape=batch_shape + adj_matrix.shape[-2:]
+            )
+            self.adj_matrix = adj_matrix
+
+        event_shape = (jnp.shape(adj_matrix)[-1],)
+
+        (self.log_sigma,) = promote_shapes(log_sigma, shape=batch_shape)
+
+        super(ICAR_normalized, self).__init__(
+            batch_shape=batch_shape,
+            event_shape=event_shape,
+            validate_args=validate_args,
+        )
+
+        if self._validate_args and (isinstance(self.adj_matrix, np.ndarray) or is_sparse):
+            assert (self.adj_matrix.sum(axis=-1) > 0).all() > 0, (
+                "all sites in adjacency matrix must have neighbours"
+            )
+
+            if self.is_sparse:
+                assert (self.adj_matrix != self.adj_matrix.T).nnz == 0, (
+                    "adjacency matrix must be symmetric"
+                )
+            else:
+                assert np.array_equal(
+                    self.adj_matrix, np.swapaxes(self.adj_matrix, -2, -1)
+                ), "adjacency matrix must be symmetric"
+
+    @property
+    def support(self) -> constraints.Constraint:
+        return logsimplex(-jnp.log(self.dx))
+    
+    def sample(self, key, sample_shape=()):
+        # cannot sample from an improper distribution
+        raise NotImplementedError 
+
+    @validate_sample
+    def log_prob(self, phi):
+
+        adj_matrix = self.adj_matrix
+        conditional_precision = jnp.exp(-2*self.log_sigma)
+        if self.is_sparse:
+            D = np.asarray(adj_matrix.sum(axis=-1))
+            adj_matrix = BCOO.from_scipy_sparse(adj_matrix)
+        else:
+            D = adj_matrix.sum(axis=-1)
+
+        n = D.shape[-1]
+
+        logprec = -2 * (n-1) * self.log_sigma
+
+        logquad = conditional_precision * jnp.sum(
+            phi
+            * (
+                D * phi
+                - (adj_matrix @ phi[..., jnp.newaxis]).squeeze(axis=-1)
+            ),
+            -1,
+        )
+
+        return 0.5 * (logprec - logquad)
+    
+    @staticmethod
+    def infer_shapes(log_sigma, adj_matrix):
+        event_shape = jnp.shape(adj_matrix)[-1]
+        batch_shape = lax.broadcast_shapes(
+            jnp.shape(log_sigma)[:-1], jnp.shape(adj_matrix)[:-2]
+        )
+        return batch_shape, event_shape
+
+    def tree_flatten(self):
+        data, aux = super().tree_flatten()
+        single_dimension_adj_matrix_data_idx = type(self).gather_pytree_data_fields().index("adj_matrix")
+        single_dimension_adj_matrix_aux_idx = type(self).gather_pytree_aux_fields().index("adj_matrix")
+
+        if not self.is_sparse:
+            aux = list(aux)
+            aux[single_dimension_adj_matrix_aux_idx] = None
+            aux = tuple(aux)
+        else:
+            data = list(data)
+            data[single_dimension_adj_matrix_data_idx] = None
+            data = tuple(data)
+        return data, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, params):
+        d = super().tree_unflatten(aux_data, params)
+        if not d.is_sparse:
+            adj_matrix_data_idx = cls.gather_pytree_data_fields().index("adj_matrix")
+            setattr(d, "adj_matrix", params[adj_matrix_data_idx])
+        else:
+            adj_matrix_aux_idx = cls.gather_pytree_aux_fields().index("adj_matrix")
+            setattr(d, "adj_matrix", aux_data[adj_matrix_aux_idx])
+        return d
+
+
 def lower_triangular_map(bins):
     """
     Build a mapping from vectorized lower-triangular indices to a full symmetric matrix.
