@@ -13,6 +13,16 @@ from numpyro.distributions.util import (
 
 from functools import reduce
 
+def add_outer(a, b):
+    a_exp = jnp.expand_dims(a, axis=tuple(range(a.ndim,b.ndim+a.ndim)))
+    b_exp = jnp.expand_dims(b, axis=tuple(range(0,a.ndim)))
+    return a_exp + b_exp
+
+def mult_outer(a, b):
+    a_exp = jnp.expand_dims(a, axis=tuple(range(a.ndim,b.ndim+a.ndim)))
+    b_exp = jnp.expand_dims(b, axis=tuple(range(0,a.ndim)))
+    return a_exp * b_exp
+
 def initialize_ICAR(dimension, length_scales=False):
     """
     Construct an Intrinsic Conditional Autoregressive (ICAR) distribution class.
@@ -222,7 +232,6 @@ def initialize_ICAR(dimension, length_scales=False):
                 prec_mat.append(jnp.asarray(scaled_single_prec))
                 lams.append(precs[ii]*lam)
 
-            add_outer = lambda a, b: jnp.expand_dims(a, axis=tuple(range(a.ndim,b.ndim+a.ndim)))+jnp.expand_dims(b, axis=tuple(range(0,a.ndim)))
             ar = reduce(add_outer, lams)
             # print(ar.shape)
             logdet = jnp.sum(jnp.log(ar.at[(0,)*dimension].set(jnp.sum(precs))))
@@ -277,6 +286,75 @@ def initialize_ICAR(dimension, length_scales=False):
             return d
 
     return ICAR_length_scales
+
+class DiagonalizedICARTransform:
+    '''
+    TODO: can we use the numpyro syntax more natively for this transform?
+
+    Relies on structure of kronecker sum to rapidly compute eigenbasis for the 
+    full adjacency structure, then sample in the diagonalized eigenbasis
+    '''
+    def __init__(
+            self, 
+            log_sigmas,
+            single_dimension_adj_matrices, 
+            is_sparse=False
+            ):
+
+        precision_mats = []
+        eigenvalue_list = []
+        self.log_sigmas = log_sigmas
+        self.eigenvector_list = []
+        self.dimension = len(single_dimension_adj_matrices)
+
+        precs = jnp.exp(-2*self.log_sigmas)
+        
+        for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
+            if is_sparse:
+                precision_mat = jnp.array(single_dimension_adj_matrix.toarray())
+            else:
+                assert not _is_sparse(single_dimension_adj_matrix), (
+                    "single_dimension_adj_matrix is a sparse matrix so please specify `is_sparse=True`."
+                )
+        
+            D = jnp.diag(jnp.sum(precision_mat, axis=1))
+            precision_mat = D - precision_mat
+            
+            eig_result = jnp.linalg.eigh(precision_mat, )
+            eigenvalues = eig_result.eigenvalues
+            eigenvalues = eigenvalues.at[0].set(0.)
+            eigenvectors = eig_result.eigenvectors
+            
+            precision_mats.append(precision_mat)
+            eigenvalue_list.append(precs[ii]*eigenvalues)
+            self.eigenvector_list.append(eigenvectors)
+
+        self.multiD_eigenvalues = reduce(add_outer, eigenvalue_list)
+        self.multiD_eigenvalues = self.multiD_eigenvalues.at[(0,)*self.dimension].set(jnp.sum(precs))
+        # to fix the scale, otherwise divide by zero bc improper
+
+    def __call__(self, eigenbasis):
+        '''
+        slick way to calculate the sum we want:
+
+        \sum_{ijk...} \alpha[i,j,k,...] v_1[i] \otimes v_2[j] \otimes v_3[k] \otimes ...
+
+        where v_1, v_2, ... are the eigenvectors 
+        '''
+
+        res = eigenbasis * self.multiD_eigenvalues ** (-1/2) 
+        for v in self.eigenvector_list:
+            res = jnp.tensordot(res, v, axes=(0, 1))
+
+        return res
+
+    def log_prob(self, eigenbasis):
+        if isinstance(eigenbasis, jnp.ndarray):
+            eigenbasis = eigenbasis.at[(0,)*jnp.ndim(eigenbasis)].set(0.)
+        elif isinstance(eigenbasis, np.ndarray):
+            eigenbasis[(0,)*jnp.ndim(eigenbasis)] = 0.
+        std_lp = -jnp.sum(eigenbasis**2) / 2 - np.log(2*np.pi) * eigenbasis.size / 2
+        return std_lp + 0.5*jnp.sum(jnp.log(self.multiD_eigenvalues))
 
 def lower_triangular_map(bins):
     """

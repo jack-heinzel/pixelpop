@@ -1,7 +1,7 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from .gwpop_models import * 
-from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
+from .car import initialize_ICAR, DiagonalizedICARTransform, lower_triangular_log_prob, lower_triangular_map
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
@@ -23,7 +23,8 @@ def setup_probabilistic_model(
         minima={}, maxima={}, parametric_models={}, hyperparameters={}, priors={}, 
         plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
-        constraint_funcs=[], log='default', scale_by_sigma=None, coupling_prior=[(-3,3), dist.Uniform]
+        constraint_funcs=[], log='default', scale_by_sigma=None, coupling_prior=[(-3,3), dist.Uniform],
+        sample_eigenbasis=False,
         ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -78,6 +79,8 @@ def setup_probabilistic_model(
     scale_by_sigma : None or bool
         If true, sample from CAR model with sigma = 1 and scale by sigma. If None,
         defaults to prior_draw boolean value
+    sample_eigenbasis : bool, optional
+        TODO
 
     Returns
     -------
@@ -178,13 +181,15 @@ def setup_probabilistic_model(
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
         if scale_by_sigma:
             return_key = 'latent_density'
+        elif sample_eigenbasis:
+            return_key = '_eigenbasis_sites'
         else:
             return_key = 'merger_rate_density'
         if random_initialization:
             if lower_triangular:
-                return {'base_interpolation': np.random.normal(loc=0, scale=2, size=unique_sample_shape)}
+                return {'base_interpolation': np.random.normal(loc=0, scale=1, size=unique_sample_shape)}
             else:
-                return {return_key: np.random.normal(loc=0, scale=2, size=interpolation_grid[0].shape)}
+                return {return_key: np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape)}
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
@@ -296,6 +301,7 @@ def setup_probabilistic_model(
             lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
 
         if lower_triangular:
+            # TODO: make this work also w sample_eigenbasis... if it seems promising
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
             if scale_by_sigma:
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation*jnp.exp(lsigma)))
@@ -306,11 +312,25 @@ def setup_probabilistic_model(
             
 
         else:
-            if scale_by_sigma:
+            if sample_eigenbasis:
+                mask = jnp.ones(bins, dtype=bool).at[(0,) * dimension].set(False)
+
+                _eigenbasis_sites = numpyro.sample(
+                    "_eigenbasis_sites",
+                    dist.Normal(0., 1.).expand(bins).mask(mask)
+                )
+                _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.ImproperUniform(dist.constraints.real, (), ()))
+                eigenbasis_sites = numpyro.deterministic('eigenbasis_sites', eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0))
+                merger_rate_density = numpyro.deterministic(
+                    'merger_rate_density',
+                    DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)
+                )
+            elif scale_by_sigma:
                 latent_density = numpyro.sample('latent_density', ICAR_model(log_sigmas=0., single_dimension_adj_matrices=adj_matrices, is_sparse=True))
                 merger_rate_density = numpyro.deterministic('merger_rate_density', jnp.exp(lsigma) * latent_density) 
             else:
                 merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
+            
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
             for ii, p in enumerate(parameters):
                 sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
