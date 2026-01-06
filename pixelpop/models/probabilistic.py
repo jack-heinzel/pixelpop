@@ -189,7 +189,9 @@ def setup_probabilistic_model(
             if lower_triangular:
                 return {'base_interpolation': np.random.normal(loc=0, scale=1, size=unique_sample_shape)}
             else:
-                return {return_key: np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape)}
+                return_dict = {return_key: np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape)}
+                if sample_eigenbasis:
+                    return_dict['_eigenbasis_site_0'] = np.random.normal(loc=0, scale=5)
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
