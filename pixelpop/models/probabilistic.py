@@ -199,7 +199,10 @@ def setup_probabilistic_model(
             pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
             Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
             initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
-            return {return_key: Rexp + initial_interpolation}    
+            return_dict = {return_key: Rexp + initial_interpolation}
+            if sample_eigenbasis:
+                return_dict['_eigenbasis_site_0'] = 0.
+            return return_dict
             
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
     if skip_nonparametric:
