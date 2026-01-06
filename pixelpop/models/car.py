@@ -1,6 +1,8 @@
 import numpy as np
 from jax import lax
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp as LSE
+from jax.typing import ArrayLike
 
 import numpyro
 from numpyro.distributions import constraints
@@ -363,7 +365,7 @@ class _LogSimplex(constraints.ParameterFreeConstraint):
         self.logsumexp = logsumexp
 
     def __call__(self, x: ArrayLike) -> ArrayLike:
-        x_sum = jax.scipy.special.logsumexp(x, axis=-1)
+        x_sum = LSE(x, axis=-1)
         return (x <= 0).all(axis=-1) & (x_sum < self.logsumexp + 1e-6) & (x_sum > self.logsumexp - 1e-6)
 
     def feasible_like(self, prototype: ArrayLike) -> ArrayLike:
