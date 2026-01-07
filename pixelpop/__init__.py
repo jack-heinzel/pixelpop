@@ -9,3 +9,4 @@ if jax.__version__ == '0.7.0':
 from . import models
 from . import utils
 from . import result
+from . import experimental
