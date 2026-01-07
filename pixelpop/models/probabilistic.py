@@ -1,7 +1,8 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from .gwpop_models import * 
-from .car import initialize_ICAR, DiagonalizedICARTransform, lower_triangular_log_prob, lower_triangular_map
+from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
+from ..experimental.car import DiagonalizedICARTransform
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
@@ -187,11 +188,16 @@ def setup_probabilistic_model(
             return_key = 'merger_rate_density'
         if random_initialization:
             if lower_triangular:
-                return {'base_interpolation': np.random.normal(loc=0, scale=1, size=unique_sample_shape)}
+                return_dict = {'base_interpolation': jnp.array(
+                    np.random.normal(loc=0, scale=1, size=unique_sample_shape)
+                    )}
             else:
-                return_dict = {return_key: np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape)}
+                return_dict = {return_key: jnp.array(
+                    np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape))
+                    }
                 if sample_eigenbasis:
-                    return_dict['_eigenbasis_site_0'] = np.random.normal(loc=0, scale=5)
+                    return_dict['_eigenbasis_site_0'] = np.random.normal(loc=0, scale=1)
+
         else:
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
@@ -204,7 +210,7 @@ def setup_probabilistic_model(
             return_dict = {return_key: Rexp + initial_interpolation}
             if sample_eigenbasis:
                 return_dict['_eigenbasis_site_0'] = 0.
-            return return_dict
+        return return_dict
             
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in parameters]
     if skip_nonparametric:
@@ -314,7 +320,6 @@ def setup_probabilistic_model(
             else:
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
                 numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
-            
 
         else:
             if sample_eigenbasis:
@@ -325,10 +330,13 @@ def setup_probabilistic_model(
                     dist.Normal(0., 1.).expand(bins).mask(mask)
                 )
                 _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.ImproperUniform(dist.constraints.real, (), ()))
-                eigenbasis_sites = numpyro.deterministic('eigenbasis_sites', eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0))
+                eigenbasis_sites = _eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0)
+                
                 merger_rate_density = numpyro.deterministic(
                     'merger_rate_density',
-                    DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)
+                    DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)(
+                        eigenbasis_sites
+                    )
                 )
             elif scale_by_sigma:
                 latent_density = numpyro.sample('latent_density', ICAR_model(log_sigmas=0., single_dimension_adj_matrices=adj_matrices, is_sparse=True))

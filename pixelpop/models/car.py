@@ -303,12 +303,15 @@ class DiagonalizedICARTransform:
             is_sparse=False
             ):
 
+
         precision_mats = []
         eigenvalue_list = []
-        self.log_sigmas = log_sigmas
         self.eigenvector_list = []
         self.dimension = len(single_dimension_adj_matrices)
-
+        if jnp.ndim(log_sigmas) == 0:
+            (log_sigmas,) = promote_shapes(log_sigmas, shape=(self.dimension,))
+        
+        self.log_sigmas = log_sigmas
         precs = jnp.exp(-2*self.log_sigmas)
         
         for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
