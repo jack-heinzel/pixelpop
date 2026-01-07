@@ -403,7 +403,7 @@ def setup_probabilistic_model(
 
     return probabilistic_model, initial_value
 
-def get_worst_rhat_neff(chain_samples):
+def get_worst_rhat_neff(chain_samples, skip_keys=[]):
     """
     Identify the parameter with the worst R-hat and effective sample size (Neff).
 
@@ -411,6 +411,8 @@ def get_worst_rhat_neff(chain_samples):
     ----------
     chain_samples : dict
         Dictionary of chain samples from NumPyro MCMC, with parameter name keys
+    skip_keys : list
+        List of keys to skip over in calculation of worst Rhat and Neff
 
     Returns
     -------
@@ -430,24 +432,28 @@ def get_worst_rhat_neff(chain_samples):
     name, pos, rhat_values = [], [], []
     for rh in rhats:
         ind = np.unravel_index(np.argmax(rh[1], axis=None), rh[1].shape)
-        name.append(rh[0])
-        pos.append(ind)
-        rhat_values.append(rh[1][ind])
+        k = f'{rh[0]}{[int(p) for p in ind]}'.replace('[]','')
+        if k not in skip_keys:
+            name.append(rh[0])
+            pos.append(ind)
+            rhat_values.append(rh[1][ind])
     
     worst_rhat = np.argmax(rhat_values)
     rhat_chain = chain_samples[name[worst_rhat]][...,*pos[worst_rhat]]
-    rhat_key = f'{name[worst_rhat]}{list(pos[worst_rhat])}'.replace('[]','')
+    rhat_key = f'{name[worst_rhat]}{[int(p) for p in pos[worst_rhat]]}'.replace('[]','')
 
     name, pos, neff_values = [], [], []
     for rh in neffs:
         ind = np.unravel_index(np.argmin(rh[1], axis=None), rh[1].shape)
-        name.append(rh[0])
-        pos.append(ind)
-        neff_values.append(rh[1][ind])
-    
+        k = f'{rh[0]}{[int(p) for p in ind]}'.replace('[]','')
+        if k not in skip_keys:
+            name.append(rh[0])
+            pos.append(ind)
+            neff_values.append(rh[1][ind])
+        
     worst_neff = np.argmin(neff_values)
     neff_chain = chain_samples[name[worst_neff]][...,*pos[worst_neff]]
-    neff_key = f'{name[worst_neff]}{list(pos[worst_neff])}'.replace('[]','')
+    neff_key = f'{name[worst_neff]}{[int(p) for p in pos[worst_neff]]}'.replace('[]','')
     return rhat_key, rhat_chain, neff_key, neff_chain
 
 def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys):
@@ -476,6 +482,8 @@ def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
 
     size = 2
     for name in print_keys:
+        if name.startswith('~'):
+            continue
         try:
             size += trace[name]["value"].size
         except KeyError:
@@ -539,7 +547,7 @@ def inference_loop(
     """
 
     table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
-
+    skip_keys = [k[1:] for k in print_keys if k.startswith('~')]
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = []
@@ -569,8 +577,8 @@ def inference_loop(
             if (sample % cache_cadence == 0) and (chain_samples[key].shape[0] >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
                 
-                rhat, rhat_chain, neff, neff_chain = get_worst_rhat_neff(chain_samples)
-                summary_dict = {key: chain_samples[key] for key in print_keys}
+                rhat, rhat_chain, neff, neff_chain = get_worst_rhat_neff(chain_samples, skip_keys=skip_keys)
+                summary_dict = {key: chain_samples[key] for key in print_keys if key[1:] not in skip_keys}
                 summary_dict['worst r_hat: '+rhat] = rhat_chain
                 summary_dict['worst n_eff: '+neff] = neff_chain
                 

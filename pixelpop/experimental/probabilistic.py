@@ -151,7 +151,6 @@ def prior_probabilistic_model(posteriors, injections,
         return_dict = {'_eigenbasis_sites': jnp.array(
             np.random.normal(loc=0, scale=1, size=unique_sample_shape))
             }
-        return_dict['_eigenbasis_site_0'] = np.random.normal(loc=0, scale=1)
         return return_dict
             
     initial_value = get_initial_value()
@@ -203,7 +202,7 @@ def prior_probabilistic_model(posteriors, injections,
             dist.Normal(0., 1.).expand(unique_sample_shape).mask(mask)
         )
         # _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.ImproperUniform(dist.constraints.real, (), ()))
-        _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.Delta(0.))
+        _eigenbasis_site_0 = 0.
         eigenbasis_sites = _eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0)
         
         if lower_triangular:
