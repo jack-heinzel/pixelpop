@@ -2,7 +2,11 @@ import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from .gwpop_models import * 
 from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
-from ..experimental.car import DiagonalizedICARTransform
+from ..experimental.car import (
+    DiagonalizedICARTransform, 
+    initialize_sigma_marginalized_ICAR,
+    lower_triangular_sigma_marg_log_prob
+)
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
@@ -25,7 +29,7 @@ def setup_probabilistic_model(
         plausible_hyperparameters={}, UncertaintyCut=1., random_initialization=True, 
         lower_triangular=False, prior_draw=False, skip_nonparametric=False, 
         constraint_funcs=[], log='default', scale_by_sigma=None, coupling_prior=[(-3,3), dist.Uniform],
-        sample_eigenbasis=False,
+        sample_eigenbasis=False, marginalize_sigma=False,
         ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -94,6 +98,8 @@ def setup_probabilistic_model(
         scale_by_sigma = prior_draw
     if scale_by_sigma and length_scales:
         raise ValueError("Cannot scale by different sigmas in different axes")
+    if marginalize_sigma and length_scales:
+        raise ValueError("Cannot marginalize over sigma with different sigmas in different axes")        
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
@@ -274,7 +280,10 @@ def setup_probabilistic_model(
                         jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
         return event_weights, inj_weights
 
-    ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
+    if marginalize_sigma:
+        ICAR_model = initialize_sigma_marginalized_ICAR(dimension)    
+    else:
+        ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
         """
         Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
@@ -306,10 +315,12 @@ def setup_probabilistic_model(
         if skip:
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
-        if length_scales:
-            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
-        else:
-            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
+        
+        if not marginalize_sigma:
+            if length_scales:
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
+            else:
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
 
         if lower_triangular:
             # TODO: make this work also w sample_eigenbasis... if it seems promising
@@ -319,7 +330,11 @@ def setup_probabilistic_model(
                 numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, 0., adj_matrices))
             else:
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
-                numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))
+                if marginalize_sigma:
+                    prior_factor = lower_triangular_sigma_marg_log_prob(merger_rate_density, normalization_dof, adj_matrices)
+                else:
+                    prior_factor = lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices)
+                numpyro.factor('prior_factor', prior_factor)
 
         else:
             if sample_eigenbasis:
@@ -341,6 +356,8 @@ def setup_probabilistic_model(
             elif scale_by_sigma:
                 latent_density = numpyro.sample('latent_density', ICAR_model(log_sigmas=0., single_dimension_adj_matrices=adj_matrices, is_sparse=True))
                 merger_rate_density = numpyro.deterministic('merger_rate_density', jnp.exp(lsigma) * latent_density) 
+            elif marginalize_sigma:
+                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(single_dimension_adj_matrices=adj_matrices, is_sparse=True))
             else:
                 merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=adj_matrices, is_sparse=True))        
             

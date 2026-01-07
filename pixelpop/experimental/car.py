@@ -379,3 +379,47 @@ class ICAR_normalized(Distribution):
             adj_matrix_aux_idx = cls.gather_pytree_aux_fields().index("adj_matrix")
             setattr(d, "adj_matrix", aux_data[adj_matrix_aux_idx])
         return d
+
+def lower_triangular_sigma_marg_log_prob(phi, n, single_dimension_adj_matrices):
+    """
+    Compute the log-probability for an ICAR prior with a lower-triangular parameterization.
+
+    This function evaluates the quadratic form and normalization term of the
+    ICAR log-density given adjacency matrices and a scalar log-scale.
+
+    Parameters
+    ----------
+    phi : jnp.ndarray
+        Field values on the spatial grid.
+    n : int
+        Total number of sites, e.g., the number of degrees of freedom, n = bins * (bins+1) / 2).
+    log_sigma : float
+        Log standard deviation of the prior.
+    single_dimension_adj_matrices : list of ndarray or sparse matrices
+        List of adjacency matrices, one for each spatial dimension.
+
+    Returns
+    -------
+    float
+        The log-probability of `phi` under the ICAR prior.
+    """
+
+    dimension = len(single_dimension_adj_matrices)
+    prec_mat = []
+    for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
+        D = np.asarray(single_dimension_adj_matrix.sum(axis=-1))
+        scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
+        prec_mat.append(jnp.asarray(scaled_single_prec))
+
+    logquad = 0.
+    for ii in range(dimension):
+        z = jnp.moveaxis(
+            jnp.tensordot(prec_mat[ii], jnp.moveaxis(phi,ii,0), axes=(0,0)), # tensordot requires a concrete axis ... can I get this in a jitted fn?
+            0,ii)
+        step = jnp.tensordot(z, phi, axes=dimension)
+        logquad += step
+    
+
+    log_marg_term = 0.25 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 4) - jnp.log(2)
+
+    return -0.5 * n * jnp.log(2*jnp.pi) + log_marg_term
