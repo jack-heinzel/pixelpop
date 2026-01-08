@@ -214,6 +214,12 @@ def prior_probabilistic_model(posteriors, injections,
                 eigenbasis_sites
             )
         )
+        if not lower_triangular:
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
+            for ii, p in enumerate(parameters):
+                sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
+                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
+
         event_weights += merger_rate_density[event_bins] # (69,3194)
         inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':

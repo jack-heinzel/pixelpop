@@ -1,6 +1,7 @@
 import h5ify
 import pickle as pkl
 import numpy as np
+from jax import jit, numpy as jnp
 import popsummary
 import os
 from glob import glob
@@ -8,6 +9,7 @@ from functools import reduce
 import json
 from ..models import gwpop_models
 from scipy.special import logsumexp as LSE
+from tqdm import tqdm
 
 def combine_chains(chain_1, chain_2):
     for k in chain_1.keys():
@@ -269,10 +271,14 @@ def create_popsummary(
         else:
             assert par in other_parameters # I mean... come on, obviously but OK
             try:
-                pos = np.linspace(minima[par], maxima[par], 1000)
-                rate_func = parameter_to_gwpop_model[par]
+                print(f'Saving {par} rates on grids...')
+                pos = jnp.linspace(minima[par], maxima[par], 1000)
+                try:
+                    rate_func = jit(parameter_to_gwpop_model[par])
+                except:
+                    rate_func = parameter_to_gwpop_model[par]
                 required_keys = parameter_to_hyperparameters[par]
-                rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for ii in range(Nsamples)])
+                rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for ii in tqdm(range(Nsamples))])
                 rates += lrs[:,None]
             except:
                 print(f'Could not save {par} rates on grids, skipping...')
