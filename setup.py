@@ -12,9 +12,10 @@ setuptools.setup(name='pixelpop',
         author_email='heinzelj@mit.edu',
         packages=[
             "pixelpop",
-            "pixelpop.utils",
+            "pixelpop.experimental",
             "pixelpop.models",
-            "pixelpop.result"
+            "pixelpop.result",
+            "pixelpop.utils"
         ],
         package_dir={'pixelpop': 'pixelpop'},
         zip_safe=False)
