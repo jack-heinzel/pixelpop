@@ -36,9 +36,9 @@ def initialize_sigma_marginalized_ICAR(dimension):
     For a single log-sigma parameter, the integral over the improper prior
     \pi(\sigma) \propto 1/\sigma gives
 
-    \int \frac{1}{\sigma}\frac{1}{\sigma^{n/2}} \exp(-\frac{x}{2\sigma^2}) d\sigma 
+    \int \frac{1}{\sigma}\frac{1}{\sigma^{n}} \exp(-\frac{x}{2\sigma^2}) d\sigma 
     = 
-    2^{n/4 - 1} x^{-n/4} \Gamma(n/4)
+    2^{n/2 - 1} x^{-n/2} \Gamma(n/2)
     
     Parameters
     ----------
@@ -116,7 +116,7 @@ def initialize_sigma_marginalized_ICAR(dimension):
                 step = jnp.tensordot(z, phi, axes=dimension)
                 logquad += step
 
-            log_marg_term = 0.25 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 4) - jnp.log(2)
+            log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
 
             return 0.5 * (-n * jnp.log(2*jnp.pi) + logdet) + log_marg_term
         
