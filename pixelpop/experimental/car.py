@@ -420,6 +420,6 @@ def lower_triangular_sigma_marg_log_prob(phi, n, single_dimension_adj_matrices):
         logquad += step
     
 
-    log_marg_term = 0.25 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 4) - jnp.log(2)
+    log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
 
     return -0.5 * n * jnp.log(2*jnp.pi) + log_marg_term
