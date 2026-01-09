@@ -214,7 +214,7 @@ def create_popsummary(
         # do something special
 
         skip_parameters = pixelpop_parameters[:2]
-        axes = tuple(range(3, len(pixelpop_parameters)+1))
+        axes = tuple(range(2, len(pixelpop_parameters)))
 
         pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins[0]+1))
         pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins[1]+1))
