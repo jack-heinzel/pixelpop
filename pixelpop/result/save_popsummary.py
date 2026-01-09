@@ -85,7 +85,7 @@ def create_popsummary(
     other_parameters: list
         list of strings, containing the parameters for the other parameters 
         necessary in the population model
-    bins: int (TODO: or list)
+    bins: int or list
         number of bins along each axis
     popsummary_path: str
         relative path from script directory where to save the popsummary file
@@ -128,6 +128,10 @@ def create_popsummary(
             posterior = posterior[0]
         else:
             posterior = reduce(combine_chains, posterior)
+
+    dimension = len(pixelpop_parameters)
+    if np.ndim(bins) == 0:
+        bins = [bins] * dimension
 
     parameter_to_hyperparameters = gwpop_models.gwparameter_to_hyperparameters.copy()
     parameter_to_hyperparameters.update(hyperparameters)
@@ -212,14 +216,14 @@ def create_popsummary(
         skip_parameters = pixelpop_parameters[:2]
         axes = tuple(range(3, len(pixelpop_parameters)+1))
 
-        pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins+1))
-        pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins+1))
+        pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins[0]+1))
+        pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins[1]+1))
         # assert posterior['merger_rate_density'].ndim == 3 # assure only two parameters FOR NOW
 
-        dm1 = (maxima[pixelpop_parameters[0]] - minima[pixelpop_parameters[0]]) / bins
-        dm2 = (maxima[pixelpop_parameters[1]] - minima[pixelpop_parameters[1]]) / bins
+        dm1 = (maxima[pixelpop_parameters[0]] - minima[pixelpop_parameters[0]]) / bins[0]
+        dm2 = (maxima[pixelpop_parameters[1]] - minima[pixelpop_parameters[1]]) / bins[1]
         lda = np.log(np.array([
-            (maxima[pixelpop_parameters[ii]] - minima[pixelpop_parameters[ii]]) / bins for ii in range(2, len(pixelpop_parameters))
+            (maxima[pixelpop_parameters[ii]] - minima[pixelpop_parameters[ii]]) / bins[ii] for ii in range(2, len(pixelpop_parameters))
             ]))
 
         posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2
@@ -264,11 +268,11 @@ def create_popsummary(
     assert 'log_rate' in posterior
     lrs = posterior['log_rate'] - log_norms
     
-    for par in parameters:
+    for ii, par in enumerate(parameters):
         if par in pixelpop_parameters:
             if par in skip_parameters:
                 continue
-            pos = np.linspace(minima[par], maxima[par], bins+1)
+            pos = np.linspace(minima[par], maxima[par], bins[ii]+1)
             pp_grids.append(pos)
             if 'redshift' in pixelpop_parameters:
                 if par != 'redshift':
@@ -290,7 +294,7 @@ def create_popsummary(
                 except:
                     rate_func = parameter_to_gwpop_model[par]
                 required_keys = parameter_to_hyperparameters[par]
-                rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for ii in tqdm(range(Nsamples))])
+                rates = np.array([rate_func({par: pos}, *[posterior[k][ii] for k in required_keys]) for jj in tqdm(range(Nsamples))])
                 rates += lrs[:,None]
             except:
                 print(f'Could not save {par} rates on grids, skipping...')
@@ -314,6 +318,6 @@ def create_popsummary(
         grid_key='joint_pixelpop_rate',
         grid_params=pixelpop_parameters,
         positions=pos,
-        rates=np.exp(nd_pp.reshape(Nsamples,bins**len(pixelpop_parameters))),
+        rates=np.exp(nd_pp.reshape(Nsamples,np.prod(bins))),
         overwrite=overwrite
     )
