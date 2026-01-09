@@ -211,24 +211,27 @@ def create_popsummary(
     pp_grids = []
 
     if lower_triangular:
-        # do something special
-
+        # first two axes are assumed lower triangular
+        assert bins[0] == bins[1]
         skip_parameters = pixelpop_parameters[:2]
         axes = tuple(range(2, len(pixelpop_parameters)))
 
         pp_grids.append(np.linspace(minima[pixelpop_parameters[0]], maxima[pixelpop_parameters[0]], bins[0]+1))
         pp_grids.append(np.linspace(minima[pixelpop_parameters[1]], maxima[pixelpop_parameters[1]], bins[1]+1))
-        # assert posterior['merger_rate_density'].ndim == 3 # assure only two parameters FOR NOW
-
+        
+        # 
         dm1 = (maxima[pixelpop_parameters[0]] - minima[pixelpop_parameters[0]]) / bins[0]
         dm2 = (maxima[pixelpop_parameters[1]] - minima[pixelpop_parameters[1]]) / bins[1]
+        
+        # log of the volume element for all other parameters
         lda = np.log(np.array([
             (maxima[pixelpop_parameters[ii]] - minima[pixelpop_parameters[ii]]) / bins[ii] for ii in range(2, len(pixelpop_parameters))
             ]))
 
-        posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2
+        posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2 bc lower triangular
         posterior['merger_rate_density'] = np.log(axes_tril(np.exp(posterior['merger_rate_density']), axes=(1,2)))
         
+        # converting to comoving merger rate density, if applicable
         R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=tuple(range(1, len(pixelpop_parameters)+1)))
         if 'redshift' not in pixelpop_parameters: 
             # redshift marginalization requires cosmological factors
