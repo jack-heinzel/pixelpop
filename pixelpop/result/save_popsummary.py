@@ -10,6 +10,7 @@ import json
 from ..models import gwpop_models
 from scipy.special import logsumexp as LSE
 from tqdm import tqdm
+from ..models.car import axes_tril
 
 def combine_chains(chain_1, chain_2):
     for k in chain_1.keys():
@@ -222,33 +223,44 @@ def create_popsummary(
             ]))
 
         posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2
-        posterior['merger_rate_density'] = np.log(np.tril(np.exp(posterior['merger_rate_density'])))
-        R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=(1,2)+axes)
-        m1, m2 = LSE(R, axis=(2,)+axes) + np.log(dm2) + np.sum(lda), LSE(R, axis=(1,)+axes) + np.log(dm1) + np.sum(lda)
-    
-        m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)
-        m2 = np.concatenate((m2[:,0][:,None], m2), axis=1)
+        posterior['merger_rate_density'] = np.log(axes_tril(np.exp(posterior['merger_rate_density']), axes=(1,2)))
         
-        result.set_rates_on_grids(
-            grid_key=pixelpop_parameters[0],
-            grid_params=pixelpop_parameters[0],
-            positions=pp_grids[0],
-            rates=np.exp(m1),
-            overwrite=overwrite
+        R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=(1,2)+axes)
+        if 'redshift' not in pixelpop_parameters: 
+            # redshift marginalization requires cosmological factors
+            m1 = np.array(
+                [LSE(Rsub, axis=(2,)+axes) + np.sum(lda) + np.log(dm2) for Rsub in tqdm(R, desc=f'Computing mass_1 marginals')]
             )
-        result.set_rates_on_grids(
-            grid_key=pixelpop_parameters[1],
-            grid_params=pixelpop_parameters[1],
-            positions=pp_grids[1],
-            rates=np.exp(m2),
-            overwrite=overwrite
+            m2 = np.array(
+                [LSE(Rsub, axis=(1,)+axes) + np.sum(lda) + np.log(dm1) for Rsub in tqdm(R, desc=f'Computing mass_2 marginals')]
             )
+            
+            m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)
+            m2 = np.concatenate((m2[:,0][:,None], m2), axis=1)
+            
+            result.set_rates_on_grids(
+                grid_key=pixelpop_parameters[0],
+                grid_params=pixelpop_parameters[0],
+                positions=pp_grids[0],
+                rates=np.exp(m1),
+                overwrite=overwrite
+                )
+            result.set_rates_on_grids(
+                grid_key=pixelpop_parameters[1],
+                grid_params=pixelpop_parameters[1],
+                positions=pp_grids[1],
+                rates=np.exp(m2),
+                overwrite=overwrite
+                )
+            
         for ii_par, par in enumerate(pixelpop_parameters[2:]):
             sum_axes = (1,2) + axes[:ii_par] + axes[ii_par+1:]
             total_d = np.log(dm1) + np.log(dm2) + np.sum(lda[:ii_par]) + np.sum(lda[ii_par+1:])
-            marginal = LSE(R, axis=sum_axes) + total_d - np.log(2)
+            marginal = np.array(
+                [LSE(Rsub, axis=sum_axes) + total_d for Rsub in tqdm(R, desc=f'Computing {par} marginals')]
+            )
             posterior[f'log_marginal_{par}'] = marginal
-
+    
     assert 'log_rate' in posterior
     lrs = posterior['log_rate'] - log_norms
     
