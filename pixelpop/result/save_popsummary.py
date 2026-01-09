@@ -229,7 +229,7 @@ def create_popsummary(
         posterior['log_rate'] = LSE(posterior['merger_rate_density']) + np.log(dm1) + np.log(dm2) + np.sum(lda) - np.log(2) # divide by 2
         posterior['merger_rate_density'] = np.log(axes_tril(np.exp(posterior['merger_rate_density']), axes=(1,2)))
         
-        R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=(1,2)+axes)
+        R = posterior['merger_rate_density'] - np.expand_dims(log_norms, axis=tuple(range(1, len(pixelpop_parameters)+1)))
         if 'redshift' not in pixelpop_parameters: 
             # redshift marginalization requires cosmological factors
             m1 = np.array(
@@ -258,7 +258,7 @@ def create_popsummary(
                 )
             
         for ii_par, par in enumerate(pixelpop_parameters[2:]):
-            sum_axes = (1,2) + axes[:ii_par] + axes[ii_par+1:]
+            sum_axes = (0,1) + axes[:ii_par] + axes[ii_par+1:]
             total_d = np.log(dm1) + np.log(dm2) + np.sum(lda[:ii_par]) + np.sum(lda[ii_par+1:])
             marginal = np.array(
                 [LSE(Rsub, axis=sum_axes) + total_d for Rsub in tqdm(R, desc=f'Computing {par} marginals')]
