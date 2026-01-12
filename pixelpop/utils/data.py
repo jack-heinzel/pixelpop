@@ -37,12 +37,48 @@ def clean_par(data, par, minimum, maximum, remove=False):
                 except (TypeError, IndexError):
                     continue
         else:
-            geom = 0.5*(minimum + maximum) # geometric mean    
-            data[par] = jnp.where(bad, geom*jnp.ones_like(m), data[par])
+            mean = 0.5*(minimum + maximum) # arithmetic mean    
+            data[par] = jnp.where(bad, mean*jnp.ones_like(m), data[par])
             data['log_prior'] = jnp.where(bad, jnp.inf, data['log_prior'])
     return data
 
 def check_bins(event_bins, injection_bins, bins=100):
+    """
+    Validate consistency between posterior-sample bins and injection bins.
+
+    This function checks whether any posterior samples fall into bins that
+    contain no injections, which would render Monte Carlo likelihood estimates
+    unstable (formally divergent). It also verifies that both posterior and
+    injection samples lie within the allowed bin range.
+
+    Samples that violate these conditions are flagged by assigning an infinite
+    prior weight, ensuring they do not contribute to Monte Carlo integrals.
+
+    Parameters
+    ----------
+    event_bins : tuple of jax.numpy.ndarray
+        Tuple of integer-valued bin indices for posterior samples, one array
+        per dimension.
+    injection_bins : tuple of jax.numpy.ndarray
+        Tuple of integer-valued bin indices for injection samples, one array
+        per dimension.
+    bins : int or tuple of int, optional
+        Number of bins per dimension. If an integer is provided, the same
+        number of bins is assumed for all dimensions. Default is 100.
+
+    Returns
+    -------
+    success : bool
+        True if all checks pass; False if any invalid or injection-free bins
+        are detected.
+    problematic_posterior_samples : jax.numpy.ndarray
+        Array marking posterior samples that fall outside the allowed range
+        or into bins with no injections, set to `jnp.inf` where problematic.
+    problematic_injections : jax.numpy.ndarray
+        Array marking injection samples that fall outside the allowed range,
+        set to `jnp.inf` where problematic.
+    """
+
     if (not isinstance(event_bins, tuple)) or (not isinstance(injection_bins, tuple)) :
         warnings.warn('Bin check not implemented for flattened PixelPop')
         return True
@@ -50,9 +86,9 @@ def check_bins(event_bins, injection_bins, bins=100):
     if isinstance(bins, int):
         bins = (bins,)*len(event_bins)
 
-    problematic_posterior_samples = jnp.zeros_like(event_bins[0])
-    problematic_injections = jnp.zeros_like(injection_bins[0])
-    print(problematic_posterior_samples.shape, problematic_injections.shape)
+    problematic_posterior_samples = jnp.zeros_like(event_bins[0], dtype='float32')
+    problematic_injections = jnp.zeros_like(injection_bins[0], dtype='float32')
+    
     # first check if any -1 or (bins=100) in the list
     success = True
     for ii, b in enumerate(event_bins):
@@ -91,10 +127,60 @@ def check_bins(event_bins, injection_bins, bins=100):
         success = False
         problematic_posterior_samples = problematic_posterior_samples.at[~isin].set(jnp.inf)
 
+    print(problematic_posterior_samples)
     return success, problematic_posterior_samples, problematic_injections
             
 
 def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxima={}, exit_on_error=False):
+    """
+    Discretize posterior and injection samples onto a common multidimensional bin grid.
+
+    This function constructs a rectangular binning over the specified population
+    parameters, places both posterior samples and injection samples into these
+    bins, and performs consistency checks to ensure that all posterior bins are
+    populated by injections. Bin ranges are taken from the default BBH population
+    limits and can be overridden by user-supplied minima and maxima.
+
+    Invalid samples or samples falling into injection-free bins are flagged via
+    infinite prior weights to prevent numerical instabilities in Monte Carlo
+    likelihood evaluations.
+
+    Parameters
+    ----------
+    parameters : sequence of str
+        Names of population parameters to bin. The order defines the bin axes.
+    posteriors : dict-like
+        Mapping from parameter names to posterior sample arrays.
+    injections : dict-like
+        Mapping from parameter names to injection sample arrays.
+    bins : int or sequence of int, optional
+        Number of bins per parameter. If a single integer is provided, the same
+        number of bins is used for all dimensions. Default is 100.
+    minima : dict, optional
+        Dictionary of parameter-specific lower bounds overriding the defaults.
+    maxima : dict, optional
+        Dictionary of parameter-specific upper bounds overriding the defaults.
+    exit_on_error : bool, optional
+        If True, raise an exception when incompatible bins are detected.
+        Otherwise, issue a warning and mask problematic samples. Default is False.
+
+    Returns
+    -------
+    event_bins : tuple of jax.numpy.ndarray
+        Bin indices for posterior samples, one array per parameter.
+    inj_bins : tuple of jax.numpy.ndarray
+        Bin indices for injection samples, one array per parameter.
+    bin_axes : list of jax.numpy.ndarray
+        Bin edge arrays for each parameter.
+    logdV : jax.numpy.ndarray
+        Logarithm of the bin volumes for each dimension.
+    e_prior_mod : jax.numpy.ndarray
+        Prior modifier for posterior samples, with `jnp.inf` marking invalid
+        or injection-free bins.
+    i_prior_mod : jax.numpy.ndarray
+        Prior modifier for injection samples, with `jnp.inf` marking samples
+        outside the allowed bin ranges.
+    """
 
     bbh_minima = gwpop_models.bbh_minima.copy()
     bbh_maxima = gwpop_models.bbh_maxima.copy()

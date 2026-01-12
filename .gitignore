@@ -1,6 +1,10 @@
 # ignore large event files loaded into the standard_events directory
 standard_events/*
 
+# ignore .cache directories for CI testing
+.cache/
+.pytest_cache/
+
 ## python .gitignore: https://github.com/github/gitignore/blob/main/Python.gitignore
 
 # Byte-compiled / optimized / DLL files

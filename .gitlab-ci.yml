@@ -1,0 +1,21 @@
+stages:
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  JAX_PLATFORM_NAME: cpu
+
+cache:
+  key: pip-cache
+  paths:
+    - .cache/pip
+
+unit_tests:
+  stage: test
+  image: python:3.11
+  script:
+    - pip install -U pip
+    - pip install -e .
+    - pip install pytest
+    - pytest
+    
