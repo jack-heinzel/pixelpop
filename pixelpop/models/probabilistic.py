@@ -106,12 +106,15 @@ def setup_probabilistic_model(
     adj_matrices = [create_CAR_coupling_matrix(bins[ii], 1, isVisible=False) for ii in range(dimension)]
 
     if 'redshift' in parameters:
-        from astropy.cosmology import Planck15
         from astropy import units
         max_z = np.maximum(np.max(injections['redshift']), np.max(posteriors['redshift']))
         zs = np.linspace(1e-6, max_z, 10000)
-        dVs = Planck15.differential_comoving_volume(zs) * 4 * np.pi * units.sr
-        ln_dVTc = np.log(dVs.to(units.Gpc**3).value) - np.log(1 + zs)
+        dVs = COSMO.differential_comoving_volume(zs)
+        if isinstance(dVs, units.quantity.Quantity):
+            dVs = 4*jnp.pi*dVs.to(units.Gpc**3 / units.sr).value
+        else:
+            dVs = 4*jnp.pi* 1e-9 * dVs
+        ln_dVTc = np.log(dVs) - np.log(1 + zs)
         event_z = posteriors['redshift']
         inj_z = injections['redshift']
         event_ln_dVTc = jnp.array(np.interp(event_z, zs, ln_dVTc))
