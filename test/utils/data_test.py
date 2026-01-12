@@ -101,7 +101,7 @@ class TestCleanPar(unittest.TestCase):
 class TestCheckBins(unittest.TestCase):
 
     def test_check_bins_success(self):
-        event_bins = (jnp.array([0, 1, 2, 3, 4]),)
+        event_bins = (jnp.array([[0, 1, 2, 3, 4]]),)
         inj_bins = (jnp.array([0, 1, 2, 3, 4]),)
 
         success, e_bad, i_bad = check_bins(event_bins, inj_bins, bins=5)
@@ -111,7 +111,7 @@ class TestCheckBins(unittest.TestCase):
         self.assertTrue(jnp.all(i_bad == 0))
 
     def test_check_bins_injection_free(self):
-        event_bins = (jnp.array([0, 1, 2, 3, 4]),)
+        event_bins = (jnp.array([[0, 1, 2, 3, 4]]),)
         inj_bins = (jnp.array([0, 1, 3, 4]),)
 
         success, e_bad, _ = check_bins(event_bins, inj_bins, bins=5)
