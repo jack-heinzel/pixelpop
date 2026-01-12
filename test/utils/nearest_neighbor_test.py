@@ -7,7 +7,8 @@ from pixelpop.utils.nearest_neighbor import (
     coordinate_to_index,
     index_to_coordinate,
     nearest_neighbors,
-    create_CAR_coupling_matrix
+    create_CAR_coupling_matrix,
+    place_samples_in_bins
 )
 
 class TestCoordinateTransformations(unittest.TestCase):
@@ -85,6 +86,67 @@ class TestCARMatrix(unittest.TestCase):
         
         # A corner cell (index 0) should have 2 neighbors
         self.assertEqual(np.sum(adj_dense[0]), 2)
+
+class TestBinningBoundaries(unittest.TestCase):
+
+    def setUp(self):
+        # Create a simple 2D grid: 
+        # Dim 0: [0, 5, 10] (2 bins)
+        # Dim 1: [0, 2, 4, 6] (3 bins)
+        self.bin_axes = [
+            jnp.array([0.0, 5.0, 10.0]),
+            jnp.array([0.0, 2.0, 4.0, 6.0])
+        ]
+        self.density = [2, 3]
+        self.dimension = 2
+
+    def test_boundary_conditions(self):
+        """Test if samples exactly on the edges fall into the expected bins."""
+        # Sample A: Exactly on the lower bound (0.0, 0.0) -> Bin (0, 0)
+        # Sample B: Exactly on an internal edge (5.0, 2.0) -> Bin (1, 1)
+        # Sample C: Exactly on the upper bound (10.0, 6.0) -> Bin (2, 3) 
+        #           (Outside valid range in both dimensions)
+        sample_coords = [
+            jnp.array([0.0, 5.0, 10.0]),
+            jnp.array([0.0, 2.0, 6.0])
+        ]
+        
+        # reshape=False returns a tuple of index arrays
+        indices = place_samples_in_bins(self.bin_axes, sample_coords, reshape=False)
+        
+        # Sample A
+        self.assertEqual(indices[0][0], 0)
+        self.assertEqual(indices[1][0], 0)
+        
+        # Sample B (Digitize behavior: x >= edge is the next bin)
+        self.assertEqual(indices[0][1], 1)
+        self.assertEqual(indices[1][1], 1)
+        
+        # Sample C (Overflow check)
+        # jnp.digitize returns len(bins) for values >= last edge. 
+        # After subtracting 1, it should be equal to the density.
+        self.assertEqual(indices[0][2], 2) 
+        self.assertEqual(indices[1][2], 3)
+
+    def test_flattening_consistency(self):
+        """Test if reshaped (flattened) indices map back to correct coordinates."""
+        # A sample in the middle of Bin (1, 2)
+        # Dim 0: 7.5 (Bin 1)
+        # Dim 1: 5.0 (Bin 2)
+        sample_coords = [jnp.array([7.5]), jnp.array([5.0])]
+        
+        flat_idx = place_samples_in_bins(self.bin_axes, sample_coords, reshape=True)
+        
+        # Unravel the index to see if it matches Bin (1, 2)
+        # Note: coordinate_to_index uses C-order (row-major)
+        recovered_coords = index_to_coordinate(
+            flat_idx[0], 
+            dimension=self.dimension, 
+            density=self.density
+        )
+        
+        self.assertEqual(int(recovered_coords[0]), 1)
+        self.assertEqual(int(recovered_coords[1]), 2)
 
 if __name__ == '__main__':
     unittest.main()
