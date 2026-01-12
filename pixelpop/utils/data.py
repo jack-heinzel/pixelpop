@@ -86,8 +86,8 @@ def check_bins(event_bins, injection_bins, bins=100):
     if isinstance(bins, int):
         bins = (bins,)*len(event_bins)
 
-    problematic_posterior_samples = jnp.zeros_like(event_bins[0])
-    problematic_injections = jnp.zeros_like(injection_bins[0])
+    problematic_posterior_samples = jnp.zeros_like(event_bins[0], dtype='float32')
+    problematic_injections = jnp.zeros_like(injection_bins[0], dtype='float32')
     
     # first check if any -1 or (bins=100) in the list
     success = True
