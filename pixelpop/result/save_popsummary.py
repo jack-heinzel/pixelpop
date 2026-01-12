@@ -11,6 +11,7 @@ from ..models import gwpop_models
 from scipy.special import logsumexp as LSE
 from tqdm import tqdm
 from ..models.car import axes_tril
+from .validate import *
 
 def combine_chains(chain_1, chain_2):
     for k in chain_1.keys():
@@ -324,3 +325,9 @@ def create_popsummary(
         rates=np.exp(nd_pp.reshape(Nsamples,np.prod(bins))),
         overwrite=overwrite
     )
+
+    # validate posterior metrics: error statistic, neffs, and rhats
+    # ....
+    # ....
+    # ....
+    # ....
