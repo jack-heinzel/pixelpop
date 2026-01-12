@@ -370,3 +370,13 @@ def lower_triangular_log_prob(phi, n, log_sigma, single_dimension_adj_matrices):
         logquad += step * prec
     
     return 0.5 * (-n * jnp.log(2*jnp.pi) - 2 * n * log_sigma - logquad)
+
+def axes_tril(array, axes=(-2,-1)):
+    '''
+    wrapper for np.tril, and allows for custom axes to take the 
+    lower triangular components of
+    '''
+    array = np.moveaxis(array, axes, (-2,-1))
+    array = np.tril(array)
+    array = np.moveaxis(array, (-2,-1), axes)
+    return array
