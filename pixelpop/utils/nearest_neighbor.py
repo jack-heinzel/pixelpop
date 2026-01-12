@@ -75,9 +75,10 @@ def nearest_neighbors(density, dimension, isVisible=False):
     '''
     if isinstance(density, int):
         indices = jnp.arange(0, density**dimension)
+        density = [density]*dimension
         powers = jnp.eye(dimension) #[generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
 
-    elif isinstance(density, list):
+    elif isinstance(density, list) or isinstance(density, tuple):
         # raise exception if len(density) != dimension
         if len(density) != dimension:
             raise IndexError('Length of densities is different from dimension')
@@ -85,7 +86,7 @@ def nearest_neighbors(density, dimension, isVisible=False):
         powers = jnp.eye(dimension)
         #print(powers)
     else:
-        raise TypeError('density must be an integer or list')
+        raise TypeError('density must be an integer or list / tuple')
     i_vals = []
     j_vals = []
 
