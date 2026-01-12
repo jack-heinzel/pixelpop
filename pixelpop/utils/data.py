@@ -127,6 +127,7 @@ def check_bins(event_bins, injection_bins, bins=100):
         success = False
         problematic_posterior_samples = problematic_posterior_samples.at[~isin].set(jnp.inf)
 
+    print(problematic_posterior_samples)
     return success, problematic_posterior_samples, problematic_injections
             
 
