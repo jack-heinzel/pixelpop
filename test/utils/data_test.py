@@ -25,15 +25,15 @@ class TestConvertMasses(unittest.TestCase):
         self.assertTrue("log_prior" in out)
 
         self.assertAlmostEqual(
-            float(out["log_mass_1"]),
+            float(out["log_mass_1"][0]),
             jnp.log(10.0),
         )
         self.assertAlmostEqual(
-            float(out["log_mass_2"]),
+            float(out["log_mass_2"][0]),
             jnp.log(10.0 * 0.5),
         )
         self.assertAlmostEqual(
-            float(out["log_prior"]),
+            float(out["log_prior"][0]),
             jnp.log(1.) + jnp.log(10.0 * 0.5),
         )
 
@@ -46,11 +46,11 @@ class TestConvertMasses(unittest.TestCase):
         out = convert_m1_to_lm1(data)
 
         self.assertAlmostEqual(
-            float(out["log_mass_1"]),
+            float(out["log_mass_1"][0]),
             jnp.log(20.0),
         )
         self.assertAlmostEqual(
-            float(out["log_prior"]),
+            float(out["log_prior"][0]),
             jnp.log(2.0) + jnp.log(20.0),
         )
 
@@ -63,10 +63,10 @@ class TestConvertMasses(unittest.TestCase):
 
         out = convert_m1m2_to_lm1lm2(data)
 
-        self.assertAlmostEqual(float(out["log_mass_1"]), jnp.log(30.0))
-        self.assertAlmostEqual(float(out["log_mass_2"]), jnp.log(10.0))
+        self.assertAlmostEqual(float(out["log_mass_1"][0]), jnp.log(30.0))
+        self.assertAlmostEqual(float(out["log_mass_2"][0]), jnp.log(10.0))
         self.assertAlmostEqual(
-            float(out["log_prior"]),
+            float(out["log_prior"][0]),
             jnp.log(30.0) + jnp.log(10.0),
         )
 
@@ -117,4 +117,4 @@ class TestCheckBins(unittest.TestCase):
         success, e_bad, _ = check_bins(event_bins, inj_bins, bins=5)
 
         self.assertFalse(success)
-        self.assertTrue(jnp.isinf(e_bad[2]))
+        self.assertTrue(jnp.isinf(e_bad[0,2]))
