@@ -130,15 +130,15 @@ class TestBinningBoundaries(unittest.TestCase):
 
     def test_flattening_consistency(self):
         """Test if reshaped (flattened) indices map back to correct coordinates."""
-        # A sample in the middle of Bin (1, 2)
+        # A sample in the middle of bin (1, 2)
         # Dim 0: 7.5 (Bin 1)
         # Dim 1: 5.0 (Bin 2)
         sample_coords = [jnp.array([7.5]), jnp.array([5.0])]
         
         flat_idx = place_samples_in_bins(self.bin_axes, sample_coords, reshape=True)
         
-        # Unravel the index to see if it matches Bin (1, 2)
-        # Note: coordinate_to_index uses C-order (row-major)
+        # Unravel the index to see if it matches bin (1, 2)
+        # Note: coordinate_to_index uses C-order
         recovered_coords = index_to_coordinate(
             flat_idx[0], 
             dimension=self.dimension, 
