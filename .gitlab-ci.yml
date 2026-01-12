@@ -1,0 +1,11 @@
+stages:
+  - test
+
+unit_tests:
+  stage: test
+  image: python:3.11
+  script:
+    - pip install -U pip
+    - pip install -e .
+    - pip install pytest
+    - pytest
