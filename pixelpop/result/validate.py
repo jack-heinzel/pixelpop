@@ -38,6 +38,7 @@ class PixelPopRateFunction(object):
         self.parameter_to_gwpop_model = parameter_to_gwpop_model
 
         self.dataset_bins = dataset_bins
+        self.shape = dataset_bins[0].shape
 
     def __call__(self, dataset, hyperparameters):
         
@@ -48,7 +49,7 @@ class PixelPopRateFunction(object):
     
     def log_prob_parametric_model(self, dataset, hyperparameters):
         
-        log_probs = jnp.zeros_like(dataset['prior'])
+        log_probs = jnp.zeros(self.shape)
               
         for p in self.other_parameters:
             hs = self.parameter_to_hyperparameters[p] # hyperparameters appropriate for this model
@@ -60,18 +61,18 @@ class PixelPopRateFunction(object):
 
         if 'redshift' in self.pixelpop_parameters:
             from astropy import units
-            max_z = np.maximum(np.max(dataset['redshift']), gwpop_models.bbh_maxima['redshift'])
-            zs = np.linspace(1e-6, max_z, 10000)
+            max_z = jnp.maximum(jnp.max(dataset['redshift']), gwpop_models.bbh_maxima['redshift'])
+            zs = jnp.linspace(1e-6, max_z, 10000)
             dVs = gwpop_models.COSMO.differential_comoving_volume(zs)
             if isinstance(dVs, units.quantity.Quantity):
                 dVs = 4*jnp.pi*dVs.to(units.Gpc**3 / units.sr).value
             else:
                 dVs = 4*jnp.pi* 1e-9 * dVs
-            ln_dVTc = np.log(dVs) - np.log(1 + zs)
+            ln_dVTc = jnp.log(dVs) - jnp.log(1 + zs)
             dataset_zs = dataset['redshift']
-            return jnp.array(np.interp(dataset_zs, zs, ln_dVTc))
+            return jnp.array(jnp.interp(dataset_zs, zs, ln_dVTc))
             
-        return jnp.zeros_like(dataset['prior'])
+        return jnp.zeros(self.shape)
 
     def log_rate_pixelpop(self, dataset, hyperparameters):
 
@@ -122,8 +123,8 @@ def compute_error_statistics(
     # burn a call for each model
     first_hypersample = {k: hyperposterior[k][0] for k in hyperposterior.keys()}
     
-    event_pixelpop_model(posteriors, first_hypersample)
-    injection_pixelpop_model(injections, first_hypersample)
+    _ = event_pixelpop_model(posteriors, first_hypersample)
+    _ = injection_pixelpop_model(injections, first_hypersample)
     
     error_dict = population_error.error_statistics(
         event_pixelpop_model, 
