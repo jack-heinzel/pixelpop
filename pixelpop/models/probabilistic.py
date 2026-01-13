@@ -13,10 +13,15 @@ from tqdm import tqdm
 import sys
 from numpyro.diagnostics import summary, print_summary
 from jax import random
+from jax.nn import sigmoid
 import os
 from contextlib import redirect_stdout
 import h5ify
 from numpyro import handlers
+from ..experimental.car import (
+    initialize_sigma_marginalized_ICAR,
+    lower_triangular_sigma_marg_log_prob
+)
 
 def setup_probabilistic_model(
     posteriors, 
@@ -39,7 +44,9 @@ def setup_probabilistic_model(
     constraint_funcs=[], 
     log='default', 
     scale_by_sigma=None, 
-    coupling_prior=[(-3,3), dist.Uniform]
+    coupling_prior=[(-3,3), dist.Uniform],
+    sample_eigenbasis=False, 
+    marginalize_sigma=False,
 ):
     """
     Construct a hierarchical probabilistic model for GW population inference.
@@ -106,6 +113,9 @@ def setup_probabilistic_model(
         scale_by_sigma = prior_draw
     if scale_by_sigma and length_scales:
         raise ValueError("Cannot scale by different sigmas in different axes")
+    if marginalize_sigma and length_scales:
+        raise ValueError("Cannot marginalize over sigma with different sigmas in different axes") 
+
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
@@ -289,11 +299,14 @@ def setup_probabilistic_model(
                         jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(strong_param_inj == jnp.inf)])
                 
         # S: sample log_R_strong
-        log_R_strong = numpyro.sample('log_R_strong', dist.Uniform(-60.0, 60.0))  
+        log_R_strong = numpyro.sample('log_R_strong', dist.Uniform(-10.0, 10.0))  
         
         return common_param_event, common_param_inj, strong_param_event, strong_param_inj, log_R_strong
 
-    ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
+    if marginalize_sigma:
+        ICAR_model = initialize_sigma_marginalized_ICAR(dimension)    
+    else:
+        ICAR_model = initialize_ICAR(dimension, length_scales=length_scales)
     
     def nonparametric_model(event_bins, inj_bins, skip=False):
         """
@@ -340,15 +353,8 @@ def setup_probabilistic_model(
                 merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
                 numpyro.factor('prior_factor', lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, adj_matrices))   
 
-            # S: need to have only triangle to calculate normalization and don't add twice.
-            # S: TODO: ask Jack
-            # S: todo: check that this makes sense actually bc merger_rate_density actually has shape (69,3194) = (numevents, numsamples)
-            # S: ask about scale_by_sigma
-            tri_mask_2d = jnp.tril(jnp.ones((bins[0], bins[1]), dtype=bool))
-            extra = (1,) * (merger_rate_density.ndim - 2)
-            tri_mask = tri_mask_2d.reshape((bins[0], bins[1]) + extra)
-            merger_rate_density_tri = jnp.where(tri_mask, merger_rate_density, -jnp.inf)
-            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density_tri) + jnp.sum(logdV))
+            # S: need to calculate normalization but divide by 2 so we don't add twice.
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density_tri) + jnp.sum(logdV) - jnp.log(2))
             
             # S: add this line for mixture model diagnostics
             log_R_pixel = numpyro.deterministic('log_R_pixel', normalization) 
@@ -416,7 +422,7 @@ def setup_probabilistic_model(
         inj_weights = base_inj + common_param_inj +  jnp.logaddexp(inj_weights_PP, log_R_strong + strong_param_inj)
 
         # S: Diagnostics for the mixture model
-        numpyro.deterministic('xi_rate', jax.nn.sigmoid(log_R_pixel - log_R_strong))
+        numpyro.deterministic('xi_rate', sigmoid(log_R_pixel - log_R_strong))
 
         ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
         taper = smooth(total_var, UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability

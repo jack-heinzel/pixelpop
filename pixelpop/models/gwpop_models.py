@@ -118,6 +118,22 @@ def gaussian(data, mean, sig):
     norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
 
+# Custom mixture model
+def Peak_PrimaryMass(data, mpp, sigpp):
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+    pm1 = gaussian(m1, mpp, sigpp)
+    if isLogMass: # include jacobian
+        pm1 = pm1 + data['log_mass_1']
+    return pm1
+
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     """
     Power-law + Gaussian-peak model for primary BH masses.
@@ -179,7 +195,6 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
     return pm1
-
 
 def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
     """
@@ -318,6 +333,104 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
+def PowerlawPlusTwoPeaks_PrimaryMass(data, alpha, minimum, maximum, delta_m, lam_fractions, 
+                                     mpp_1, sigpp_1, mpp_2, sigpp_2, gaussian_mass_maximum=100.):
+    """
+    Power-law + two peaks.
+    """
+    slope = -alpha
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+        isLogMass = False
+        
+    power_law = powerlaw(m1, slope, minimum, maximum)
+    smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
+
+    g_upper = jnp.minimum(maximum, gaussian_mass_maximum)
+
+    p_norm1 = trunc_gaussian(
+        m1, mpp_1, sigpp_1, minimum, g_upper
+    )
+    p_norm2 = trunc_gaussian(
+        m1, mpp_2, sigpp_2, minimum, g_upper
+    )
+    
+    lam_0, lam_1, lam_2 = lam_fractions
+    pm1 = scs.logsumexp(jnp.array([
+        jnp.log(lam_0) + smoothed_pl, 
+        jnp.log(lam_1) + p_norm1, 
+        jnp.log(lam_2) + p_norm2
+        ]), axis=0)
+
+    # Normalize and smooth
+    m1s_test = jnp.linspace(minimum, maximum, 2000)
+    dm1 = m1s_test[1] - m1s_test[0]
+    power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
+    smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
+
+    p_norm1test = trunc_gaussian(
+        m1s_test, mpp_1, sigpp_1, minimum, g_upper
+    )
+    p_norm2test = trunc_gaussian(
+        m1s_test, mpp_2, sigpp_2, minimum, g_upper
+    )
+    pm1test = scs.logsumexp(jnp.array([
+        jnp.log(lam_0) + smoothed_pl_test, 
+        jnp.log(lam_1) + p_norm1test, 
+        jnp.log(lam_2) + p_norm2test
+        ]), axis=0)
+    pm1 -= scs.logsumexp(pm1test) + jnp.log(dm1) # simple Riemann rule. 
+    if isLogMass: # include jacobian
+        pm1 = pm1 + data['log_mass_1']
+    return pm1
+
+def secondary_powerlaw(data, beta, mmin, mmax, delta_m_1):
+    """
+    Implements p(m2|m1).
+    """
+    # Read m1
+    if "log_mass_1" in data:
+        m1 = jnp.exp(data["log_mass_1"])
+    else:
+        m1 = data["mass_1"]
+
+    # Read m2 and include flag for Jacobian
+    isLogMass2 = "log_mass_2" in data
+    if isLogMass2:
+        logm2 = data["log_mass_2"]
+        m2 = jnp.exp(logm2)
+    else:
+        m2 = data["mass_2"]
+
+    upper = jnp.minimum(m1, mmax)
+    valid_upper = upper > mmin
+
+    # log-shape
+    in_support = (m2 >= mmin) & (m2 <= upper) & (m2 > 0.0) & valid_upper
+    p_pow = powerlaw(m2, beta, mmin, mmax) + m_smoother(m2, mmin, delta_m_1)
+    log_shape = jnp.where(in_support, p_pow, -INF)
+
+    # Normalize
+    grid = jnp.linspace(mmin, mmax, 2000)
+    dm2 = grid[1] - grid[0]
+    p_powtest = powerlaw(grid, beta, mmin, mmax) + m_smoother(grid, mmin, delta_m_1)
+    
+    grid_ok = (grid[None, :] <= upper[..., None]) & valid_upper[..., None]
+    p_powtest_masked = jnp.where(grid_ok, p_powtest[None, :], -INF)
+    log_norm = scs.logsumexp(p_powtest_masked, axis=-1) + jnp.log(dm2)
+
+    pm2 = log_shape - log_norm
+    if isLogMass2: # include jacobian
+        pm2 = pm2 + data['log_mass_2']
+    return pm2
+
 def chieff_gaussian(data, mean, sig):
     """
     Effective spin distribution: Gaussian in chi_eff.
@@ -413,7 +526,7 @@ def lognormal(data, mean, sig):
 
 # TODO: base Redshift function that takes in Psi evolution and returns log density
 
-def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization=False):
+def PowerlawRedshiftNorm(data, lamb, max_z=1.9, normalize=True, return_normalization=False):
     """
     Redshift distribution model: power law in (1+z) weighted by comoving volume.
 
@@ -459,6 +572,27 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
     window = jnp.logical_and(z >= 0., z <= max_z)
     p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
+
+def PowerlawRedshift(data, lamb, max_z=1.9, include_comoving=True):
+    if isinstance(data, dict):
+        z = data['redshift']
+    else:
+        z = data
+    if include_comoving:
+        zs_fixed = np.linspace(1e-5, max_z, 10000)
+        fixed_dvc_dz = 4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
+        dvc_dz = jnp.interp(z, zs_fixed, fixed_dvc_dz)
+        ln_dvc_dz = jnp.log(dvc_dz)
+        ln_p = ln_dvc_dz + (lamb - 1) * jnp.log(1. + z)
+    else:
+        ln_p = lamb * jnp.log(1. + z)
+        
+    p0 = lamb * jnp.log(1. + 0) # Define the reference at 0
+    ln_p -= p0 # Define the reference at 0
+    window = jnp.logical_and(z >= 0., z <= max_z)
+    p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
+    return p
+
 
 def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     """
@@ -1053,7 +1187,7 @@ gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
-    'redshift': PowerlawRedshift, #(data, lamb, minimum, maximum, normalize=False):
+    'redshift': PowerlawRedshift, #(data, lamb, maximum, include_comoving=True):
     'redshift_psi': PowerlawRedshiftPsi, #(data, lamb, minimum, maximum, normalize=False):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
