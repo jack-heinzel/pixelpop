@@ -86,6 +86,8 @@ def setup_probabilistic_model(
         defaults to prior_draw boolean value
     sample_eigenbasis : bool, optional
         TODO
+    marginalize_sigma : bool, optional
+        TODO
 
     Returns
     -------
@@ -106,12 +108,15 @@ def setup_probabilistic_model(
     adj_matrices = [create_CAR_coupling_matrix(bins[ii], 1, isVisible=False) for ii in range(dimension)]
 
     if 'redshift' in parameters:
-        from astropy.cosmology import Planck15
         from astropy import units
         max_z = np.maximum(np.max(injections['redshift']), np.max(posteriors['redshift']))
         zs = np.linspace(1e-6, max_z, 10000)
-        dVs = Planck15.differential_comoving_volume(zs) * 4 * np.pi * units.sr
-        ln_dVTc = np.log(dVs.to(units.Gpc**3).value) - np.log(1 + zs)
+        dVs = COSMO.differential_comoving_volume(zs)
+        if isinstance(dVs, units.quantity.Quantity):
+            dVs = 4*jnp.pi*dVs.to(units.Gpc**3 / units.sr).value
+        else:
+            dVs = 4*jnp.pi* 1e-9 * dVs
+        ln_dVTc = np.log(dVs) - np.log(1 + zs)
         event_z = posteriors['redshift']
         inj_z = injections['redshift']
         event_ln_dVTc = jnp.array(np.interp(event_z, zs, ln_dVTc))
@@ -578,7 +583,7 @@ def inference_loop(
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
-        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)-1))
+        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
@@ -588,8 +593,9 @@ def inference_loop(
 
             if chain_samples is None:
                 chain_samples = {key:np.array(next_sample[key]) for key in next_sample}
-            for key in chain_samples:
-                chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
+            else:
+                for key in chain_samples:
+                    chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
             mcmc.transfer_states_to_host()
             if (sample % cache_cadence == 0) and (chain_samples[key].shape[0] >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
