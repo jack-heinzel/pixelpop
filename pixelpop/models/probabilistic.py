@@ -86,6 +86,8 @@ def setup_probabilistic_model(
         defaults to prior_draw boolean value
     sample_eigenbasis : bool, optional
         TODO
+    marginalize_sigma : bool, optional
+        TODO
 
     Returns
     -------
@@ -581,7 +583,7 @@ def inference_loop(
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
-        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)-1))
+        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
@@ -591,8 +593,9 @@ def inference_loop(
 
             if chain_samples is None:
                 chain_samples = {key:np.array(next_sample[key]) for key in next_sample}
-            for key in chain_samples:
-                chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
+            else:
+                for key in chain_samples:
+                    chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
             mcmc.transfer_states_to_host()
             if (sample % cache_cadence == 0) and (chain_samples[key].shape[0] >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
