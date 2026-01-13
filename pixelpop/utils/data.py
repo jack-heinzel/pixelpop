@@ -3,6 +3,12 @@ from . import place_samples_in_bins
 from ..models import gwpop_models
 import warnings
 
+from .nearest_neighbor import create_CAR_coupling_matrix
+from dataclasses import dataclass, field
+from typing import Dict, List, Union, Callable, Any, Tuple, Optional
+
+import numpyro.distributions as dist
+
 def convert_m1q_to_lm1m2(data):
     m1 = data.pop('mass_1')
     q = data.pop('mass_ratio')
@@ -96,13 +102,13 @@ def check_bins(event_bins, injection_bins, bins=100):
         if jnp.any(bad):
             warnings.warn('Some posterior samples are outside the PixelPop range. User should clean samples.')
             success = False
-            problematic_posterior_samples = problematic_posterior_samples[bad].set(jnp.inf)
+            problematic_posterior_samples = problematic_posterior_samples.at[bad].set(jnp.inf)
     for ii, b in enumerate(injection_bins):
         bad = jnp.logical_or(b == -1, b == bins[ii])
         if jnp.any(bad):
             warnings.warn('Some injection samples are outside the PixelPop range. User should clean samples.')
             success = False
-            problematic_injections = problematic_injections[bad].set(jnp.inf)
+            problematic_injections = problematic_injections.at[bad].set(jnp.inf)
     
     # check if any posterior samples are in injection-free bins. Causes instabilities in PixelPop
     
@@ -127,7 +133,6 @@ def check_bins(event_bins, injection_bins, bins=100):
         success = False
         problematic_posterior_samples = problematic_posterior_samples.at[~isin].set(jnp.inf)
 
-    print(problematic_posterior_samples)
     return success, problematic_posterior_samples, problematic_injections
             
 
@@ -182,15 +187,11 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
         outside the allowed bin ranges.
     """
 
-    bbh_minima = gwpop_models.bbh_minima.copy()
-    bbh_maxima = gwpop_models.bbh_maxima.copy()
     
-    bbh_minima.update(minima)
-    bbh_maxima.update(maxima)
     if jnp.ndim(bins) == 0:
         bins = [bins] * len(parameters)
 
-    bin_axes = [jnp.linspace(bbh_minima[par], bbh_maxima[par], bins[ii]+1) for ii, par in enumerate(parameters)]
+    bin_axes = [jnp.linspace(minima[par], maxima[par], bins[ii]+1) for ii, par in enumerate(parameters)]
     logdV = jnp.log(jnp.array([b[1] - b[0] for b in bin_axes]))
 
     sample_coordinates = [posteriors[par] for par in parameters]
@@ -212,3 +213,210 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
                 )
 
     return event_bins, inj_bins, bin_axes, logdV, e_prior_mod, i_prior_mod
+
+
+# Assuming you have your COSMO object available globally or pass it in
+# from .cosmology import COSMO 
+
+@dataclass
+class PixelPopData:
+    """
+    Helper class which holds data:
+    - Single event posteriors
+    - Injection set
+    - PixelPop specific arguments:
+        - PixelPop parameters
+        - Other "nuisance" parameters
+        - bins (number along each axis)
+        - axis minima and maxima
+    - Analysis settings
+        - variance cut
+        - lower triangular flag (for m1, m2 analyses)
+        - length_scales flag
+        - marginalize_sigma flag
+    - Additional settings or flags, which should usually be set to defaults:
+        - random_initialization
+        - plausible_hyperparameters
+        - skip_nonparametric
+        - constraint_functions
+        - coupling_prior
+
+    Parameters
+    ----------
+    posteriors : dict
+        Posterior samples keyed by parameter name. Each entry is shaped
+        (Nobs, Nsample). Must also include 'ln_prior'.
+    injections : dict
+        Injection data keyed by parameter name. Each entry is shaped (Nfound).
+        Must include 'ln_prior', 'total_generated' (int/float), and
+        'analysis_time' (float).
+    pixelpop_parameters : list of str
+        Parameters for the nonparametric pixelized model (e.g., ["mass_1", "chi_eff"]).
+    other_parameters : list of str
+        Additional parameters modeled with parametric forms.
+    bins : int or list of int
+        Number of bins along each axis in the pixelized model.
+    length_scales : bool, optional
+        If True, use independent CAR coupling parameters per axis.
+    minima : dict, optional
+        Mapping of parameter → minimum value. Defaults to typical BBH values.
+    maxima : dict, optional
+        Mapping of parameter → maximum value. Defaults to typical BBH values.
+    parametric_models : dict, optional
+        Mapping of parameter → callable defining parametric model.
+    parameter_to_hyperparameters : dict, optional
+        Mapping of parameter → list of hyperparameter names for its parametric model.
+    priors : dict, optional
+        Mapping of hyperparameter → (args, distribution) prior specification.
+    plausible_hyperparameters : dict, optional
+        Mapping of parameter → plausible hyperparameter values (for initialization).
+    UncertaintyCut : float, optional
+        Cutoff for regularizing large likelihood uncertainties (default 1.0).
+    random_initialization : bool, optional
+        If True, initialize ICAR model with random noise instead of plausible values.
+    lower_triangular : bool, optional
+        If True, enforce p1 > p2 triangular support (used for joint m1–m2 models).
+    skip_nonparametric : bool, optional
+        If True, disable the pixelized (nonparametric) component.
+    constraint_funcs : list of callables, optional
+        Extra constraint functions applied to hyperparameters.
+    marginalize_sigma : bool, optional
+        If True, PixelPop analysis uses an analytic marginalization over the sigma 
+        coupling strength parameter. Can only be done if length_scales = False. 
+        Typically, this improves chain convergence.
+
+    """
+    # Data
+    posteriors: Dict[str, Any]
+    injections: Dict[str, Any]
+    
+    # Gravitational wave parameter space
+    pixelpop_parameters: List[str] 
+    other_parameters: List[str]
+    bins: Union[int, List[int]]
+    
+    # Axis limits
+    minima: Dict[str, float] = field(default_factory=dict)
+    maxima: Dict[str, float] = field(default_factory=dict)
+
+    # Models and priors
+    parametric_models: Dict[str, Callable] = field(default_factory=dict)
+    parameter_to_hyperparameters: Dict[str, List[str]] = field(default_factory=dict)
+    priors: Dict[str, Any] = field(default_factory=dict)
+    
+    # Analysis settings
+    UncertaintyCut: float = 1.0
+    lower_triangular: bool = False
+    marginalize_sigma: bool = False
+    length_scales: bool = False
+    
+    # Additional settings
+    random_initialization: bool = True
+    plausible_hyperparameters: Dict[str, float] = field(default_factory=dict)
+    skip_nonparametric: bool = False
+    constraint_funcs: List[Callable] = field(default_factory=list)
+    coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+    
+    
+    def preprocess_cosmology(self, cosmology):
+        """
+        Calculates differential comoving volumes if 'redshift' is a parameter.
+        Modifies self.posteriors and self.injections in-place to add 'ln_dVTc'.
+        """
+        
+        print("Preprocessing cosmology data...")
+        from unxt.quantity import Quantity
+        
+        # Extract data
+        event_z = self.posteriors['redshift']
+        inj_z = self.injections['redshift']
+        
+        max_z = jnp.maximum(jnp.max(inj_z), jnp.max(event_z))
+        zs = jnp.linspace(1e-6, max_z, 10000)
+        
+        # Calculate dVc/dz / (1+z)
+        dVs = cosmology.differential_comoving_volume(zs)
+        
+        if isinstance(dVs, Quantity):
+            # TODO: implement in terms of unxt/wcosmo unit manipulations
+            dVs = dVs.value 
+        dVs = 4 * jnp.pi * 1e-9 * dVs 
+            
+        ln_dVTc = jnp.log(dVs) - jnp.log(1 + zs)
+
+        # Interpolate and store in the dictionaries
+        self.posteriors['ln_dVTc'] = jnp.interp(event_z, zs, ln_dVTc)
+        self.injections['ln_dVTc'] = jnp.interp(inj_z, zs, ln_dVTc)
+        
+    def __post_init__(self):
+        """
+        Optional: Validation or automatic formatting after object creation.
+        """
+        if self.marginalize_sigma and self.length_scales:
+            raise ValueError("Cannot marginalize over sigma with different sigmas in different axes")        
+    
+        # standardize bin dimension
+        self.dimension = len(self.pixelpop_parameters)
+        if jnp.ndim(self.bins) == 0:
+            self.bins = [self.bins] * self.dimension
+
+        self.adj_matrices = [
+            create_CAR_coupling_matrix(self.bins[ii], 1, isVisible=False) for ii in range(self.dimension)
+            ]
+
+        new_minima = gwpop_models.bbh_minima.copy()
+        new_maxima = gwpop_models.bbh_maxima.copy()
+        
+        new_minima.update(self.minima)
+        new_maxima.update(self.maxima)
+
+        self.minima = new_minima
+        self.maxima = new_maxima
+
+        # bin up events and injections
+        self.event_bins, self.inj_bins, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+            self.pixelpop_parameters, 
+            self.posteriors, 
+            self.injections, 
+            bins=self.bins, 
+            minima=self.minima, 
+            maxima=self.maxima
+        )
+        self.posteriors['log_prior'] += eprior
+        self.injections['log_prior'] += iprior
+        
+        full_hyperparams = gwpop_models.gwparameter_to_hyperparameters.copy()
+        full_hyperparams.update(self.parameter_to_hyperparameters)
+        self.parameter_to_hyperparameters = full_hyperparams
+
+        final_models = {}
+        for p in self.other_parameters:
+            if p in self.parametric_models:
+                # User provided an override in the input dict
+                print(f'Updating {p} model to {self.parametric_models[p].__name__}')
+                final_models[p] = self.parametric_models[p]
+            else:
+                # Fall back to global default
+                print(f'Using default {p} model {gwpop_models.gwparameter_to_model[p].__name__}')
+                final_models[p] = gwpop_models.gwparameter_to_model[p]
+        self.parametric_models = final_models
+
+        final_priors = {}
+        for p in self.other_parameters:
+            
+            for h in self.parameter_to_hyperparameters[p]:
+                if h in self.priors:    
+                    # User provided override
+                    pprint = self.priors[h]
+                    print(f'Using custom prior {h} = {pprint[1].__name__}...')
+                    final_priors[h] = self.priors[h]
+                else:
+                    # Global default
+                    pprint = gwpop_models.default_priors[h]
+                    print(f'Using default prior {h} = {pprint[1].__name__}...')
+                    final_priors[h] = gwpop_models.default_priors[h]
+        self.priors = final_priors
+
+        # for now, hardcode Planck15_LAL cosmology
+        # TODO: allow for different cosmologies
+        self.preprocess_cosmology(gwpop_models.COSMO)
