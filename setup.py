@@ -7,7 +7,8 @@ setuptools.setup(name='pixelpop',
         author='Jack Heinzel',
         install_requires=[
             'numpy', 'scipy', 'jax', 'pandas', 'numpyro', 'gwpopulation', 'gwpopulation_pipe', 
-            'wcosmo', 'astropy', 'h5ify', 'popsummary', 'arviz', 'population_error'
+            'wcosmo', 'astropy', 'h5ify', 'popsummary', 'arviz', 'population_error', 'xarray',
+            'unxt'
             ],
         author_email='heinzelj@mit.edu',
         packages=[
