@@ -1057,8 +1057,7 @@ gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
-    'redshift': PowerlawRedshift, #(data, lamb, minimum, maximum, normalize=False):
-    'redshift_psi': PowerlawRedshiftPsi, #(data, lamb, minimum, maximum, normalize=False):
+    'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
     'a': iid_normal_spin, #(data, mu, var)
