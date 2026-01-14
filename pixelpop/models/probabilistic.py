@@ -89,10 +89,14 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}    
             
             initial_interpolation = np.sum([
-                parameter_to_gwpop_model[p](data_grid, *[plausible_hyperparameters[h] for h in parameter_to_hyperparameters[p]]) for ii, p in enumerate(parameters)
+                pixelpop_data.parametric_models[p](data_grid, *[
+                    plausible_hyperparameters[h] 
+                    for h in pixelpop_data.parameter_to_hyperparameters[p]
+                    ]) 
+                for ii, p in enumerate(parameters)
             ], axis=0)
-            pdet = LSE(initial_interpolation[inj_bins] + inj_weights) - jnp.log(injections['total_generated'])
-            Rexp = jnp.log(Nobs) - pdet - jnp.log(injections['analysis_time'])
+            pdet = LSE(initial_interpolation[pixelpop_data.inj_bins] + inj_weights) - jnp.log(pixelpop_data.injections['total_generated'])
+            Rexp = jnp.log(Nobs) - pdet - jnp.log(pixelpop_data.injections['analysis_time'])
             initial_interpolation = np.logaddexp(initial_interpolation, -10*np.ones_like(initial_interpolation)) # logaddexp -10 to smooth out negative divergences
             return_dict = {return_key: Rexp + initial_interpolation}
         return return_dict
@@ -211,7 +215,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         if not pixelpop_data.marginalize_sigma:
             coupling_prior = pixelpop_data.coupling_prior
             if pixelpop_data.length_scales:
-                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
             else:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
 
@@ -235,7 +239,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
-                sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
+                sum_axes = tuple(np.arange(pixelpop_data.dimension)[np.r_[0:ii,ii+1:pixelpop_data.dimension]])
                 numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(pixelpop_data.logdV[:ii]) + jnp.sum(pixelpop_data.logdV[ii+1:]))
 
         event_weights += merger_rate_density[event_bins] 
@@ -478,7 +482,7 @@ def inference_loop(
                 for key in chain_samples:
                     chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
             mcmc.transfer_states_to_host()
-            key0 = chain_samples.keys()[0]
+            key0 = list(chain_samples.keys())[0]
             if (sample % cache_cadence == 0) and (chain_samples[key0].shape[0] >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
                 

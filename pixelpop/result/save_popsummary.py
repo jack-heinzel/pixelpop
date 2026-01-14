@@ -11,7 +11,8 @@ from ..models import gwpop_models
 from scipy.special import logsumexp as LSE
 from tqdm import tqdm
 from ..models.car import axes_tril
-from .validate import *
+from .validate import validate_pixelpop_inference
+import xarray as xr
 
 def combine_chains(chain_1, chain_2):
     for k in chain_1.keys():
@@ -67,38 +68,95 @@ def get_input_metadata(file_label, datadir='../data'):
     # print(wfs)
     return wfs, wf_paths, metadata
 
-def get_analysis_metadata(
-        hyperposterior, pixelpop_data, verbose=True
+
+def save_text_summary(
+        rhat_results, ess_results, error_stats, rhat_threshold=1.01, ess_threshold=100, 
+        filename='validation_summary.txt'
         ):
-    pass
     
+    with open(filename, 'w') as f:
+        f.write("PIXELPOP INFERENCE VALIDATION SUMMARY\n")
+        f.write("="*40 + "\n\n")
+
+        all_rhat = np.concatenate([v.values.flatten() for v in rhat_results.data_vars.values()])
+        all_ess = np.concatenate([v.values.flatten() for k, v in ess_results.data_vars.items() if '_bulk' in k])
+        
+        rhat_fail_pct = (all_rhat > rhat_threshold).mean() * 100
+        ess_fail_pct = (all_ess < ess_threshold).mean() * 100
+
+        f.write("--- Global Statistics ---\n")
+        f.write(f"R-hat:  Median = {np.nanmedian(all_rhat):.4f}, Max = {np.nanmax(all_rhat):.4f}\n")
+        f.write(f"ESS:    Median = {np.nanmedian(all_ess):.1f}, Min = {np.nanmin(all_ess):.1f}\n")
+        f.write(f"Failures: {rhat_fail_pct:.2f}% exceed R-hat {rhat_threshold}\n")
+        f.write(f"          {ess_fail_pct:.2f}% fall below ESS {ess_threshold}\n\n")
+
+        # Identify worst parameters
+        f.write("--- Worst Offenders (Highest R-hat) ---\n")
+        f.write(f"{'Parameter/Index':<30} | {'R-hat':<10}\n")
+        f.write("-" * 45 + "\n")
+        
+        # Create a list of all parameter names and their values
+        rhat_list = []
+        for var in rhat_results.data_vars:
+            vals = rhat_results[var].values.flatten()
+            if vals.size == 1:
+                rhat_list.append((var, vals[0]))
+            else:
+                # For high-dim, find the max in that variable
+                idx = np.nanargmax(vals)
+                rhat_list.append((f"{var}[flat_idx {idx}]", vals[idx]))
+        
+        # Sort by R-hat descending and take top 5
+        worst_rhats = sorted(rhat_list, key=lambda x: x[1], reverse=True)[:5]
+        for name, val in worst_rhats:
+            f.write(f"{name:<30} | {val:<10.4f}\n")
+        f.write("\n")
+
+        f.write("--- Monte Carlo Systematics ---\n")
+        for k, v in error_stats.items():
+            f.write(f"{k:45}: {v:.6f}\n")
+        f.write("\n")
+
+        f.write("--- Low-Dimensional Parameter Details ---\n")
+        f.write(f"{'Parameter':<20} | {'R-hat':<10} | {'ESS (Bulk)':<10}\n")
+        f.write("-" * 45 + "\n")
+        
+        for var in rhat_results.data_vars:
+            if rhat_results[var].size < 5:
+                rh = rhat_results[var].values.flatten()[0]
+                es = ess_results[f"{var}_bulk"].values.flatten()[0]
+                f.write(f"{var:<20} | {rh:<10.4f} | {es:<10.1f}\n")
+
+    print(f"Validation summary saved to {filename}")
+
 
 def create_popsummary(
-        pixelpop_data, hyperposterior, run_name, popsummary_path='../results/popsummary/',
+        pixelpop_data, hyperposterior_chains, run_name, popsummary_path='../results/popsummary/',
         datadir='../data', metadata_label="", overwrite=False,  
         ):
     '''
     Parameters
     ----------
-    pixelpop_data: 
-        TODO
-    hyperposterior: dict
-        A dictionary of the hyperposterior samples [np.NDarray shaped as 
-        (Nsamples,...)]
-    run_name: str
+    pixelpop_data: PixelPopData
+        The data object containing posteriors, injections, and model settings.
+    hyperposterior : list[dict] or dict
+        Either a list of dictionaries of the hyperposterior samples [np.NDarray 
+        shaped as (Nsamples,...)], indexing the independent chains, or single 
+        dictionary of one chain
+    run_name : str
         name for popsummary file
-    popsummary_path: str
+    popsummary_path : str
         relative path from script directory where to save the popsummary file
-    datadir: str
+    datadir : str
         relative path from the script directory where the gwpopulation_pipe 
         data (posterior samples, injections, etc.) was stored
-    metadata_label: str
+    metadata_label : str
         additional subdirectory of datadir where the gwpopulation_pipe data is 
         stored, e.g., datadir/metadata_label/ contains gwpopulation_pipe metadata
-    overwrite: bool
+    overwrite : bool
         whether to overwrite existing popsummary data
-    
     '''
+
     pixelpop_parameters = pixelpop_data.pixelpop_parameters
     other_parameters = pixelpop_data.other_parameters
     bins = pixelpop_data.bins
@@ -106,14 +164,17 @@ def create_popsummary(
     parametric_models = pixelpop_data.parametric_models
     parameter_to_hyperparameters = pixelpop_data.parameter_to_hyperparameters
     dimension = pixelpop_data.dimension
+    lower_triangular = pixelpop_data.lower_triangular
+    minima = pixelpop_data.minima
+    maxima = pixelpop_data.maxima
     
     parameters = pixelpop_parameters + other_parameters
 
-    if type(hyperposterior) == list:
-        if len(hyperposterior) == 1:
-            hyperposterior = hyperposterior[0]
+    if type(hyperposterior_chains) == list:
+        if len(hyperposterior_chains) == 1:
+            hyperposterior = hyperposterior_chains[0]
         else:
-            hyperposterior = reduce(combine_chains, hyperposterior)
+            hyperposterior = reduce(combine_chains, hyperposterior_chains)
 
     delta_pars = {}
     for p in other_parameters:
@@ -127,10 +188,11 @@ def create_popsummary(
         for k in required_keys:
             if not k in hyperposterior:
                 hyperposterior[k] = delta_pars[k]*np.ones(Nsamples)
-
+    
+    popsummary_path = os.path.join(popsummary_path, run_name)
     if not os.path.exists(popsummary_path):
         os.makedirs(popsummary_path)
-    popsummary_filepath = os.path.join(popsummary_path, run_name + '.h5')
+    popsummary_filepath = os.path.join(popsummary_path, run_name + '_popsummary.h5')
 
     try:
         wfs, wf_paths, metadata = get_input_metadata(file_label=metadata_label, datadir=datadir)
@@ -161,7 +223,7 @@ def create_popsummary(
         # first two axes are assumed lower triangular
         assert bins[0] == bins[1]
         skip_parameters = pixelpop_parameters[:2]
-        axes = tuple(range(2, len(pixelpop_parameters)))
+        axes = tuple(range(2, dimension))
         # 
         ldm1 = pixelpop_data.log_dV[0]
         ldm2 = pixelpop_data.log_dV[1]
@@ -263,8 +325,28 @@ def create_popsummary(
         overwrite=overwrite
     )
 
-    # validate hyperposterior metrics: error statistic, neffs, and rhats
-    # ....
-    # ....
-    # ....
-    # ....
+    rhat_results, ess_results, error_stats, summary = validate_pixelpop_inference(
+        hyperposterior_chains,
+        pixelpop_data,
+        )
+    for k in summary:
+        result.set_metadata(k, summary[k], overwrite=overwrite)
+
+    # save details about the validation to a validation_statistics h5 file
+    validation_filename = os.path.join(popsummary_path, 'validation_statistics.h5')
+
+    error_ds = xr.Dataset(error_stats)
+    rhat_results.to_netcdf(validation_filename, group='rhat', engine='h5netcdf')
+    ess_results.to_netcdf(validation_filename, group='ess', engine='h5netcdf', mode='a')
+    error_ds.to_netcdf(validation_filename, group='systematics', engine='h5netcdf', mode='a')
+
+    summary_filepath = os.path.join(popsummary_path, 'validation_summary.txt')
+    
+    save_text_summary(
+        rhat_results, 
+        ess_results, 
+        error_stats, 
+        rhat_threshold=1.01, 
+        ess_threshold=100, 
+        filename=summary_filepath
+        )

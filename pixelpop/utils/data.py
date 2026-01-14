@@ -408,12 +408,12 @@ class PixelPopData:
                 if h in self.priors:    
                     # User provided override
                     pprint = self.priors[h]
-                    print(f'Using custom prior {h} = {pprint[1].__name__}...')
+                    print(f'Using custom prior {h} = {pprint[1].__name__}{tuple(pprint[0])}')
                     final_priors[h] = self.priors[h]
                 else:
                     # Global default
                     pprint = gwpop_models.default_priors[h]
-                    print(f'Using default prior {h} = {pprint[1].__name__}...')
+                    print(f'Using default prior {h} = {pprint[1].__name__}{tuple(pprint[0])}')
                     final_priors[h] = gwpop_models.default_priors[h]
         self.priors = final_priors
 
