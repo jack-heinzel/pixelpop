@@ -36,14 +36,12 @@ def get_posterior(rundir, chain_regex='chain_*_samples', result_file_type='h5'):
             with open(p, 'rb') as ff:
                 chain = pkl.load(ff)
         else:
-            print('h5 and pkl are only accepted result_file_type')
-            return
+            raise TypeError(
+                'h5 and pkl are only accepted result_file_type'
+                )
         chains.append(chain)
-    combined_chains = reduce(combine_chains, chains)
-    for k in combined_chains:
-        print(k, combined_chains[k].shape)
 
-    return combined_chains
+    return chains
 
 def get_input_metadata(file_label, datadir='../data'):
     file_path = os.path.join(datadir, file_label, 'event_data.json')
@@ -139,7 +137,7 @@ def create_popsummary(
     ----------
     pixelpop_data: PixelPopData
         The data object containing posteriors, injections, and model settings.
-    hyperposterior : list[dict] or dict
+    hyperposterior_chains : list[dict] or dict
         Either a list of dictionaries of the hyperposterior samples [np.NDarray 
         shaped as (Nsamples,...)], indexing the independent chains, or single 
         dictionary of one chain
@@ -175,6 +173,9 @@ def create_popsummary(
             hyperposterior = hyperposterior_chains[0]
         else:
             hyperposterior = reduce(combine_chains, hyperposterior_chains)
+    else:
+        assert isinstance(hyperposterior_chains, dict)
+        hyperposterior = hyperposterior_chains 
 
     delta_pars = {}
     for p in other_parameters:
@@ -225,13 +226,13 @@ def create_popsummary(
         skip_parameters = pixelpop_parameters[:2]
         axes = tuple(range(2, dimension))
         # 
-        ldm1 = pixelpop_data.log_dV[0]
-        ldm2 = pixelpop_data.log_dV[1]
+        ldm1 = pixelpop_data.logdV[0]
+        ldm2 = pixelpop_data.logdV[1]
 
         # log of the volume element for all other parameters
-        lda = pixelpop_data.log_dV[2:]
+        lda = pixelpop_data.logdV[2:]
 
-        hyperposterior['log_rate'] = LSE(hyperposterior['merger_rate_density']) + np.sum(pixelpop_data.log_dV) - np.log(2) # divide by 2 bc lower triangular
+        hyperposterior['log_rate'] = LSE(hyperposterior['merger_rate_density']) + np.sum(pixelpop_data.logdV) - np.log(2) # divide by 2 bc lower triangular
         hyperposterior['merger_rate_density'] = np.log(axes_tril(np.exp(hyperposterior['merger_rate_density']), axes=(1,2)))
         
         # converting to comoving merger rate density, if applicable
@@ -239,10 +240,10 @@ def create_popsummary(
         if 'redshift' not in pixelpop_parameters: 
             # redshift marginalization requires cosmological factors
             m1 = np.array(
-                [LSE(Rsub, axis=(2,)+axes) + np.sum(lda) + ldm2 for Rsub in tqdm(R, desc=f'Computing mass_1 marginals')]
+                [LSE(Rsub, axis=(1,)+axes) + np.sum(lda) + ldm2 for Rsub in tqdm(R, desc=f'Computing mass_1 marginals')]
             )
             m2 = np.array(
-                [LSE(Rsub, axis=(1,)+axes) + np.sum(lda) + ldm1 for Rsub in tqdm(R, desc=f'Computing mass_2 marginals')]
+                [LSE(Rsub, axis=(0,)+axes) + np.sum(lda) + ldm1 for Rsub in tqdm(R, desc=f'Computing mass_2 marginals')]
             )
             
             m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)

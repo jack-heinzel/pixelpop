@@ -50,7 +50,7 @@ class PixelPopRateFunction(object):
         
         for attr in attrs_to_copy:
             value = getattr(pixelpop_data, attr)
-            setattr(self, value)
+            setattr(self, attr, value)
 
         if dataset_type == 'posteriors':
             self.dataset_bins = pixelpop_data.event_bins
@@ -145,9 +145,32 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     likelihood (`rate=True`) and includes the likelihood correction term 
     (`include_likelihood_correction=True`).
     """
-
+    if verbose:
+        print('='*50)
+        print('Computing error statistics')
+        print('='*50 + '\n')
+    
     posteriors = pixelpop_data.posteriors
     injections = pixelpop_data.injections
+
+    posteriors['prior'] = jnp.exp(posteriors.pop('log_prior'))
+    injections['prior'] = jnp.exp(injections.pop('log_prior'))
+    
+    # add delta parameters
+    # TODO: move this to a PixelPopData function
+    delta_pars = {}
+    for p in pixelpop_data.other_parameters:
+        for h in pixelpop_data.parameter_to_hyperparameters[p]:
+            if pixelpop_data.priors[h][1].__name__ == 'Delta':
+                delta_pars[h] = pixelpop_data.priors[h][0][0]
+
+    Nsamples = len(hyperposterior['log_likelihood'])
+    for par in pixelpop_data.other_parameters:
+        required_keys = pixelpop_data.parameter_to_hyperparameters[par]
+        for k in required_keys:
+            if not k in hyperposterior:
+                hyperposterior[k] = delta_pars[k]*jnp.ones(Nsamples)
+
 
     event_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='posteriors'
@@ -235,18 +258,18 @@ def rank_normalized_rhat(
     # estimation with finite samples to be above threshold
     all_rhats = jnp.concatenate([rhat_results[v].values.flatten() for v in rhat_results.data_vars])
     fail_pct = (all_rhats > threshold).mean()
-    
+
     if fail_pct > fail_percentage_threshold:
         if verbose:
-            warnings.warn(f"Warning: {100*fail_pct:.2f}% of parameters exceed R-hat {threshold}. "
+            warnings.warn(f"Warning: {100*fail_pct:.2f}% of parameters exceed R-hat={threshold}. "
                           "This may indicate a genuine convergence failure.")
         passed = False
     else:
         if verbose:
-            print(f"Convergence check: Only {100*fail_pct:.2f}% of parameters exceed {threshold}. "
-                  "Likely noise in high-dimensional estimation.")
+            print(f"Convergence check: {100*fail_pct:.2f}% of parameters exceed R-hat={threshold}. "
+                  "This is acceptable, and likely noise in high-dimensional estimation.")
+            print(f"Mean R-hat = {all_rhats.mean()} and max R-hat = {all_rhats.max()}")
         passed = True
-
     return rhat_results, passed
 
 def compute_effective_sample_sizes(
@@ -314,8 +337,9 @@ def compute_effective_sample_sizes(
         passed = False
     else:
         if verbose:
-            print(f"Efficiency check: Only {100*fail_pct:.2f}% of parameters have ESS below {threshold}. "
+            print(f"Efficiency check: {100*fail_pct:.2f}% of parameters have ESS below {threshold}. "
                   "Sampler efficiency appears robust.")
+            print(f"Mean ESS = {all_ess_bulk.mean()} and minimum ESS = {all_ess_bulk.min()}\n")
         passed = True
 
     return ess_results, passed
