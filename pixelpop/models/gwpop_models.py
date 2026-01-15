@@ -1,5 +1,5 @@
 import wcosmo
-from astropy import units
+import unxt
 from jax import jit#, lax
 from jax.nn import log_sigmoid
 from numpyro import distributions as dist
@@ -439,12 +439,13 @@ def PowerlawRedshift(data, lamb, max_z=1.9, normalize=True, return_normalization
         z = data['redshift']
     else:
         z = data
-    zs_fixed = np.linspace(1e-5, max_z, 1000)
+    zs_fixed = jnp.linspace(1e-5, max_z, 1000)
     dvs = COSMO.differential_comoving_volume(zs_fixed)
-    if isinstance(dvs, units.quantity.Quantity):
-        dvs = 4*jnp.pi*dvs.to(units.Gpc**3 / units.sr).value
+    if isinstance(dvs, unxt.quantity.Quantity):
+        # TODO: preferably would use unxt.unit values...
+        dvs = 4*jnp.pi * 1e-9 * dvs.value
     else:
-        dvs = 4*jnp.pi* 1e-9 * dvs
+        dvs = 4*jnp.pi * 1e-9 * dvs
     fixed_ln_dvc_dz = jnp.log(dvs)
 
     if normalize:
@@ -524,7 +525,7 @@ def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True
         z = data
     zs_fixed = np.linspace(1e-5, z_max, 1000)
     fixed_ln_dvc_dz = jnp.log(
-        4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(units.Gpc**3 / units.sr).value
+        4*jnp.pi*COSMO.differential_comoving_volume(zs_fixed).to(unxt.Gpc**3 / unxt.sr).value
         )
     if normalize:
         dz = zs_fixed[1] - zs_fixed[0]
@@ -1056,8 +1057,7 @@ gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
-    'redshift': PowerlawRedshift, #(data, lamb, minimum, maximum, normalize=False):
-    'redshift_psi': PowerlawRedshiftPsi, #(data, lamb, minimum, maximum, normalize=False):
+    'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
     'a': iid_normal_spin, #(data, mu, var)

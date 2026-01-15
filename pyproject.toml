@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools_scm[toml]>=3.4.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixelpop"
+description = "Powered by numpyro and jax, package for fitting the GW population with a nonparametric binning scheme, where bins are correlated with only their nearest neighbors. Meant for inferring the GW population distribution nonparametrically in higher dimensions."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Jack Heinzel", email = "heinzelj@mit.edu"}
+]
+urls = {homepage = "https://git.ligo.org/jack.heinzel/pixelpop"}
+
+# FIX 1: Removed "dependencies" from dynamic.
+# You are defining them statically below, so they cannot be marked as dynamic.
+dynamic = ["version"]
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax",
+    "pandas",
+    "numpyro",
+    "gwpopulation",
+    "gwpopulation_pipe",
+    "wcosmo",
+    "astropy",
+    "h5ify",
+    "popsummary",
+    "arviz",
+    "population_error",
+    "xarray",
+    "unxt"
+]
+
+# FIX 2: Moved "packages" from [project] to [tool.setuptools].
+[tool.setuptools]
+packages = ["pixelpop", "pixelpop.experimental", "pixelpop.models", "pixelpop.result", "pixelpop.utils"]
+
+[tool.setuptools_scm]
+version_scheme = "release-branch-semver"
+write_to = "pixelpop/_version.py"
