@@ -1,4 +1,5 @@
 from jax import numpy as jnp
+import numpy as np
 from . import place_samples_in_bins
 from ..models import gwpop_models
 import warnings
@@ -316,8 +317,7 @@ class PixelPopData:
     skip_nonparametric: bool = False
     constraint_funcs: List[Callable] = field(default_factory=list)
     coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
-    
-    
+
     def preprocess_cosmology(self, cosmology):
         """
         Calculates differential comoving volumes if 'redshift' is a parameter.
@@ -325,24 +325,28 @@ class PixelPopData:
         """
         
         print("Preprocessing cosmology data...")
-        from unxt.quantity import Quantity
+        # from unxt.quantity import Quantity
         
         # Extract data
         event_z = self.posteriors['redshift']
         inj_z = self.injections['redshift']
         
-        max_z = jnp.maximum(jnp.max(inj_z), jnp.max(event_z))
-        zs = jnp.linspace(1e-6, max_z, 10000)
+        max_z = np.maximum(np.max(inj_z), np.max(event_z))
+        zs = np.linspace(1e-6, max_z, 10000)
         
         # Calculate dVc/dz / (1+z)
         dVs = cosmology.differential_comoving_volume(zs)
         
-        if isinstance(dVs, Quantity):
-            # TODO: implement in terms of unxt/wcosmo unit manipulations
-            dVs = dVs.value 
-        dVs = 4 * jnp.pi * 1e-9 * dVs 
+        # if isinstance(dVs, Quantity):
+        #     # TODO: implement in terms of unxt/wcosmo unit manipulations
+        #     dVs = dVs.value 
+        try:
+            dVs = dVs.value
+        except AttributeError:
+            pass
+        dVs = 4 * np.pi * 1e-9 * dVs 
             
-        ln_dVTc = jnp.log(dVs) - jnp.log(1 + zs)
+        ln_dVTc = np.log(dVs) - np.log(1 + zs)
 
         # Interpolate and store in the dictionaries
         self.posteriors['ln_dVTc'] = jnp.interp(event_z, zs, ln_dVTc)
