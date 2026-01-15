@@ -7,7 +7,6 @@ import os
 from glob import glob
 from functools import reduce
 import json
-from ..models import gwpop_models
 from scipy.special import logsumexp as LSE
 from tqdm import tqdm
 from ..models.car import axes_tril
@@ -333,7 +332,11 @@ def create_popsummary(
     for k in summary:
         result.set_metadata(k, summary[k], overwrite=overwrite)
     
-    result.set_metadata('pixelpop_version', summary[k], overwrite=overwrite)
+    try:
+        from .. import __version__
+    except ImportError:
+        __version__ = "unknown"
+    result.set_metadata('pixelpop_version', __version__, overwrite=overwrite)
     # save details about the validation to a validation_statistics h5 file
     validation_filename = os.path.join(popsummary_path, 'validation_statistics.h5')
 
