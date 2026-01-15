@@ -332,7 +332,8 @@ def create_popsummary(
         )
     for k in summary:
         result.set_metadata(k, summary[k], overwrite=overwrite)
-
+    
+    result.set_metadata('pixelpop_version', summary[k], overwrite=overwrite)
     # save details about the validation to a validation_statistics h5 file
     validation_filename = os.path.join(popsummary_path, 'validation_statistics.h5')
 
