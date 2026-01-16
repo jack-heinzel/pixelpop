@@ -13,7 +13,6 @@ authors = [
 ]
 urls = {homepage = "https://git.ligo.org/jack.heinzel/pixelpop"}
 
-# FIX 1: Removed "dependencies" from dynamic.
 # You are defining them statically below, so they cannot be marked as dynamic.
 dynamic = ["version"]
 
@@ -35,9 +34,11 @@ dependencies = [
     "unxt"
 ]
 
-# FIX 2: Moved "packages" from [project] to [tool.setuptools].
 [tool.setuptools]
 packages = ["pixelpop", "pixelpop.experimental", "pixelpop.models", "pixelpop.result", "pixelpop.utils"]
+zip-safe = false
+include-package-data = false
+license-files = []
 
 [tool.setuptools_scm]
 version_scheme = "release-branch-semver"
