@@ -7,8 +7,6 @@ standard_events/*
 
 ## python .gitignore: https://github.com/github/gitignore/blob/main/Python.gitignore
 
-*/_version.py
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 */__pycache__
@@ -19,6 +17,8 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+*/_version.py
+LICENSE
 .Python
 build/
 develop-eggs/
