@@ -56,33 +56,33 @@ injections = pixelpop.utils.data.convert_m1m2_to_lm1lm2(injections)
 clean_data(posteriors)
 clean_data(injections, remove=True)
 
-print(np.min(injections['log_mass_1']), np.min(injections['log_mass_2']))
-
 parameters = ['log_mass_1', 'log_mass_2']
 other_parameters = ['redshift', 'a', 't']
 
 priors = {'max_z': [[2.3], dist.Delta]}
 
+pp_data = pixelpop.utils.PixelPopData(
+    posteriors = posteriors, # individual GW parameters
+    injections = injections, # injections to estimate selection effects
+    pixelpop_parameters = parameters, # parameters to infer with PixelPop ICAR model
+    other_parameters = other_parameters, # "nuisance" parameters
+    bins = 100, # number of bins along each axis
+    minima = {'log_mass_1': jnp.log(mmin), 'log_mass_2': jnp.log(mmin)}, # minimum of space
+    maxima = {'log_mass_1': jnp.log(200), 'log_mass_2': jnp.log(200)}, # maxima of space
+    parametric_models = {}, # use defaults
+    priors = priors, # modify prior on max_z
+    lower_triangular = True, # Restrict domain to m1 > m2
+    marginalize_sigma = True, # use analytic marginalization of sigma coupling strength
+)
+
 probabilistic_model, initial_value = pixelpop.models.probabilistic.setup_probabilistic_model(
-    posteriors, # individual GW parameters
-    injections, # injections to estimate selection effects
-    parameters, # parameters to infer with PixelPop ICAR model
-    other_parameters, # nuisance parameters
-    100, # number of bins along each axis
-    minima={'log_mass_1': np.log(mmin), 'log_mass_2': np.log(mmin)}, # minimum of space
-    maxima={}, # maxima set to default values
-    priors=priors, # priors which differ from defaults
-    UncertaintyCut=np.sqrt(varcut), # convergence criteria for likelihood estimator
-    parametric_models={}, # parametric models for nuisance parameters are set to defaults
-    length_scales=False, # same ICAR Gaussian coupling strength in all directions
-    random_initialization=True, # initialize ICAR model from random Gaussian draw
-    lower_triangular=True, # Restrict domain to m1 > m2
+    pp_data
     )
 
 # run the inference, hyperparameters of NUTS (warmup, maxtreedepth, etc.) tuned somewhat    
 output, mcmc = pixelpop.models.probabilistic.inference_loop(
     probabilistic_model, 
-    model_kwargs={'posteriors': posteriors, 'injections': injections}, 
+    model_kwargs={'posteriors': pp_data.posteriors, 'injections': pp_data.injections}, 
     initial_value=initial_value,
     warmup=500_000, 
     tot_samples=1000,
@@ -93,25 +93,20 @@ output, mcmc = pixelpop.models.probabilistic.inference_loop(
     parallel=5,
     run_dir='results/',
     name=f'm1m2_varcut{varcut}',
-    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance', 'lnsigma', 'lamb', 'mu_spin', 'var_spin'],
+    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance', 'lamb', 'mu_spin', 'var_spin'],
     # ^ for checking on chains while they run
     dense_mass=False
     )
 
-# save output in popsummary file
+# save output in popsummary file, also computes diagnostics for convergence 
+# and Monte Carlo systematics
 pixelpop.result.create_popsummary(
+    pp_data, # store pixelpop relevant data
     output, # results 
     f'm1m2_varcut{varcut}', # name of file
-    parameters, # "PixelPop"-ed parameters
-    other_parameters, # nuisance parameters
-    bins=100, 
     popsummary_path='results/popsummary/', 
     datadir='data',
     metadata_label="bbh", # doesn't exist, will skip metadata saving
     overwrite=True, 
-    minima={'log_mass_1': np.log(mmin), 'log_mass_2': np.log(mmin)}, 
-    maxima={}, 
-    parametric_models={}, 
-    lower_triangular=True, 
-    priors=priors,
     )
+

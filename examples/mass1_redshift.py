@@ -51,26 +51,28 @@ other_parameters = ['mass_ratio', 'a', 't'] # nuisance parameters, we define par
 # Pin these parametric hyperparameters to set values
 priors = {'max_z': [[2.3], numpyro.distributions.Delta], 'qmin': [[0.1], numpyro.distributions.Delta]}
 
+pp_data = pixelpop.utils.PixelPopData(
+    posteriors = posteriors, # individual GW parameters
+    injections = injections, # injections to estimate selection effects
+    pixelpop_parameters = parameters, # parameters to infer with PixelPop ICAR model
+    other_parameters = other_parameters, # "nuisance" parameters
+    bins = 100, # number of bins along each axis
+    minima = {'log_mass_1': np.log(mmin)}, # minimum of space
+    maxima = {}, # maxima of space, set to defaults
+    parametric_models = {}, # use defaults
+    priors = priors, # modify prior on max_z and qmin
+    lower_triangular = False, # full space is allowed
+    marginalize_sigma = True, # use analytic marginalization of sigma coupling strength
+)
+
 probabilistic_model, initial_value = pixelpop.models.probabilistic.setup_probabilistic_model(
-    posteriors, # individual GW parameters
-    injections, # injections to estimate selection effects
-    parameters, # parameters to infer with PixelPop ICAR model
-    other_parameters, # nuisance parameters
-    100, # number of bins along each axis
-    minima={'log_mass_1': np.log(mmin)}, # minimum of space
-    maxima={}, # maxima set to default values
-    priors=priors, # priors which differ from defaults
-    UncertaintyCut=np.sqrt(varcut), # convergence criteria for likelihood estimator
-    parametric_models={}, # parametric models for nuisance parameters are set to defaults
-    length_scales=False, # same ICAR Gaussian coupling strength in all directions
-    random_initialization=True, # initialize ICAR model from random Gaussian draw
-    lower_triangular=False, # full space is allowed
+    pp_data
     )
 
 # run the inference, hyperparameters of NUTS (warmup, maxtreedepth, etc.) tuned somewhat
 output = pixelpop.models.probabilistic.inference_loop(
     probabilistic_model, 
-    model_kwargs={'posteriors': posteriors, 'injections': injections}, 
+    model_kwargs={'posteriors': pp_data.posteriors, 'injections': pp_data.injections}, 
     initial_value=initial_value,
     warmup=500_000, 
     tot_samples=1000,
@@ -88,19 +90,11 @@ output = pixelpop.models.probabilistic.inference_loop(
 
 # save output in popsummary file
 pixelpop.result.create_popsummary(
+    pp_data, 
     output, # results
     f'm1z_varcut{varcut}', # name of file
-    parameters, # "PixelPop"-ed parameters
-    other_parameters, # nuisance parameters
-    bins=100,
     popsummary_path='results/popsummary/',
     datadir='data',
     metadata_label="bbh", # doesn't exist, will skip metadata saving
     overwrite=True,
-    minima={'log_mass_1': np.log(mmin)},
-    maxima={},
-    parametric_models={},
-    hyperparameters={},
-    lower_triangular=False,
-    priors=priors,
     )
