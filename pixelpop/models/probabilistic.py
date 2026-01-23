@@ -4,7 +4,8 @@ from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_ma
 from ..experimental.car import (
     DiagonalizedICARTransform, 
     initialize_sigma_marginalized_ICAR,
-    lower_triangular_sigma_marg_log_prob
+    lower_triangular_sigma_marg_log_prob,
+    lower_triangular_sigma_marg_log_prob_and_log_quad
 )
 import numpyro.distributions as dist
 import jax.numpy as jnp
@@ -225,7 +226,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
             
             if pixelpop_data.marginalize_sigma:
-                prior_factor = lower_triangular_sigma_marg_log_prob(merger_rate_density, normalization_dof, pixelpop_data.adj_matrices)
+                prior_factor, quad = lower_triangular_sigma_marg_log_prob_and_log_quad(merger_rate_density, normalization_dof, pixelpop_data.adj_matrices)
             else:
                 prior_factor = lower_triangular_log_prob(merger_rate_density, normalization_dof, lsigma, pixelpop_data.adj_matrices)
             numpyro.factor('prior_factor', prior_factor)
@@ -233,7 +234,10 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         else:
 
             if pixelpop_data.marginalize_sigma:
-                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True))
+                icar = ICAR_model(single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True)
+                merger_rate_density = numpyro.sample('merger_rate_density', dist.ImproperUniform(dist.constraints.real, tuple(pixelpop_data.bins), ()))
+                prior_factor, quad = icar.log_prob_and_quad(merger_rate_density)
+                numpyro.factor('prior_factor', prior_factor)
             else:
                 merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True))        
             
@@ -241,6 +245,11 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
                 sum_axes = tuple(np.arange(pixelpop_data.dimension)[np.r_[0:ii,ii+1:pixelpop_data.dimension]])
                 numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(pixelpop_data.logdV[:ii]) + jnp.sum(pixelpop_data.logdV[ii+1:]))
+
+        if pixelpop_data.marginalize_sigma:
+            unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(bins/2)))
+            precision = unscaled_gamma * quad / 2
+            numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
         event_weights += merger_rate_density[event_bins] 
         inj_weights += merger_rate_density[inj_bins]

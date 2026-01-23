@@ -10,11 +10,7 @@ from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
 import numpyro
 
-def prior_probabilistic_model(posteriors, injections,
-        parameters, other_parameters, bins, length_scales=False, minima={}, maxima={}, 
-        parametric_models={}, hyperparameters={}, priors={}, lower_triangular=False, 
-        constraint_funcs=[], log='default', coupling_prior=[(-3,3), dist.Uniform],
-        ):
+def prior_probabilistic_model(pixelpop_data, log='default'):
     """
     Construct a hierarchical probabilistic model for GW population inference.
 
@@ -65,6 +61,22 @@ def prior_probabilistic_model(posteriors, injections,
     initial_value : dict
         Suggested initial values for MCMC warmup.
     """
+
+    posteriors = pixelpop_data.posteriors
+    injections = pixelpop_data.injections
+    parameters = pixelpop_data.pixelpop_parameters
+    other_parameters = pixelpop_data.other_parameters
+    bins = pixelpop_data.bins
+    length_scales = pixelpop_data.length_scales
+    minima = pixelpop_data.minima
+    maxima = pixelpop_data.maxima
+    parametric_models = pixelpop_data.parametric_models
+    hyperparameters = pixelpop_data.hyperparameters
+    priors = pixelpop_data.priors
+    lower_triangular = pixelpop_data.lower_triangular
+    constraint_funcs = pixelpop_data.constraint_funcs
+    coupling_prior = pixelpop_data.coupling_prior
+
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
