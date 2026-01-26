@@ -287,6 +287,7 @@ def create_popsummary(
             rates = hyperposterior['log_marginal_'+par]
             rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
             rates += lrs[:,None]
+            pos = np.linspace(minima[par], maxima[par], bins+1)
             
         else:
             try:
