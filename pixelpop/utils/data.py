@@ -424,3 +424,31 @@ class PixelPopData:
         # for now, hardcode Planck15_LAL cosmology
         # TODO: allow for different cosmologies
         self.preprocess_cosmology(gwpop_models.COSMO)
+
+    def fill_out_hyperposterior(self, hyperposterior):
+        '''
+        Helper function for adding delta parameters to the hyperposterior
+            
+        Parameters
+        ----------
+        hyperposterior : dict
+            dictionary of hyperposterior samples, chains flattened
+                
+        Returns
+        -------
+        hyperposterior : dict
+            hyperposterior with added samples at delta function prior sites
+        '''
+        delta_pars = {}
+        for p in self.other_parameters:
+            for h in self.parameter_to_hyperparameters[p]:
+                if self.priors[h][1].__name__ == 'Delta':
+                    delta_pars[h] = self.priors[h][0][0]
+        key0 = list(hyperposterior.keys())[0]
+        Nsamples = len(hyperposterior[key0])
+        for par in self.other_parameters:
+            required_keys = self.parameter_to_hyperparameters[par]
+            for k in required_keys:
+                if not k in hyperposterior:
+                    hyperposterior[k] = delta_pars[k]*jnp.ones(Nsamples)
+        return hyperposterior, Nsamples

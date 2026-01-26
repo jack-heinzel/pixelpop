@@ -3,106 +3,7 @@ import arviz as az
 import xarray as xr
 import warnings
 import population_error
-
-class PixelPopRateFunction(object):
-    """
-    A wrapper class that converts PixelPop data and model settings into a 
-    callable rate function compatible with the `population_error` package.
-
-    This class combines the parametric components (e.g., for "nuisance" parameters)
-    and the non-parametric pixelized components of the PixelPop model to return
-    the expected merger rate density for a given set of hyperparameters.
-
-    Parameters
-    ----------
-    pixelpop_data : PixelPopData
-        The data container holding event posteriors, injections, bin definitions,
-        and model settings.
-    dataset_type : str, default='posteriors'
-        Specifies which dataset bins to use for the rate evaluation. 
-        Must be either 'posteriors' (for evaluating event rates) or 
-        'injections' (for evaluating selection sensitivity).
-
-    Attributes
-    ----------
-    dataset_bins : jax.numpy.ndarray
-        The pre-computed bin indices for the specified dataset.
-    other_parameters : list of str
-        List of parameters modeled by parametric functions rather than pixels.
-    parametric_models : dict
-        Dictionary mapping parameters to their corresponding model functions.
-    parameter_to_hyperparameters : dict
-        Dictionary mapping parameters to the list of required hyperparameters.
-
-    Methods
-    -------
-    __call__(dataset, hyperparameters)
-        Computes the rate density for the provided dataset and hyperparameters.
-    """
-    
-    def __init__(self, pixelpop_data, dataset_type='posteriors'):
-
-        attrs_to_copy = [
-            'other_parameters', 
-            'parameter_to_hyperparameters', 
-            'parametric_models', 
-            ]
-        
-        for attr in attrs_to_copy:
-            value = getattr(pixelpop_data, attr)
-            setattr(self, attr, value)
-
-        if dataset_type == 'posteriors':
-            self.dataset_bins = pixelpop_data.event_bins
-        elif dataset_type == 'injections':
-            self.dataset_bins = pixelpop_data.inj_bins
-        else:
-            raise ValueError(
-                f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}' 
-                )
-        self.shape = self.dataset_bins[0].shape
-
-    def __call__(self, dataset, hyperparameters):
-        """
-        Evaluate the merger rate density at the dataset points.
-
-        Parameters
-        ----------
-        dataset : dict
-            Dictionary containing the data samples (e.g., 'ln_dVTc'). 
-            Note: The actual bin locations are pre-stored in `self.dataset_bins` 
-            and are not extracted from this dictionary during the call.
-        hyperparameters : dict
-            Dictionary of population hyperparameters, including 'merger_rate_density'
-            (the pixel heights) and parameters for any parametric sub-models.
-
-        Returns
-        -------
-        jax.numpy.ndarray
-            The expected rate density (in units of probability * total rate) 
-            for each sample in the dataset.
-        """
-        lp_parametric = self.log_prob_parametric_model(dataset, hyperparameters)
-        lp_pixelpop = self.log_rate_pixelpop(dataset, hyperparameters)
-
-        return jnp.exp(lp_parametric + lp_pixelpop)
-    
-    def log_prob_parametric_model(self, dataset, hyperparameters):
-        
-        log_probs = jnp.zeros(self.shape)
-              
-        for p in self.other_parameters:
-            hs = self.parameter_to_hyperparameters[p] # hyperparameters appropriate for this model
-            log_probs += self.parametric_models[p](dataset, *[hyperparameters[h] for h in hs])
-            
-        return log_probs
-    
-    def log_rate_pixelpop(self, dataset, hyperparameters):
-
-        ln_dVTc = dataset['ln_dVTc']
-        pp_rates = hyperparameters['merger_rate_density']
-        return pp_rates[self.dataset_bins] + ln_dVTc
-
+from .post_processing import PixelPopRateFunction
 
 def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     """
@@ -157,20 +58,7 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     injections['prior'] = jnp.exp(injections.pop('log_prior'))
     
     # add delta parameters
-    # TODO: move this to a PixelPopData function
-    delta_pars = {}
-    for p in pixelpop_data.other_parameters:
-        for h in pixelpop_data.parameter_to_hyperparameters[p]:
-            if pixelpop_data.priors[h][1].__name__ == 'Delta':
-                delta_pars[h] = pixelpop_data.priors[h][0][0]
-
-    Nsamples = len(hyperposterior['log_likelihood'])
-    for par in pixelpop_data.other_parameters:
-        required_keys = pixelpop_data.parameter_to_hyperparameters[par]
-        for k in required_keys:
-            if not k in hyperposterior:
-                hyperposterior[k] = delta_pars[k]*jnp.ones(Nsamples)
-
+    hyperposterior = pixelpop_data.fill_out_hyperposterior(hyperposterior)
 
     event_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='posteriors'
@@ -251,6 +139,10 @@ def rank_normalized_rhat(
     warning if the percentage of parameters exceeding the threshold 
     surpasses the `fail_percentage_threshold`.
     """
+    if verbose:
+        print('='*50)
+        print('Computing rank-normalized rhats')
+        print('='*50 + '\n')
 
     rhat_results = az.rhat(hyperposterior, method="rank")
     
@@ -318,6 +210,10 @@ def compute_effective_sample_sizes(
     warning if the percentage of parameters with ESS below threshold 
     surpasses the `fail_percentage_threshold`.
     """
+    if verbose:
+        print('='*50)
+        print('Computing aggregate effective sample sizes')
+        print('='*50 + '\n')
     # Compute both types of ESS
     ess_bulk = az.ess(hyperposterior, method="bulk")
     ess_tail = az.ess(hyperposterior, method="tail")

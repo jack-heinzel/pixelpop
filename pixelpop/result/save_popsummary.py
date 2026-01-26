@@ -11,6 +11,7 @@ from scipy.special import logsumexp as LSE
 from tqdm import tqdm
 from ..models.car import axes_tril
 from .validate import validate_pixelpop_inference
+from .post_processing import reweight_events_and_injections
 import xarray as xr
 
 def combine_chains(chain_1, chain_2):
@@ -326,6 +327,7 @@ def create_popsummary(
         overwrite=overwrite
     )
 
+    # validation of results
     rhat_results, ess_results, error_stats, summary = validate_pixelpop_inference(
         hyperposterior_chains,
         pixelpop_data,
@@ -356,3 +358,6 @@ def create_popsummary(
         ess_threshold=100, 
         filename=summary_filepath
         )
+    
+    # reweight events and injections
+    reweight_events_and_injections(result, hyperposterior, pixelpop_data, overwrite=overwrite)
