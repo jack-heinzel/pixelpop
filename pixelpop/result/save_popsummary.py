@@ -275,7 +275,8 @@ def create_popsummary(
     lrs = hyperposterior['log_rate']
     
     for ii, par in enumerate(parameters):
-        if par in pixelpop_parameters:            
+        print(f'Saving {par} rates on grids...')
+        if par in pixelpop_parameters:
             if par in skip_parameters:
                 continue
             
@@ -291,7 +292,6 @@ def create_popsummary(
             
         else:
             try:
-                print(f'Saving {par} rates on grids...')
                 pos = jnp.linspace(minima[par], maxima[par], 1000)
                 try:
                     rate_func = jit(parametric_models[par])
