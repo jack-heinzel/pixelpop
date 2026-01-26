@@ -275,7 +275,7 @@ def create_popsummary(
     lrs = hyperposterior['log_rate']
     
     for ii, par in enumerate(parameters):
-        if par in pixelpop_parameters:
+        if par in pixelpop_parameters:            
             if par in skip_parameters:
                 continue
             
@@ -287,7 +287,7 @@ def create_popsummary(
             rates = hyperposterior['log_marginal_'+par]
             rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
             rates += lrs[:,None]
-            pos = np.linspace(minima[par], maxima[par], bins+1)
+            pos = np.linspace(minima[par], maxima[par], bins[ii]+1)
             
         else:
             try:
