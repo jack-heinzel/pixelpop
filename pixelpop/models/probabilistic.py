@@ -45,7 +45,8 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         tri_size = int(pixelpop_data.bins[0]*(pixelpop_data.bins[0]+1)/2) 
         unique_sample_shape = (tri_size,) + tuple(pixelpop_data.bins[2:])
         normalization_dof = tri_size * int(np.prod(pixelpop_data.bins[2:])) # lower triangular in first two dimensions
-
+    else:
+        normalization_dof = int(np.prod(pixelpop_data.bins))
     def get_initial_value(plausible_hyperparameters, parameters, Nobs, inj_weights, random_initialization):
         """
         Construct initial values for the pixelized (nonparametric) merger rate density.
@@ -247,7 +248,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(pixelpop_data.logdV[:ii]) + jnp.sum(pixelpop_data.logdV[ii+1:]))
 
         if pixelpop_data.marginalize_sigma:
-            unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(bins/2)))
+            unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(normalization_dof/2)))
             precision = unscaled_gamma * quad / 2
             numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
