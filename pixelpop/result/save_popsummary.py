@@ -1,71 +1,15 @@
-import h5ify
-import pickle as pkl
 import numpy as np
 from jax import jit, numpy as jnp
 import popsummary
 import os
-from glob import glob
 from functools import reduce
-import json
 from scipy.special import logsumexp as LSE
 from tqdm import tqdm
 from ..models.car import axes_tril
 from .validate import validate_pixelpop_inference
-from .post_processing import reweight_events_and_injections
+from .post_processing import *
 import xarray as xr
-
-def combine_chains(chain_1, chain_2):
-    for k in chain_1.keys():
-        assert k in chain_2.keys()
-    assert len(chain_1.keys()) == len(chain_2.keys())
-
-    x = {}
-    for k in chain_1.keys():
-        x[k] = np.concatenate((chain_1[k], chain_2[k]), axis=0)
-    return x
-
-def get_posterior(rundir, chain_regex='chain_*_samples', result_file_type='h5'):
-    fpath = os.path.join(rundir, chain_regex+'.'+result_file_type)
-    paths = glob(fpath)
-    print(f"I got {len(paths)} unique chains")
-    chains = []
-    for p in paths:
-        if result_file_type == 'h5':
-            chain = h5ify.load(p)
-        elif result_file_type == 'pkl':
-            with open(p, 'rb') as ff:
-                chain = pkl.load(ff)
-        else:
-            raise TypeError(
-                'h5 and pkl are only accepted result_file_type'
-                )
-        chains.append(chain)
-
-    return chains
-
-def get_input_metadata(file_label, datadir='../data'):
-    file_path = os.path.join(datadir, file_label, 'event_data.json')
-    try:
-        with open(file_path, 'r') as file:
-            metadata = json.load(file)
-    except FileNotFoundError:
-        file_path = os.path.join(datadir, file_label, 'data', 'event_data.json')
-        with open(file_path, 'r') as file:
-            metadata = json.load(file)
-    wf_paths = metadata.keys()
-    wfs = []
-    for p in wf_paths:
-        if 'S230529' in p or 'GW230529' in p:
-            wfs.append('GW230529')
-            continue
-        name = p.split('/')[-1]
-        if name.startswith('S'):
-            wfs.append(name.split('-')[0])
-        else:
-            wfs.append(name.split('-')[3].replace('_PEDataRelease_mixed_cosmo.h5', '').replace('_PEDataRelease_cosmo.h5', ''))
-    # print(wfs)
-    return wfs, wf_paths, metadata
-
+from ..models.gwpop_models import map_to_gwpop_parameters
 
 def save_text_summary(
         rhat_results, ess_results, error_stats, rhat_threshold=1.01, ess_threshold=100, 
@@ -167,7 +111,10 @@ def create_popsummary(
     maxima = pixelpop_data.maxima
     
     parameters = pixelpop_parameters + other_parameters
-
+    gwparameters = []
+    for p in parameters:
+        gwparameters += map_to_gwpop_parameters[p]
+    
     if type(hyperposterior_chains) == list:
         if len(hyperposterior_chains) == 1:
             hyperposterior = hyperposterior_chains[0]
@@ -212,7 +159,7 @@ def create_popsummary(
         events=wfs,
         event_waveforms=[metadata[p]['waveform'] for p in wf_paths],
         event_sample_IDs=[metadata[p]['label'] for p in wf_paths],
-        event_parameters=parameters
+        event_parameters=gwparameters
         )
     result.set_hyperparameter_samples(np.array([hyperposterior[h] for h in h_keys]).T, overwrite=overwrite)
 
