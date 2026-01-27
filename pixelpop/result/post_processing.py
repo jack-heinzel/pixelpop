@@ -41,29 +41,6 @@ def get_posterior(rundir, chain_regex='chain_*_samples', result_file_type='h5'):
 
     return chains
 
-def get_input_metadata(file_label, datadir='../data'):
-    file_path = os.path.join(datadir, file_label, 'event_data.json')
-    try:
-        with open(file_path, 'r') as file:
-            metadata = json.load(file)
-    except FileNotFoundError:
-        file_path = os.path.join(datadir, file_label, 'data', 'event_data.json')
-        with open(file_path, 'r') as file:
-            metadata = json.load(file)
-    wf_paths = metadata.keys()
-    wfs = []
-    for p in wf_paths:
-        if 'S230529' in p or 'GW230529' in p:
-            wfs.append('GW230529')
-            continue
-        name = p.split('/')[-1]
-        if name.startswith('S'):
-            wfs.append(name.split('-')[0])
-        else:
-            wfs.append(name.split('-')[3].replace('_PEDataRelease_mixed_cosmo.h5', '').replace('_PEDataRelease_cosmo.h5', ''))
-    # print(wfs)
-    return wfs, wf_paths, metadata
-
 class PixelPopRateFunction(object):
     """
     A wrapper class that converts PixelPop data and model settings into a 
