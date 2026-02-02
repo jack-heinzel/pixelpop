@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jax.scipy.special import logsumexp as LSE
 from tqdm import tqdm
 import numpy as np
+from scipy.stats import spearmanr
 import warnings
 from functools import reduce
 import os
@@ -287,4 +288,101 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
         overwrite=overwrite
     )
     
+def sample_nd_grid(*bins, p, size=1):
+    """
+    Sample points from a piecewise constant probability density on an N-D grid.
+
+    This function performs inverse transform sampling over a discrete grid 
+    defined by `p`, then applies a uniform 'intra-bin scatter' to provide 
+    continuous samples within each cell. 
+
+    Parameters
+    ----------
+    *bins : array_like
+        1-D arrays representing the bin edges or bin centers for each 
+        dimension. The number of positional arguments defines the 
+        dimensionality of the space.
+    p : ndarray
+        An N-dimensional array of weights (densities) corresponding to the 
+        grid defined by `bins`. The shape of `p` must match the lengths of 
+        the input bins.
+    size : int, optional
+        The number of samples to generate. Default is 1.
+
+    Returns
+    ----------
+    samples : generator of ndarrays
+        A generator yielding one array for each dimension. Each array has 
+        length `size`, representing the coordinates of the sampled points.
+
+    Notes
+    ----------
+    The function assumes the bins are equally spaced for the calculation 
+    of `dx`. The total probability is normalized internally by 
+    dividing `p` by its sum.
+
+    Examples
+    ----------
+    >>> x_bins = np.linspace(0, 1, 10)
+    >>> y_bins = np.linspace(0, 1, 10)
+    >>> weights = np.random.rand(10, 10)
+    >>> x_samples, y_samples = sample_nd_grid(x_bins, y_bins, p=weights, size=1000)
+    """
+    dimension = len(bins)
+    dx = [bins[ii][1] - bins[ii][0] for ii in range(dimension)]
+    shape = tuple(len(b) for b in bins)
+
+    pflatten = p.reshape(-1)/np.sum(p)
+    which = np.random.choice(len(p), size=size, replace=True, p=pflatten)
+    which = np.unravel_index(which, shape=shape)
+
+    intra_bin_scatter = [d*np.random.uniform(size=size) for d in dx]
+
+    samples = tuple(b[which[ii]] + intra_bin_scatter[ii] for ii, b in enumerate(bins))
+    return samples
+
+def Spearman_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1), y_range=(0, 1)):
+    """
+    Compute Spearman correlations from a 2D log-probability grid.
+
+    Parameters
+    ----------
+    log_pxy : ndarray
+        2D array of log-probabilities (densities).
+    x_bins, y_bins : ndarray
+        1-D arrays representing the grid edges/bins for each dimension.
+    precision : int, optional
+        Number of samples to draw for the correlation estimate. Default is 40,000.
+    x_range, y_range : tuple of float, optional
+        Fractional window [0, 1] to sub-select the grid before computing correlation.
+
+    Returns
+    -------
+    rho : float
+        Spearman's rank correlation coefficient between x and y.
+    rho_var : float
+        Spearman's rank correlation between x and the variance of y, 
+        often used as a diagnostic for heteroscedasticity.
+    """
+    if log_pxy.ndim != 2:
+        raise ValueError(f"Expected 2D array for log_pxy, got {log_pxy.ndim}D.")
+
+    # define windowed space
+    nx, ny = log_pxy.shape
+    ix_min, ix_max = int(x_range[0] * nx), int(x_range[1] * nx)
+    iy_min, iy_max = int(y_range[0] * ny), int(y_range[1] * ny)
+
+    log_slice = log_pxy[ix_min:ix_max, iy_min:iy_max]
+    pxy_slice = np.exp(log_slice - np.max(log_slice)) # subtract max for stability
     
+    sub_x_bins = x_bins[ix_min:ix_max]
+    sub_y_bins = y_bins[iy_min:iy_max]
+
+    x_samples, y_samples = sample_nd_grid(sub_x_bins, sub_y_bins, p=pxy_slice, size=precision)
+        
+    rho, _ = spearmanr(x_samples, y_samples)
+    
+    y_sq_dev = (y_samples - np.mean(y_samples))**2
+    rho_var, _ = spearmanr(x_samples, y_sq_dev)
+
+    return rho, rho_var
