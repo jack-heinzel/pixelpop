@@ -1,5 +1,5 @@
 import wcosmo
-import unxt
+#import unxt # SAL: this needs fixing. Why doesn't it compile?
 from jax import jit#, lax
 from jax.nn import log_sigmoid
 from numpyro import distributions as dist
@@ -117,6 +117,22 @@ def gaussian(data, mean, sig):
     px = -(data - mean)**2 / 2 / sig**2
     norm = 0.5*jnp.log(2*jnp.pi*sig**2)
     return px - norm
+
+# Custom mixture model
+def Peak_PrimaryMass(data, mpp, sigpp):
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+    pm1 = gaussian(m1, mpp, sigpp)
+    if isLogMass: # include jacobian
+        pm1 = pm1 + data['log_mass_1']
+    return pm1
 
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     """
