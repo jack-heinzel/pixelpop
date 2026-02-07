@@ -436,35 +436,29 @@ class MixturePixelPopData(PixelPopData):
     """
     Extended PixelPopData for the mixture model.
 
-    In addition to the standard PixelPopData fields, this adds:
+    The mixture structure is determined entirely by the existing fields:
+      - ``pixelpop_parameters``: the "strong" parameters that appear in
+        both the PixelPop and parametric sides of the mixture (e.g. m1, q).
+      - ``other_parameters``: the "common" parameters whose parametric
+        models multiply the entire mixture (e.g. chi_eff, redshift).
 
-    mixture_parameters : list of str
-        Parameters that appear in both the PixelPop and parametric sides
-        of the mixture. Must be a subset of ``pixelpop_parameters``.
-    mixture_parametric_models : dict
-        ``{param_name: model_function}`` for the parametric side.
-    mixture_parameter_to_hyperparameters : dict
-        ``{param_name: [hyperparam_names]}`` for mixture parametric models.
-    mixture_priors : dict
-        Custom priors for mixture hyperparameters.
-    common_strong_parameters : list of str
-        Parameters whose parametric models multiply the *entire* mixture
-        (both PixelPop and parametric). Typically redshift, chi_eff.
-    xi_prior : tuple
-        Prior for mixing fraction ξ. Default: ``((0, 1), dist.Uniform)``.
-    skip_nonparametric : bool
-        If True, skip PixelPop entirely (purely parametric model).
-    skip_mixture : bool
-        If True, use only PixelPop (no parametric mixture component).
+    Additional fields:
+      - ``mixture_parametric_models``: custom parametric models for the
+        parametric side of the mixture (keyed by pixelpop parameter name).
+        Falls back to the gwpop default if not provided.
+      - ``mixture_parameter_to_hyperparameters``: hyperparameter mappings
+        for the mixture parametric models.
+      - ``mixture_priors``: custom priors for mixture hyperparameters.
+      - ``xi_prior``: prior for the mixing fraction ξ.
+      - ``skip_nonparametric``: if True, use only parametric model.
+      - ``skip_mixture``: if True, use only PixelPop (no parametric mixture).
     """
 
-    mixture_parameters: List[str] = field(default_factory=list)
     mixture_parametric_models: Dict[str, Callable] = field(default_factory=dict)
     mixture_parameter_to_hyperparameters: Dict[str, List[str]] = field(
         default_factory=dict
     )
     mixture_priors: Dict[str, Any] = field(default_factory=dict)
-    common_strong_parameters: List[str] = field(default_factory=list)
     xi_prior: Tuple[Any, Any] = ((0, 1), dist.Uniform)
     skip_nonparametric: bool = False
     skip_mixture: bool = False
@@ -472,36 +466,16 @@ class MixturePixelPopData(PixelPopData):
     def __post_init__(self):
         super().__post_init__()
 
-        # Validate: mixture_parameters must be subset of pixelpop_parameters
-        for p in self.mixture_parameters:
-            if p not in self.pixelpop_parameters:
-                raise ValueError(
-                    f"Mixture parameter '{p}' is not in pixelpop_parameters "
-                    f"{self.pixelpop_parameters}."
-                )
-
-        # Validate: common_strong_parameters should be in other_parameters
-        for p in self.common_strong_parameters:
-            if p not in self.other_parameters:
-                raise ValueError(
-                    f"Common strong parameter '{p}' is not in other_parameters "
-                    f"{self.other_parameters}."
-                )
-
-        # Resolve mixture parametric models (fall back to gwpop defaults)
+        # Resolve mixture parametric models for pixelpop_parameters
         resolved_models = {}
-        for p in self.mixture_parameters:
+        for p in self.pixelpop_parameters:
             if p in self.mixture_parametric_models:
-                print(
-                    f"[Mixture] Using custom model for '{p}': "
-                    f"{self.mixture_parametric_models[p].__name__}"
-                )
+                print(f"[Mixture] Using custom model for '{p}': "
+                      f"{self.mixture_parametric_models[p].__name__}")
                 resolved_models[p] = self.mixture_parametric_models[p]
             else:
-                print(
-                    f"[Mixture] Using default model for '{p}': "
-                    f"{gwpop_models.gwparameter_to_model[p].__name__}"
-                )
+                print(f"[Mixture] Using default model for '{p}': "
+                      f"{gwpop_models.gwparameter_to_model[p].__name__}")
                 resolved_models[p] = gwpop_models.gwparameter_to_model[p]
         self.mixture_parametric_models = resolved_models
 
@@ -509,32 +483,27 @@ class MixturePixelPopData(PixelPopData):
         full_hyper = gwpop_models.gwparameter_to_hyperparameters.copy()
         full_hyper.update(self.mixture_parameter_to_hyperparameters)
         self.mixture_parameter_to_hyperparameters = {
-            p: full_hyper[p] for p in self.mixture_parameters
+            p: full_hyper[p] for p in self.pixelpop_parameters
         }
 
         # Resolve mixture priors
         resolved_priors = {}
-        for p in self.mixture_parameters:
+        for p in self.pixelpop_parameters:
             for h in self.mixture_parameter_to_hyperparameters[p]:
                 if h in self.mixture_priors:
                     ppr = self.mixture_priors[h]
-                    print(
-                        f"[Mixture] Using custom prior for '{h}': "
-                        f"{ppr[1].__name__}{tuple(ppr[0])}"
-                    )
+                    print(f"[Mixture] Using custom prior for '{h}': "
+                          f"{ppr[1].__name__}{tuple(ppr[0])}")
                     resolved_priors[h] = self.mixture_priors[h]
                 elif h in self.priors:
                     ppr = self.priors[h]
-                    print(
-                        f"[Mixture] Reusing prior for '{h}': "
-                        f"{ppr[1].__name__}{tuple(ppr[0])}"
-                    )
+                    print(f"[Mixture] Reusing prior for '{h}': "
+                          f"{ppr[1].__name__}{tuple(ppr[0])}")
                     resolved_priors[h] = self.priors[h]
                 else:
                     ppr = gwpop_models.default_priors[h]
-                    print(
-                        f"[Mixture] Using default prior for '{h}': "
-                        f"{ppr[1].__name__}{tuple(ppr[0])}"
-                    )
+                    print(f"[Mixture] Using default prior for '{h}': "
+                          f"{ppr[1].__name__}{tuple(ppr[0])}")
                     resolved_priors[h] = gwpop_models.default_priors[h]
         self.mixture_priors = resolved_priors
+
