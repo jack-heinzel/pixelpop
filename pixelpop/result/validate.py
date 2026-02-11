@@ -54,8 +54,8 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     posteriors = pixelpop_data.posteriors
     injections = pixelpop_data.injections
 
-    posteriors['prior'] = jnp.exp(posteriors.pop('log_prior'))
-    injections['prior'] = jnp.exp(injections.pop('log_prior'))
+    posteriors['prior'] = jnp.exp(posteriors.get('log_prior'))
+    injections['prior'] = jnp.exp(injections.get('log_prior'))
     
     # add delta parameters
     hyperposterior, Nsamples = pixelpop_data.fill_out_hyperposterior(hyperposterior)

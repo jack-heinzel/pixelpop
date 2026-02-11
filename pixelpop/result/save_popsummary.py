@@ -137,8 +137,11 @@ def create_popsummary(
     parameters = pixelpop_parameters + other_parameters
     gwparameters = []
     for p in parameters:
-        gwparameters += map_to_gwpop_parameters[p]
-    
+        if p in map_to_gwpop_parameters:
+            gwparameters += map_to_gwpop_parameters[p]
+        else:
+            gwparameters += [p]
+
     if type(hyperposterior_chains) == list:
         if len(hyperposterior_chains) == 1:
             hyperposterior = hyperposterior_chains[0]

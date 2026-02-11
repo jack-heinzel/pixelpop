@@ -145,11 +145,6 @@ def resample_posteriors(hyperposterior, nsamples, pixelpop_data, samples_per_eve
     '''
     
     '''
-    if verbose:
-        print('='*50)
-        print('Resampling GW posteriors')
-        print('='*50 + '\n')
-        
     ratefunc = PixelPopRateFunction(pixelpop_data, dataset_type='posteriors')
     @jax.jit
     def f(s):
@@ -158,9 +153,14 @@ def resample_posteriors(hyperposterior, nsamples, pixelpop_data, samples_per_eve
     ss = [{k: hyperposterior[k][ii] for k in hyperposterior.keys()} for ii in range(nsamples)]
     averaged_weights = np.zeros_like(pixelpop_data.posteriors['log_prior'])
     reweight_iloc = []
-    for ii in tqdm(range(nsamples)):
+    loop = range(nsamples)
+    if verbose:
+        loop = tqdm(loop)
+        loop.set_description('Resampling GW posteriors')
+    for ii in loop:
         rates = np.array(f(ss[ii]))
-        lweights = np.log(rates) - np.array(pixelpop_data.posteriors['log_prior'])
+        with np.errstate(divide='ignore'): # ignore np.log(0) 
+            lweights = np.log(rates) - np.array(pixelpop_data.posteriors['log_prior'])
         lnorms = LSE(lweights, axis=-1)
         normed_weights = lweights - lnorms[...,None]
         normed_weights = np.exp(normed_weights)
@@ -188,11 +188,7 @@ def resample_injections(hyperposterior, nsamples, nevents, pixelpop_data, verbos
     :param nsamples: Description
     :param pixelpop_data: Description
     '''
-    if verbose:
-        print('='*50)
-        print('Resampling detected injection set')
-        print('='*50 + '\n')
-        
+
     ratefunc = PixelPopRateFunction(pixelpop_data, dataset_type='injections')
     @jax.jit
     def f(s):
@@ -202,9 +198,16 @@ def resample_injections(hyperposterior, nsamples, nevents, pixelpop_data, verbos
 
     averaged_weights = np.zeros_like(pixelpop_data.injections['log_prior'])
     reweight_iloc = []
-    for ii in tqdm(range(nsamples)):
+
+    loop = range(nsamples)
+    if verbose:
+        loop = tqdm(loop)
+        loop.set_description('Resampling GW posteriors')
+
+    for ii in loop:
         rates = np.array(f(ss[ii]))
-        lweights = np.log(rates) - np.array(pixelpop_data.injections['log_prior'])
+        with np.errstate(divide='ignore'): # ignore np.log(0) 
+            lweights = np.log(rates) - np.array(pixelpop_data.injections['log_prior'])
         lnorms = LSE(lweights, axis=-1)
         normed_weights = lweights - lnorms[...,None]
         normed_weights = np.exp(normed_weights)
@@ -249,12 +252,15 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
     reweighted_events = []
     gw_parameters = []
     for p in popsummary_result.get_metadata('event_parameters'):
-        gw_parameters += map_to_gwpop_parameters[p]
+        if p in map_to_gwpop_parameters:
+            gw_parameters += map_to_gwpop_parameters[p]
+        else:
+            gw_parameters += [p]
     
     if len(gw_parameters) != len(popsummary_result.get_metadata('event_parameters')):        
         print(f'Updating event parameters from\n{popsummary_result.get_metadata("event_parameters")}\nto\n{gw_parameters}\n')
         popsummary_result.set_metadata('event_parameters', gw_parameters, overwrite=overwrite)
-    print('here')
+
     for ii, event in enumerate(popsummary_result.get_metadata('events')):
         neff = event_neffs[ii]
         if verbose and neff < 100:
@@ -270,7 +276,6 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
         reweighted_event_samples = reweighted_events,
         overwrite = overwrite
     )
-    print('done')
     
     # reweight injection set
     n_events = len(popsummary_result.get_metadata('events'))
