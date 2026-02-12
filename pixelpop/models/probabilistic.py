@@ -249,7 +249,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
         if pixelpop_data.marginalize_sigma:
             unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(normalization_dof/2)))
-            precision = unscaled_gamma * quad / 2
+            precision = 2 * unscaled_gamma / quad 
             numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
         event_weights += merger_rate_density[event_bins] 
