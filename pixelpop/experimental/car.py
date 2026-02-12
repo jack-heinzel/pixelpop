@@ -79,47 +79,8 @@ def initialize_sigma_marginalized_ICAR(dimension):
         
         @validate_sample
         def log_prob(self, phi):
-
-            lams = []
-            prec_mat = []
-            n = 1
-            for ii, single_dimension_adj_matrix in enumerate(self.single_dimension_adj_matrices):
-                if self.is_sparse:
-                    D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
-                    scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
-                else:
-                    D = single_dimension_adj_matrix.sum(axis=-1)# .squeeze(axis=0)
-                    scaled_single_prec = jnp.diag(D) - single_dimension_adj_matrix
-                
-                n *= D.shape[-1]
-                # TODO: look into sparse eigenvalue methods
-                if isinstance(scaled_single_prec, np.ndarray):
-                    lam = np.linalg.eigvalsh(scaled_single_prec)   
-                    lam[0] = 0. # set to zero, otherwise float precision can allow this to be negative and cause problems
-                    
-                else:
-                    print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
-                    lam = jnp.linalg.eigvalsh(scaled_single_prec)
-                    lam = lam.at[0].set(0.) # set to zero, otherwise float precision can allow this to be negative and cause problems
-                prec_mat.append(jnp.asarray(scaled_single_prec))
-                lams.append(lam)
-
-            ar = reduce(add_outer, lams)
-            
-            logdet = jnp.sum(jnp.log(ar.at[(0,)*dimension].set(1.)))
-            logquad = 0.
-            for ii in range(dimension):
-                z = jnp.moveaxis(
-                    jnp.tensordot(prec_mat[ii], jnp.moveaxis(phi,ii,0), axes=(0,0)), # tensordot requires a concrete axis ... can I get this in a jitted fn?
-                    0,ii)
-                
-                step = jnp.tensordot(z, phi, axes=dimension)
-                logquad += step
-
-            log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
-
-            return 0.5 * (-n * jnp.log(2*jnp.pi) + logdet) + log_marg_term
-
+            return self.log_prob_and_quad(phi)[0]
+        
         def log_prob_and_quad(self, phi):
             # same as log_prob, but also returns logquad for producing sigma (coupling) samples from conditional Gamma distribution
 
@@ -141,15 +102,22 @@ def initialize_sigma_marginalized_ICAR(dimension):
                     lam[0] = 0. # set to zero, otherwise float precision can allow this to be negative and cause problems
                     
                 else:
-                    print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
+                    # print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
                     lam = jnp.linalg.eigvalsh(scaled_single_prec)
                     lam = lam.at[0].set(0.) # set to zero, otherwise float precision can allow this to be negative and cause problems
                 prec_mat.append(jnp.asarray(scaled_single_prec))
                 lams.append(lam)
 
-            ar = reduce(add_outer, lams)
+            if len(lams) > 1:
+                ar = reduce(add_outer, lams)
+            else:
+                ar = lams[0]
+            if isinstance(ar, np.ndarray):
+                ar[(0,)*dimension] = 1.
+            else:
+                ar.at[(0,)*dimension].set(1.)
             
-            logdet = jnp.sum(jnp.log(ar.at[(0,)*dimension].set(1.)))
+            logdet = jnp.sum(jnp.log(ar))
             logquad = 0.
             for ii in range(dimension):
                 z = jnp.moveaxis(

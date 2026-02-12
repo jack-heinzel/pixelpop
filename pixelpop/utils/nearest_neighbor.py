@@ -1,4 +1,4 @@
-import numpy as jnp
+import numpy as np
 import scipy
 from tqdm import tqdm
 import warnings
@@ -96,13 +96,13 @@ def coordinate_to_index(coordinate, density, dimension):
     else:
         raise TypeError('density must be an integer or list')
     
-    coordinates = tuple(jnp.asarray(c, dtype=int) for c in coordinate)
+    coordinates = tuple(np.asarray(c, dtype=int) for c in coordinate)
 
     for c, d in zip(coordinates, density):
-        if jnp.any(c < 0) or jnp.any(c >= d):
+        if np.any(c < 0) or np.any(c >= d):
             print(c)
 
-    indices = jnp.ravel_multi_index(coordinates, dims=density, order='C')
+    indices = np.ravel_multi_index(coordinates, dims=density, order='C')
     return indices
 
 def index_to_coordinate(index, dimension, density):
@@ -137,7 +137,7 @@ def index_to_coordinate(index, dimension, density):
     else:
         raise TypeError('density must be an integer or list')
     
-    coordinates = jnp.unravel_index(index, shape=density, order='C')
+    coordinates = np.unravel_index(index, shape=density, order='C')
     return list(coordinates)
         
 def nearest_neighbors(density, dimension, isVisible=False):
@@ -166,16 +166,16 @@ def nearest_neighbors(density, dimension, isVisible=False):
         Neighbor indices (the "to" nodes in a graph).
     """
     if isinstance(density, int):
-        indices = jnp.arange(0, density**dimension)
+        indices = np.arange(0, density**dimension)
         density = [density]*dimension
-        powers = jnp.eye(dimension) #[generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
+        powers = np.eye(dimension) #[generalized_number(density**d, base=density, dimension=dimension) for d in range(dimension)]
 
     elif isinstance(density, list) or isinstance(density, tuple):
         # raise exception if len(density) != dimension
         if len(density) != dimension:
             raise IndexError('Length of densities is different from dimension')
-        indices = jnp.arange(0, jnp.prod(density))
-        powers = jnp.eye(dimension)
+        indices = np.arange(0, np.prod(density))
+        powers = np.eye(dimension)
         #print(powers)
     else:
         raise TypeError('density must be an integer or list / tuple')
@@ -188,7 +188,7 @@ def nearest_neighbors(density, dimension, isVisible=False):
     else:
         array = indices
     for index in array:
-        converted = jnp.array(jnp.unravel_index(index, shape=density, order='C')) 
+        converted = np.array(np.unravel_index(index, shape=density, order='C')) 
         for d in range(dimension):
             #print(index, converted + powers[d], is_valid(converted + powers[d], density, dimension))
             #print(index, converted - powers[d], is_valid(converted - powers[d], density, dimension))
@@ -229,7 +229,7 @@ def create_CAR_coupling_matrix(density, dimension, isVisible=False):
     """
 
     i, j = nearest_neighbors(density, dimension, isVisible=isVisible) 
-    adjancency_matrix = scipy.sparse.coo_array((jnp.ones(len(i)), (i, j)))  
+    adjancency_matrix = scipy.sparse.coo_array((np.ones(len(i)), (i, j)))  
 
     return adjancency_matrix
 
@@ -283,12 +283,12 @@ def place_samples_in_bins(bin_axes, sample_coordinates, reshape=False):
     if not reshape:
         _data_nd_bins = ()
         for i in range(dimension):
-            _data_nd_bins += (jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1,)
+            _data_nd_bins += (np.digitize(sample_coordinates[i], bin_axes[i]) - 1,)
         return _data_nd_bins
     else:
-        _data_nd_bins = [jnp.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
+        _data_nd_bins = [np.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
     #print(_data_nd_bins)
-    jnp.array(_data_nd_bins)
+    np.array(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins
 
@@ -309,15 +309,15 @@ def place_grid_in_bins(bin_axes, minimums, maximums, grid_density):
     else:
         # Assuming bin_axes is a single array 
         density = len(bin_axes[0]) - 1
-    m_axes = [jnp.linspace(minimums[d], maximums[d], grid_density) for d in range(dimension)]    
-    ax_grids = jnp.meshgrid(*m_axes)
+    m_axes = [np.linspace(minimums[d], maximums[d], grid_density) for d in range(dimension)]    
+    ax_grids = np.meshgrid(*m_axes)
     grid = [ax_grids[ii].reshape(grid_density**dimension) for ii in range(dimension)]
-    # pts_grid = jnp.array([ax_grids[ii] for ii in range(dimension)]).T.reshape((grid_density**dimension, dimension))
-    # dV = jnp.prod([bin_axes[ii][1] - bin_axes[ii][0] for ii in range(len(bin_axes))])
+    # pts_grid = np.array([ax_grids[ii] for ii in range(dimension)]).T.reshape((grid_density**dimension, dimension))
+    # dV = np.prod([bin_axes[ii][1] - bin_axes[ii][0] for ii in range(len(bin_axes))])
 
-    _data_2d_bins = jnp.array([jnp.digitize(grid[i], bin_axes[i]) for i in range(dimension)]).T - 1
+    _data_2d_bins = np.array([np.digitize(grid[i], bin_axes[i]) for i in range(dimension)]).T - 1
     # print(data_2d_bins)
-    _data_bins = jnp.array(
+    _data_bins = np.array(
         [coordinate_to_index(_data_2d_bins[ii], density, dimension) for ii in range(len(_data_2d_bins))]
     )
     return _data_bins, m_axes, grid

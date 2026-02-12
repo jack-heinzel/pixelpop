@@ -232,7 +232,7 @@ def initialize_ICAR(dimension, length_scales=False):
                     lam[0] = 0. # set to zero, otherwise float precision can allow this to be negative and cause problems
                     
                 else:
-                    print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
+                    # print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
                     lam = jnp.linalg.eigvalsh(scaled_single_prec)
                     lam = lam.at[0].set(0.) # set to zero, otherwise float precision can allow this to be negative and cause problems
                 prec_mat.append(jnp.asarray(scaled_single_prec))
