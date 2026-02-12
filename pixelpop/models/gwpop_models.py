@@ -318,30 +318,6 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
-def chieff_gaussian(data, mean, sig):
-    """
-    Effective spin distribution: Gaussian in chi_eff.
-
-    Parameters
-    ----------
-    data : dict or jnp.ndarray
-        Either a dict containing key 'chi_eff', or direct array of chi_eff values.
-    mean : float
-        Mean of the Gaussian.
-    sig : float
-        Standard deviation of the Gaussian.
-
-    Returns
-    -------
-    jnp.ndarray
-        Log-probability density under the Gaussian distribution.
-    """
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-    return gaussian(x, mean, sig)
-
 def trunc_gaussian(data, mean, sig, lower, upper):
     """
     Truncated Gaussian distribution. Numerically stable implementation adapted from
@@ -388,6 +364,54 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     px -= log_norm
     in_support = jnp.logical_and(data < upper, data > lower)
     return jnp.where(in_support, px, -jnp.inf*jnp.ones_like(data))
+
+def chieff_gaussian(data, mean, sig):
+    """
+    Effective spin distribution: Gaussian in chi_eff.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'chi_eff', or direct array of chi_eff values.
+    mean : float
+        Mean of the Gaussian.
+    sig : float
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density under the Gaussian distribution.
+    """
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    return trunc_gaussian(x, mean, sig, -1, 1)
+
+def chip_gaussian(data, mean, sig):
+    """
+    Effective precessing spin distribution: Gaussian in chi_p.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'chi_p', or direct array of chi_p values.
+    mean : float
+        Mean of the Gaussian.
+    sig : float
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density under the Gaussian distribution.
+    """
+    if isinstance(data, dict):
+        x = data['chi_p']
+    else:
+        x = data
+    return trunc_gaussian(x, mean, sig, 0, 1)
 
 def lognormal(data, mean, sig):
     """
@@ -1059,6 +1083,7 @@ gwparameter_to_model = {
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
+    'chi_p': chip_gaussian, #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
     'a': iid_normal_spin, #(data, mu, var)
     't': tilt_iid, #(data, mu, sig, zeta)
@@ -1066,14 +1091,15 @@ gwparameter_to_model = {
 
 typical_hyperparameters = {
     'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
-    'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
-    'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 'lnsigma':-1, 'lncor': -5, 
-    'mean': 0, 'qmin': 0.02, 'max_z': 2.4,
+    'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_xp':0.3, 'sig_xp':0.2, 
+    'mu_spin':0.2, 'var_spin':0.1, 'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 
+    'lnsigma':-1, 'lncor': -5, 'mean': 0, 'qmin': 0.02, 'max_z': 2.4,
 }
 
 parameter_values = {
-    'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 'redshift': 0.2, 
-    'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0., 'cos_tilt_2': 0.
+    'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 
+    'chi_p': 0.3, 'redshift': 0.2, 'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0.,
+    'cos_tilt_2': 0.
     }
 
 gwparameter_to_hyperparameters = {
@@ -1083,6 +1109,7 @@ gwparameter_to_hyperparameters = {
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],
     'chi_eff': ['mu_x', 'sig_x'], 
+    'chi_p': ['mu_xp', 'sig_xp'], 
     'spin': ['mu_spin', 'var_spin', 'sig_tilt', 'zeta_tilt'], 
     'a': ['mu_spin', 'var_spin'],
     't': ['mu_tilt', 'sig_tilt', 'zeta_tilt'],
@@ -1101,6 +1128,8 @@ default_priors = {
     'lamb': ([-2, 10], dist.Uniform), 
     'mu_x': ([-1, 1], dist.Uniform), 
     'sig_x': ([0.005, 1.], dist.Uniform), 
+    'mu_xp': ([0, 1], dist.Uniform), 
+    'sig_xp': ([0.005, 1.], dist.Uniform), 
     'mu_spin': ([0, 1], dist.Uniform),
     'var_spin': ([0.005, 0.25], dist.Uniform), 
     'mu_tilt': ([-1, 1], dist.Uniform), 
@@ -1113,6 +1142,6 @@ default_priors = {
 map_to_gwpop_parameters = {
     'mass_1': ['mass_1'], 'log_mass_1': ['log_mass_1'], 'mass_2': ['mass_2'], 'log_mass_2': ['log_mass_2'], 
     'mass_ratio': ['mass_ratio'], 'redshift': ['redshift'], 'redshift_psi': ['redshift_psi'], 'chi_eff': ['chi_eff'], 
-    'a_1': ['a_1'], 'a_2': ['a_2'], 'cos_tilt_1': ['cos_tilt_1'], 'cos_tilt_2': ['cos_tilt_2'], 
+    'chi_p': ['chi_p'], 'a_1': ['a_1'], 'a_2': ['a_2'], 'cos_tilt_1': ['cos_tilt_1'], 'cos_tilt_2': ['cos_tilt_2'], 
     'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'], 'a': ['a_1', 'a_2'], 't': ['cos_tilt_1', 'cos_tilt_2'],
 }

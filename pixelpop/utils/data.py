@@ -244,6 +244,8 @@ class PixelPopData:
 
     Parameters
     ----------
+    name : str
+        name for saving result files and chains
     posteriors : dict
         Posterior samples keyed by parameter name. Each entry is shaped
         (Nobs, Nsample). Must also include 'ln_prior'.
@@ -287,6 +289,7 @@ class PixelPopData:
         Typically, this improves chain convergence.
 
     """
+    name: str
     # Data
     posteriors: Dict[str, Any]
     injections: Dict[str, Any]

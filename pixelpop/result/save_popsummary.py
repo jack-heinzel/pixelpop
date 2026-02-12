@@ -97,7 +97,7 @@ def save_text_summary(
 
 
 def create_popsummary(
-        pixelpop_data, hyperposterior_chains, run_name, popsummary_path='../results/popsummary/',
+        pixelpop_data, hyperposterior_chains, run_name="", popsummary_path='../results/popsummary/',
         datadir='../data', metadata_label="", overwrite=False,  
         ):
     '''
@@ -110,7 +110,7 @@ def create_popsummary(
         shaped as (Nsamples,...)], indexing the independent chains, or single 
         dictionary of one chain
     run_name : str
-        name for popsummary file
+        name for popsummary file, defaults to PixelPopData name
     popsummary_path : str
         relative path from script directory where to save the popsummary file
     datadir : str
@@ -134,6 +134,9 @@ def create_popsummary(
     minima = pixelpop_data.minima
     maxima = pixelpop_data.maxima
     
+    if run_name == "":
+        run_name = pixelpop_data.name
+        
     parameters = pixelpop_parameters + other_parameters
     gwparameters = []
     for p in parameters:
