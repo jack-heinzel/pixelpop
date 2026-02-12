@@ -1136,7 +1136,7 @@ default_priors = {
     'sig_tilt': ([0.1, 4], dist.Uniform), 
     'zeta_tilt': ([0, 1], dist.Uniform), 
     'z_minimum': ([0.], dist.Delta), 
-    'max_z': ([2.4], dist.Delta),
+    'max_z': ([1.9], dist.Delta),
 }
 
 map_to_gwpop_parameters = {
