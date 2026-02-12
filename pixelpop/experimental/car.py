@@ -25,7 +25,7 @@ from numpyro.distributions.transforms import (
 )
 
 
-class ICAR_marginalized_sigma(ICAR_length_scales):
+class sigma_marginalized_ICAR(ICAR_length_scales):
 
     def __init__(
         self, 
@@ -35,7 +35,7 @@ class ICAR_marginalized_sigma(ICAR_length_scales):
         validate_args=None,
     ):
         base_lsigma = 0.
-        super(ICAR_marginalized_sigma, self).__init__(
+        super(sigma_marginalized_ICAR, self).__init__(
             base_lsigma,
             single_dimension_adj_matrices,
             *args,
