@@ -1,9 +1,9 @@
 import numpy as np
 from .gwpop_models import * 
-from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
+from .car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular_map
 from ..experimental.car import (
     DiagonalizedICARTransform, 
-    initialize_sigma_marginalized_ICAR,
+    sigma_marginalized_ICAR,
     lower_triangular_sigma_marg_log_prob,
     lower_triangular_sigma_marg_log_prob_and_log_quad
 )
@@ -177,9 +177,9 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         return event_weights, inj_weights
 
     if pixelpop_data.marginalize_sigma:
-        ICAR_model = initialize_sigma_marginalized_ICAR(pixelpop_data.dimension)    
+        ICAR_model = sigma_marginalized_ICAR
     else:
-        ICAR_model = initialize_ICAR(pixelpop_data.dimension, length_scales=pixelpop_data.length_scales)
+        ICAR_model = ICAR_length_scales
 
     def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
         """

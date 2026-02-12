@@ -15,7 +15,7 @@ from numpyro.distributions.util import (
 
 from jax.scipy.special import gammaln
 from functools import reduce
-from ..models.car import initialize_ICAR, add_outer, mult_outer
+from ..models.car import ICAR_length_scales, add_outer, mult_outer
 
 from numpyro.distributions.transforms import (
     ComposeTransform,
@@ -24,123 +24,86 @@ from numpyro.distributions.transforms import (
     AffineTransform
 )
 
-def initialize_sigma_marginalized_ICAR(dimension):
-    """
-    Construct an Intrinsic Conditional Autoregressive (ICAR) distribution class.
-    Here, the log-sigma is analytically marginalized over.
 
-    The returned class defines a NumPyro-compatible ICAR prior. 
-    The ICAR is a special case of a Gaussian Markov random field where the 
-    precision matrix is determined by adjacency matrices of spatial sites.
+class ICAR_marginalized_sigma(ICAR_length_scales):
 
-    For a single log-sigma parameter, the integral over the improper prior
-    \pi(\sigma) \propto 1/\sigma gives
-
-    \int \frac{1}{\sigma}\frac{1}{\sigma^{n}} \exp(-\frac{x}{2\sigma^2}) d\sigma 
-    = 
-    2^{n/2 - 1} x^{-n/2} \Gamma(n/2)
-    
-    Parameters
-    ----------
-    dimension : int
-        Number of spatial dimensions.
-
-    Returns
-    -------
-    ICAR_sigma_marg : class
-        A NumPyro `Distribution` subclass implementing the ICAR prior, with
-        methods for `log_prob`, shape inference, and JAX pytree compatibility.
-
-    Notes
-    -----
-    - The distribution is improper (cannot sample directly).
-    - Adjacency matrices must be symmetric with all sites having neighbors.
-    - Sparse and dense adjacency matrix representations are supported.
-    """
-    base_ICAR_class = initialize_ICAR(dimension, length_scales=False)
-
-    class ICAR_marginalized_sigma(base_ICAR_class):
-
-        def __init__(
-            self, 
+    def __init__(
+        self, 
+        single_dimension_adj_matrices,
+        *args,
+        is_sparse=False,
+        validate_args=None,
+    ):
+        base_lsigma = 0.
+        super(ICAR_marginalized_sigma, self).__init__(
+            base_lsigma,
             single_dimension_adj_matrices,
             *args,
-            is_sparse=False,
-            validate_args=None,
-        ):
-            base_lsigma = 0.
-            super(ICAR_marginalized_sigma, self).__init__(
-                base_lsigma,
-                single_dimension_adj_matrices,
-                *args,
-                is_sparse=is_sparse,
-                validate_args=validate_args,
-            )
-        
-        @validate_sample
-        def log_prob(self, phi):
-            return self.log_prob_and_quad(phi)[0]
-        
-        def log_prob_and_quad(self, phi):
-            # same as log_prob, but also returns logquad for producing sigma (coupling) samples from conditional Gamma distribution
+            is_sparse=is_sparse,
+            validate_args=validate_args,
+        )
+    
+    @validate_sample
+    def log_prob(self, phi):
+        return self.log_prob_and_quad(phi)[0]
+    
+    def log_prob_and_quad(self, phi):
+        # same as log_prob, but also returns logquad for producing sigma (coupling) samples from conditional Gamma distribution
 
-            lams = []
-            prec_mat = []
-            n = 1
-            for ii, single_dimension_adj_matrix in enumerate(self.single_dimension_adj_matrices):
-                if self.is_sparse:
-                    D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
-                    scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
-                else:
-                    D = single_dimension_adj_matrix.sum(axis=-1)# .squeeze(axis=0)
-                    scaled_single_prec = jnp.diag(D) - single_dimension_adj_matrix
-                
-                n *= D.shape[-1]
-                # TODO: look into sparse eigenvalue methods
-                if isinstance(scaled_single_prec, np.ndarray):
-                    lam = np.linalg.eigvalsh(scaled_single_prec)   
-                    lam[0] = 0. # set to zero, otherwise float precision can allow this to be negative and cause problems
-                    
-                else:
-                    # print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
-                    lam = jnp.linalg.eigvalsh(scaled_single_prec)
-                    lam = lam.at[0].set(0.) # set to zero, otherwise float precision can allow this to be negative and cause problems
-                prec_mat.append(jnp.asarray(scaled_single_prec))
-                lams.append(lam)
-
-            if len(lams) > 1:
-                ar = reduce(add_outer, lams)
+        lams = []
+        prec_mat = []
+        n = 1
+        for ii, single_dimension_adj_matrix in enumerate(self.single_dimension_adj_matrices):
+            if self.is_sparse:
+                D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
+                scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
             else:
-                ar = lams[0]
-            if isinstance(ar, np.ndarray):
-                ar[(0,)*dimension] = 1.
-            else:
-                ar.at[(0,)*dimension].set(1.)
+                D = single_dimension_adj_matrix.sum(axis=-1)# .squeeze(axis=0)
+                scaled_single_prec = jnp.diag(D) - single_dimension_adj_matrix
             
-            logdet = jnp.sum(jnp.log(ar))
-            logquad = 0.
-            for ii in range(dimension):
-                z = jnp.moveaxis(
-                    jnp.tensordot(prec_mat[ii], jnp.moveaxis(phi,ii,0), axes=(0,0)), # tensordot requires a concrete axis ... can I get this in a jitted fn?
-                    0,ii)
+            n *= D.shape[-1]
+            # TODO: look into sparse eigenvalue methods
+            if isinstance(scaled_single_prec, np.ndarray):
+                lam = np.linalg.eigvalsh(scaled_single_prec)   
+                lam[0] = 0. # set to zero, otherwise float precision can allow this to be negative and cause problems
                 
-                step = jnp.tensordot(z, phi, axes=dimension)
-                logquad += step
+            else:
+                # print(jnp.diag(D).shape, single_dimension_adj_matrix.shape)
+                lam = jnp.linalg.eigvalsh(scaled_single_prec)
+                lam = lam.at[0].set(0.) # set to zero, otherwise float precision can allow this to be negative and cause problems
+            prec_mat.append(jnp.asarray(scaled_single_prec))
+            lams.append(lam)
 
-            log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
-
-            return 0.5 * (-n * jnp.log(2*jnp.pi) + logdet) + log_marg_term, logquad
+        if len(lams) > 1:
+            ar = reduce(add_outer, lams)
+        else:
+            ar = lams[0]
+        if isinstance(ar, np.ndarray):
+            ar[(0,)*self.dimension] = 1.
+        else:
+            ar.at[(0,)*self.dimension].set(1.)
         
-        @staticmethod
-        def infer_shapes(single_dimension_adj_matrices):
-            event_shape = tuple([jnp.shape(mat)[-1] for mat in single_dimension_adj_matrices])
-            batch_shape = lax.broadcast_shapes(
-                *[jnp.shape(mat)[:-2] for mat in single_dimension_adj_matrices]
-            )
-            return batch_shape, event_shape
+        logdet = jnp.sum(jnp.log(ar))
+        logquad = 0.
+        for ii in range(self.dimension):
+            z = jnp.moveaxis(
+                jnp.tensordot(prec_mat[ii], jnp.moveaxis(phi,ii,0), axes=(0,0)), # tensordot requires a concrete axis ... can I get this in a jitted fn?
+                0,ii)
+            
+            step = jnp.tensordot(z, phi, axes=self.dimension)
+            logquad += step
 
-    return ICAR_marginalized_sigma
+        log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
 
+        return 0.5 * (-n * jnp.log(2*jnp.pi) + logdet) + log_marg_term, logquad
+    
+    @staticmethod
+    def infer_shapes(single_dimension_adj_matrices):
+        event_shape = tuple([jnp.shape(mat)[-1] for mat in single_dimension_adj_matrices])
+        batch_shape = lax.broadcast_shapes(
+            *[jnp.shape(mat)[:-2] for mat in single_dimension_adj_matrices]
+        )
+        return batch_shape, event_shape
 
 
 class DiagonalizedICARTransform:
