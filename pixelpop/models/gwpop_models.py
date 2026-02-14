@@ -1074,8 +1074,8 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
 
 
-bbh_minima = {'log_mass_1': jnp.log(3), 'mass_1': 3., 'mass_2': 3., 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
-bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
+bbh_minima = {'log_mass_1': jnp.log(3), 'mass_1': 3., 'mass_2': 3., 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'chi_p': 0., 'redshift': 0.}
+bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'chi_p': 1., 'redshift': 2.4}
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
