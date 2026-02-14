@@ -81,9 +81,9 @@ class sigma_marginalized_ICAR(ICAR_length_scales):
         if isinstance(ar, np.ndarray):
             ar[(0,)*self.dimension] = 1.
         else:
-            ar.at[(0,)*self.dimension].set(1.)
-        
+            ar = ar.at[(0,)*self.dimension].set(1.)
         logdet = jnp.sum(jnp.log(ar))
+        
         logquad = 0.
         for ii in range(self.dimension):
             z = jnp.moveaxis(

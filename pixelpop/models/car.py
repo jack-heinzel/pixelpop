@@ -89,7 +89,7 @@ class ICAR_length_scales(Distribution):
         "log_sigmas",
         "single_dimension_adj_matrices",
     ]
-    pytree_aux_fields = ("is_sparse", "adj_matrix")
+    pytree_aux_fields = ("is_sparse", "single_dimension_adj_matrices")
 
     def __init__(
         self,
@@ -140,12 +140,10 @@ class ICAR_length_scales(Distribution):
 
         event_shape = tuple([jnp.shape(mat)[-1] for mat in self.single_dimension_adj_matrices])
 
-        (self.log_sigmas,) = promote_shapes(log_sigmas, shape=batch_shape + log_sigmas.shape[-1:])
-
         super(ICAR_length_scales, self).__init__(
             batch_shape=batch_shape,
             event_shape=event_shape,
-            validate_args=validate_args,
+            validate_args=False,
         )
 
         for single_dimension_adj_matrix in self.single_dimension_adj_matrices:

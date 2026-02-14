@@ -238,6 +238,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 icar = ICAR_model(single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True)
                 merger_rate_density = numpyro.sample('merger_rate_density', dist.ImproperUniform(dist.constraints.real, tuple(pixelpop_data.bins), ()))
                 prior_factor, quad = icar.log_prob_and_quad(merger_rate_density)
+                # print(prior_factor, quad)
                 numpyro.factor('prior_factor', prior_factor)
             else:
                 merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True))        
