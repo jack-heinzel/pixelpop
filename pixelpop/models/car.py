@@ -100,7 +100,7 @@ class ICAR_length_scales(Distribution):
         validate_args=None,
     ):
         
-        self.dimension = len(adj_matrices)
+        self.dimension = len(single_dimension_adj_matrices)
         
         if jnp.ndim(log_sigmas) == 0:
             (self.log_sigmas,) = promote_shapes(log_sigmas, shape=(self.dimension,))
