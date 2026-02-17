@@ -439,8 +439,9 @@ def inference_loop(
         Maximum tree depth for NUTS (default 10).
     num_samples : int, optional
         Frequency of printing chain diagnostics (default 1).
-    parallel : int, optional
-        Number of independent chains to run (default 1).
+    parallel : int or list, optional
+        Number of independent chains to run (default 1). If list of ints, 
+        specifies number in name of savefile (chain_{num}_samples.h5).
     rng_key : jax.random.PRNGKey, optional
         Random key for reproducibility.
     cache_cadence : int, optional
@@ -469,10 +470,12 @@ def inference_loop(
     kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = []
-    rng_keys = random.split(rng_key, num=parallel)
-    for chain in range(parallel):
-        rng_key = rng_keys[chain]
-        print(f"Warming up chain #{chain + 1} out of {parallel}")
+    if not isinstance(parallel, (list, tuple)):
+        parallel = list(range(parallel))
+    rng_keys = random.split(rng_key, num=len(parallel))
+    for ii, chain in enumerate(parallel):
+        rng_key = rng_keys[ii]
+        print(f"Warming up chain #{chain} out of {parallel}")
         mcmc = MCMC(kernel, thinning=thinning, num_warmup=warmup, num_samples=num_samples*thinning, num_chains=1)# , chain_method='vectorized')# , chain_method='sequential') # vectorized is an experimental method. We can pass 'parallel' which attempts to distribute the chains across multiple GPUs, e.g. on pcdev12 we could do num_chains = 4 across the a100s. If num_chains is too large, it defaults to 'sequential' which simply evaluates the chains in series.
         
         mcmc.warmup(rng_key, **model_kwargs)
