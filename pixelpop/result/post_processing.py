@@ -202,7 +202,7 @@ def resample_injections(hyperposterior, nsamples, nevents, pixelpop_data, verbos
     loop = range(nsamples)
     if verbose:
         loop = tqdm(loop)
-        loop.set_description('Resampling GW posteriors')
+        loop.set_description('Resampling GW detected injections')
 
     for ii in loop:
         rates = np.array(f(ss[ii]))

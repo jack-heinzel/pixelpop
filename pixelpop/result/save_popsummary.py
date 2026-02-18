@@ -211,7 +211,7 @@ def create_popsummary(
         lda = pixelpop_data.logdV[2:]
         R = hyperposterior['merger_rate_density']
         hyperposterior['log_rate'] = np.array(
-                [LSE(Rsub, axis=(0,)+axes) + np.sum(pixelpop_data.logdV) for Rsub in tqdm(R, desc=f'Computing integrated log rates')]
+                [LSE(Rsub) + np.sum(pixelpop_data.logdV) for Rsub in tqdm(R, desc=f'Computing integrated log rates')]
             ) - np.log(2) # divide by 2 bc lower triangular
         hyperposterior['merger_rate_density'] = np.log(axes_tril(np.exp(hyperposterior['merger_rate_density']), axes=(1,2)))
         
@@ -255,7 +255,7 @@ def create_popsummary(
     assert 'log_rate' in hyperposterior
     R = hyperposterior['merger_rate_density']
     if pixelpop_data.has_window:    
-        window_in_bins = np.zeros(R.shape[1:])
+        window_in_bins = np.zeros(R.shape)
         windows_pos = {}
         windows_vals = {}
         windows_bins = {}
@@ -332,7 +332,7 @@ def create_popsummary(
                 except:
                     rate_func = parametric_models[par]
                 required_keys = parameter_to_hyperparameters[par]
-                rates = np.array([rate_func({par: pos}, *[hyperposterior[k][ii] for k in required_keys]) for jj in tqdm(range(Nsamples))])
+                rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][ii] for k in required_keys]) for jj in tqdm(range(Nsamples))])
                 rates += lrs[:,None]
             except:
                 print(f'Could not save {par} rates on grids, skipping...')

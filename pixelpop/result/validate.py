@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import arviz as az
+import numpy as np
 import xarray as xr
 import warnings
 import population_error
@@ -273,7 +274,7 @@ def convert_to_arviz(hyperposterior):
     if isinstance(hyperposterior, list):
         keys = hyperposterior[0].keys()
         for k in keys:
-            stacked = jnp.stack([chain[k] for chain in hyperposterior])
+            stacked = np.stack([chain[k] for chain in hyperposterior])
             processed_posterior[k] = stacked
             # Generate dims: ignore 0 (chain) and 1 (draw)
             if stacked.ndim > 2:
