@@ -8,8 +8,6 @@ import jax.scipy.special as scs
 import numpy as np
 from functools import partial
 
-from .window_functions import planck_taper_1d
-
 Planck15_LAL = wcosmo.FlatLambdaCDM(H0=67.90, Om0=0.3065, name="Planck15_LAL")
 COSMO = Planck15_LAL
 INF = 1e10 # avoid actual jnp.inf, otherwise we get nan gradients
