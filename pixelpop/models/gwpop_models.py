@@ -8,6 +8,8 @@ import jax.scipy.special as scs
 import numpy as np
 from functools import partial
 
+from .window_functions import planck_taper_1d
+
 Planck15_LAL = wcosmo.FlatLambdaCDM(H0=67.90, Om0=0.3065, name="Planck15_LAL")
 COSMO = Planck15_LAL
 INF = 1e10 # avoid actual jnp.inf, otherwise we get nan gradients
@@ -180,6 +182,75 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
+
+def PlanckWindow_PrimaryMass(data, m_min, delta_m):
+    """
+    Planck-taper style window acting on log(m1), returned in log-space.
+
+    This is intended to be used as a *multiplicative* window on the merger
+    rate in linear space, so the returned quantity is added to other
+    log-densities. It does **not** enforce any normalization; it is purely
+    a shape modifier.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        During inference, this will be the full event/injection dictionary
+        containing at least 'log_mass_1' or 'mass_1'. When called from
+        ``save_popsummary`` it may instead be a dict with key
+        'log_mass_1_window' and a 1D grid.
+    m_min : float
+        Window edges in log-mass space.
+    delta_m : float
+        Taper width (0 < delta_m).
+
+    Returns
+    -------
+    jnp.ndarray
+        log w(log_m1), suitable for adding to the population log-density.
+    """
+    if isinstance(data, dict):
+        if 'log_mass_1' in data:
+            x = jnp.exp(data['log_mass_1'])
+        elif 'mass_1' in data:
+            x = data['mass_1']
+        else:
+            raise KeyError("PlanckWindow_PrimaryMass expects 'log_mass_1', or 'mass_1' in data.")
+    else:
+        # Assume data is already mass_1.
+        x = data
+
+    return m_smoother(x, m_min, delta_m)
+
+def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, m_min_1, delta_m_1, m_min_2, delta_m_2):
+    """
+    Planck-taper style window acting on m1 and m2, returned in log-space.
+    """
+    if 'log_mass_1' in data:
+        m1 = jnp.exp(data['log_mass_1'])
+    elif 'mass_1' in data:
+        m1 = data['mass_1']
+    else:
+        raise KeyError("PlanckWindow_PrimaryMassSecondaryMass_TwoMmin expects 'log_mass_1', or 'mass_1' in data.")
+    if 'log_mass_2' in data:
+        m2 = jnp.exp(data['log_mass_2'])
+    elif 'mass_2' in data:
+        m2 = data['mass_2']
+    elif 'mass_ratio' in data:
+        m2 = m1 * data['mass_ratio']
+    else:
+        raise KeyError("PlanckWindow_PrimaryMassSecondaryMass_TwoMmin expects 'log_mass_2', 'mass_2', or 'mass_ratio' in data.")
+
+    m1smoothed = m_smoother(m1, m_min_1, delta_m_1)
+    m2smoothed = m_smoother(m2, m_min_2, delta_m_2)
+    return m1smoothed + m2smoothed
+
+def PlanckWindow_PrimaryMassSecondaryMass(data, m_min, delta_m):
+    """
+    Planck-taper style window acting on m1 and m2, returned in log-space.
+    """
+    
+    return PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, m_min, delta_m, m_min, delta_m)
 
 def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
     """
@@ -1074,12 +1145,37 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
 
 
-bbh_minima = {'log_mass_1': jnp.log(3), 'mass_1': 3., 'mass_2': 3., 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'chi_p': 0., 'redshift': 0.}
-bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'chi_p': 1., 'redshift': 2.4}
+bbh_minima = {
+    'log_mass_1': jnp.log(3),
+    'mass_1': 3.,
+    'mass_2': 3.,
+    'mass_ratio': 0.,
+    'log_mass_2': jnp.log(3),
+    'chi_eff': -1.,
+    'chi_p': 0.,
+    'redshift': 0.,
+    # Use the same support for the auxiliary window parameter as for log_mass_1.
+    'log_mass_1_window': jnp.log(3),
+}
+bbh_maxima = {
+    'log_mass_1': jnp.log(200),
+    'mass_1': 200.,
+    'mass_2': 200.,
+    'mass_ratio': 1.,
+    'log_mass_2': jnp.log(200),
+    'chi_eff': 1.,
+    'chi_p': 1.,
+    'redshift': 2.4,
+    'log_mass_1_window': jnp.log(200),
+}
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
+    # Auxiliary parameter to attach a Planck-taper style window to log_mass_1.
+    # This does not change the base ICAR grid; it simply adds a log-space
+    # window factor when used as an "other_parameter".
+    'log_mass_1_window': PlanckWindow_PrimaryMass,
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
@@ -1105,6 +1201,9 @@ parameter_values = {
 gwparameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
+    # Default hyperparameters for the Planck window on log_mass_1; users can
+    # override these via PixelPopData.parameter_to_hyperparameters if desired.
+    'log_mass_1_window': ['w_x_min', 'w_x_max', 'w_eps'],
     'mass_ratio': ['beta', 'qmin'], 
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],
@@ -1137,11 +1236,29 @@ default_priors = {
     'zeta_tilt': ([0, 1], dist.Uniform), 
     'z_minimum': ([0.], dist.Delta), 
     'max_z': ([1.9], dist.Delta),
+    # Broad but reasonable defaults for the log_mass_1 Planck window.
+    'w_x_min': ([jnp.log(3), jnp.log(10)], dist.Uniform),
+    'w_x_max': ([jnp.log(30), jnp.log(200)], dist.Uniform),
+    'w_eps': ([0.01, 0.3], dist.Uniform),
 }
 
 map_to_gwpop_parameters = {
-    'mass_1': ['mass_1'], 'log_mass_1': ['log_mass_1'], 'mass_2': ['mass_2'], 'log_mass_2': ['log_mass_2'], 
-    'mass_ratio': ['mass_ratio'], 'redshift': ['redshift'], 'redshift_psi': ['redshift_psi'], 'chi_eff': ['chi_eff'], 
-    'chi_p': ['chi_p'], 'a_1': ['a_1'], 'a_2': ['a_2'], 'cos_tilt_1': ['cos_tilt_1'], 'cos_tilt_2': ['cos_tilt_2'], 
-    'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'], 'a': ['a_1', 'a_2'], 't': ['cos_tilt_1', 'cos_tilt_2'],
+    'mass_1': ['mass_1'],
+    'log_mass_1': ['log_mass_1'],
+    'mass_2': ['mass_2'],
+    'log_mass_2': ['log_mass_2'],
+    'mass_ratio': ['mass_ratio'],
+    'redshift': ['redshift'],
+    'redshift_psi': ['redshift_psi'],
+    'chi_eff': ['chi_eff'],
+    'chi_p': ['chi_p'],
+    'a_1': ['a_1'],
+    'a_2': ['a_2'],
+    'cos_tilt_1': ['cos_tilt_1'],
+    'cos_tilt_2': ['cos_tilt_2'],
+    'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'],
+    'a': ['a_1', 'a_2'],
+    't': ['cos_tilt_1', 'cos_tilt_2'],
+    # For bookkeeping, associate the auxiliary window parameter with log_mass_1.
+    'log_mass_1_window': ['log_mass_1'],
 }

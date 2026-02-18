@@ -367,6 +367,10 @@ class PixelPopData:
         if jnp.ndim(self.bins) == 0:
             self.bins = [self.bins] * self.dimension
 
+        # window function
+        self.window_parameters = [p.replace('_window', '') for p in self.other_parameters if '_window' in p]
+        self.has_window = len(self.window_parameters) > 0
+        
         self.adj_matrices = [
             create_CAR_coupling_matrix(self.bins[ii], 1, isVisible=False) for ii in range(self.dimension)
             ]

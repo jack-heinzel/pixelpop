@@ -236,23 +236,45 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
             if pixelpop_data.marginalize_sigma:
                 icar = ICAR_model(single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True)
-                merger_rate_density = numpyro.sample('merger_rate_density', dist.ImproperUniform(dist.constraints.real, tuple(pixelpop_data.bins), ()))
+                merger_rate_density = numpyro.sample(
+                    'merger_rate_density',
+                    dist.ImproperUniform(
+                        dist.constraints.real,
+                        tuple(pixelpop_data.bins),
+                        (),
+                    ),
+                )
                 prior_factor, quad = icar.log_prob_and_quad(merger_rate_density)
-                # print(prior_factor, quad)
                 numpyro.factor('prior_factor', prior_factor)
             else:
-                merger_rate_density = numpyro.sample('merger_rate_density', ICAR_model(log_sigmas=lsigma, single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True))        
-            
+                merger_rate_density = numpyro.sample(
+                    'merger_rate_density',
+                    ICAR_model(
+                        log_sigmas=lsigma,
+                        single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+                        is_sparse=True,
+                    ),
+                )
+
+        has_window = pixelpop_data.has_window
+        if (not pixelpop_data.lower_triangular) and (not has_window):
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
                 sum_axes = tuple(np.arange(pixelpop_data.dimension)[np.r_[0:ii,ii+1:pixelpop_data.dimension]])
-                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(pixelpop_data.logdV[:ii]) + jnp.sum(pixelpop_data.logdV[ii+1:]))
+                numpyro.deterministic(
+                    f'log_marginal_{p}',
+                    LSE(merger_rate_density-normalization, axis=sum_axes)
+                    + jnp.sum(pixelpop_data.logdV[:ii])
+                    + jnp.sum(pixelpop_data.logdV[ii+1:])
+                )
 
         if pixelpop_data.marginalize_sigma:
             unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(normalization_dof/2)))
             precision = 2 * unscaled_gamma / quad 
             numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
+        # Use the raw ICAR field for event and injection weights; any
+        # parametric windows are applied in parametric_model.
         event_weights += merger_rate_density[event_bins] 
         inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':
