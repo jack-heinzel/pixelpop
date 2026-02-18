@@ -45,7 +45,7 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
 
     Implements the standard smoothing of a power-law at the low-mass
     edge, following Eq. (B5) of arXiv:2111.03634. Ensures continuity
-    across [m_min, m_min + delta].
+    across [mmin, mmin + delta].
 
     Parameters
     ----------
@@ -181,7 +181,7 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
     return pm1
 
 
-def PlanckWindow_PrimaryMass(data, m_min, delta_m):
+def PlanckWindow_PrimaryMass(data, mmin, delta_m):
     """
     Planck-taper style window acting on log(m1), returned in log-space.
 
@@ -197,7 +197,7 @@ def PlanckWindow_PrimaryMass(data, m_min, delta_m):
         containing at least 'log_mass_1' or 'mass_1'. When called from
         ``save_popsummary`` it may instead be a dict with key
         'log_mass_1_window' and a 1D grid.
-    m_min : float
+    mmin : float
         Window edges in log-mass space.
     delta_m : float
         Taper width (0 < delta_m).
@@ -218,9 +218,9 @@ def PlanckWindow_PrimaryMass(data, m_min, delta_m):
         # Assume data is already mass_1.
         x = data
 
-    return m_smoother(x, m_min, delta_m)
+    return m_smoother(x, mmin, delta_m)
 
-def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, m_min_1, delta_m_1, m_min_2, delta_m_2):
+def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin_1, delta_m_1, mmin_2, delta_m_2):
     """
     Planck-taper style window acting on m1 and m2, returned in log-space.
     """
@@ -239,16 +239,16 @@ def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, m_min_1, delta_m_1, m_mi
     else:
         raise KeyError("PlanckWindow_PrimaryMassSecondaryMass_TwoMmin expects 'log_mass_2', 'mass_2', or 'mass_ratio' in data.")
 
-    m1smoothed = m_smoother(m1, m_min_1, delta_m_1)
-    m2smoothed = m_smoother(m2, m_min_2, delta_m_2)
+    m1smoothed = m_smoother(m1, mmin_1, delta_m_1)
+    m2smoothed = m_smoother(m2, mmin_2, delta_m_2)
     return m1smoothed + m2smoothed
 
-def PlanckWindow_PrimaryMassSecondaryMass(data, m_min, delta_m):
+def PlanckWindow_PrimaryMassSecondaryMass(data, mmin, delta_m):
     """
     Planck-taper style window acting on m1 and m2, returned in log-space.
     """
     
-    return PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, m_min, delta_m, m_min, delta_m)
+    return PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin, delta_m, mmin, delta_m)
 
 def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
     """
@@ -1163,17 +1163,14 @@ bbh_maxima = {
     'log_mass_2': jnp.log(200),
     'chi_eff': 1.,
     'chi_p': 1.,
-    'redshift': 2.4,
+    'redshift': 1.9,
     'log_mass_1_window': jnp.log(200),
 }
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    # Auxiliary parameter to attach a Planck-taper style window to log_mass_1.
-    # This does not change the base ICAR grid; it simply adds a log-space
-    # window factor when used as an "other_parameter".
-    'log_mass_1_window': PlanckWindow_PrimaryMass,
+    'log_mass_1_window': PlanckWindow_PrimaryMass, #(data, mmin, delta_m)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
@@ -1187,7 +1184,7 @@ typical_hyperparameters = {
     'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
     'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_xp':0.3, 'sig_xp':0.2, 
     'mu_spin':0.2, 'var_spin':0.1, 'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 
-    'lnsigma':-1, 'lncor': -5, 'mean': 0, 'qmin': 0.02, 'max_z': 2.4,
+    'lnsigma':-1, 'lncor': -5, 'mean': 0, 'qmin': 0.02, 'max_z': 1.9,
 }
 
 parameter_values = {
@@ -1199,9 +1196,7 @@ parameter_values = {
 gwparameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
-    # Default hyperparameters for the Planck window on log_mass_1; users can
-    # override these via PixelPopData.parameter_to_hyperparameters if desired.
-    'log_mass_1_window': ['w_x_min', 'w_x_max', 'w_eps'],
+    'log_mass_1_window': ['mmin', 'delta_m'],
     'mass_ratio': ['beta', 'qmin'], 
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],
@@ -1234,10 +1229,6 @@ default_priors = {
     'zeta_tilt': ([0, 1], dist.Uniform), 
     'z_minimum': ([0.], dist.Delta), 
     'max_z': ([1.9], dist.Delta),
-    # Broad but reasonable defaults for the log_mass_1 Planck window.
-    'w_x_min': ([jnp.log(3), jnp.log(10)], dist.Uniform),
-    'w_x_max': ([jnp.log(30), jnp.log(200)], dist.Uniform),
-    'w_eps': ([0.01, 0.3], dist.Uniform),
 }
 
 map_to_gwpop_parameters = {
@@ -1257,6 +1248,5 @@ map_to_gwpop_parameters = {
     'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'],
     'a': ['a_1', 'a_2'],
     't': ['cos_tilt_1', 'cos_tilt_2'],
-    # For bookkeeping, associate the auxiliary window parameter with log_mass_1.
     'log_mass_1_window': ['log_mass_1'],
 }

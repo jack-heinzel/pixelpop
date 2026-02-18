@@ -428,6 +428,11 @@ class PixelPopData:
                     final_priors[h] = gwpop_models.default_priors[h]
         self.priors = final_priors
 
+        for p in self.window_parameters:
+            if p not in self.parametric_models:
+                raise ValueError(f'Window parameter {p} not found in parametric_models')
+            if p not in self.pixelpop_parameters:
+                raise ValueError(f'Window parameter {p} not found in pixelpop_parameters')
         # for now, hardcode Planck15_LAL cosmology
         # TODO: allow for different cosmologies
         self.preprocess_cosmology(gwpop_models.COSMO)

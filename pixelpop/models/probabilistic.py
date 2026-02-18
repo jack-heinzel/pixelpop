@@ -256,8 +256,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                     ),
                 )
 
-        has_window = pixelpop_data.has_window
-        if (not pixelpop_data.lower_triangular) and (not has_window):
+        if not pixelpop_data.lower_triangular:
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
                 sum_axes = tuple(np.arange(pixelpop_data.dimension)[np.r_[0:ii,ii+1:pixelpop_data.dimension]])
