@@ -352,7 +352,7 @@ def validate_pixelpop_inference(
     flat_dict_posterior = {}
     for k, v in flat_az_posterior.data_vars.items():
         # Move the last axis (samples in arviz at end) to the front 
-        arr = jnp.moveaxis(v.values, -1, 0)
+        arr = np.moveaxis(v.values, -1, 0)
         flat_dict_posterior[k] = arr
     
     error_stats = compute_error_statistics(

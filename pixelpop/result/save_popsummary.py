@@ -253,7 +253,9 @@ def create_popsummary(
     
     
     assert 'log_rate' in hyperposterior
+    old_lrs = hyperposterior['log_rate']
     R = hyperposterior['merger_rate_density']
+    
     if pixelpop_data.has_window:    
         window_in_bins = np.zeros(R.shape)
         windows_pos = {}
@@ -297,7 +299,8 @@ def create_popsummary(
                 sum_axes = tuple(ax for ax in range(1, R.ndim) if ax != par_axis)
                 assert 'log_marginal_' + par in hyperposterior
                 hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) - log_norms[:,None] # overwrite with windowed marginal
-                
+        
+        hyperposterior['merger_rate_density'] = R
     lrs = hyperposterior['log_rate']
     
     for ii, par in enumerate(parameters):
@@ -315,8 +318,8 @@ def create_popsummary(
                 window_pos = windows_pos[par]
                 window_factors = windows_vals[par]
                 window_bins = windows_bins[par]
-                rates = hyperposterior['log_marginal_'+par]
-                rates = rates[:,window_bins] + window_factors + lrs[:,None]
+                rates = hyperposterior['log_marginal_'+par] + old_lrs[:,None]
+                rates = rates[:,window_bins] + window_factors
                 pos = window_pos
             else:
                 rates = hyperposterior['log_marginal_'+par]
