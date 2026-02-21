@@ -31,7 +31,8 @@ dependencies = [
     "arviz",
     "population_error",
     "xarray",
-    "unxt"
+    "unxt<=1.10.3",
+    "plum-dispatch<=2.5.7"
 ]
 
 [tool.setuptools]

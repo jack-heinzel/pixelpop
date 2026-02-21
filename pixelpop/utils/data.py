@@ -367,6 +367,10 @@ class PixelPopData:
         if jnp.ndim(self.bins) == 0:
             self.bins = [self.bins] * self.dimension
 
+        # window function
+        self.window_parameters = [p.replace('_window', '') for p in self.other_parameters if '_window' in p]
+        self.has_window = len(self.window_parameters) > 0
+        
         self.adj_matrices = [
             create_CAR_coupling_matrix(self.bins[ii], 1, isVisible=False) for ii in range(self.dimension)
             ]
@@ -424,6 +428,11 @@ class PixelPopData:
                     final_priors[h] = gwpop_models.default_priors[h]
         self.priors = final_priors
 
+        for p in self.window_parameters:
+            if p + '_window' not in self.parametric_models:
+                raise ValueError(f'Window parameter {p} not found in parametric_models')
+            if p not in self.pixelpop_parameters:
+                raise ValueError(f'Window parameter {p} not found in pixelpop_parameters')
         # for now, hardcode Planck15_LAL cosmology
         # TODO: allow for different cosmologies
         self.preprocess_cosmology(gwpop_models.COSMO)
