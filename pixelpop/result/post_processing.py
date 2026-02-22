@@ -338,7 +338,7 @@ def sample_nd_grid(*bins, p, size=1):
     shape = tuple(len(b) for b in bins)
 
     pflatten = p.reshape(-1)/np.sum(p)
-    which = np.random.choice(len(p), size=size, replace=True, p=pflatten)
+    which = np.random.choice(len(pflatten), size=size, replace=True, p=pflatten)
     which = np.unravel_index(which, shape=shape)
 
     intra_bin_scatter = [d*np.random.uniform(size=size) for d in dx]
