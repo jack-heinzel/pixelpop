@@ -209,12 +209,12 @@ def create_popsummary(
 
         # log of the volume element for all other parameters
         lda = pixelpop_data.logdV[2:]
-        R = hyperposterior['merger_rate_density']
+        
         hyperposterior['log_rate'] = np.array(
-                [LSE(Rsub) + np.sum(pixelpop_data.logdV) for Rsub in tqdm(R, desc=f'Computing integrated log rates')]
+                [LSE(Rsub) + np.sum(pixelpop_data.logdV) for Rsub in tqdm(hyperposterior['merger_rate_density'], desc=f'Computing integrated log rates')]
             ) - np.log(2) # divide by 2 bc lower triangular
         hyperposterior['merger_rate_density'] = np.log(axes_tril(np.exp(hyperposterior['merger_rate_density']), axes=(1,2)))
-        
+        R = hyperposterior['merger_rate_density']
         # converting to comoving merger rate density, if applicable
         if 'redshift' not in pixelpop_parameters: 
             # redshift marginalization requires cosmological factors
