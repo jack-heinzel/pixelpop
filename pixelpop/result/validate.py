@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-import arviz as az
+#import arviz as az
 import xarray as xr
 import warnings
 import population_error

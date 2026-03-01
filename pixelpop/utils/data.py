@@ -443,9 +443,11 @@ class MixturePixelPopData(PixelPopData):
         models multiply the entire mixture (e.g. chi_eff, redshift).
 
     Additional fields:
-      - ``mixture_parametric_models``: custom parametric models for the
-        parametric side of the mixture (keyed by pixelpop parameter name).
-        Falls back to the gwpop default if not provided.
+      - ``mixture_parametric_models``: custom parametric models, keyed by
+        parameter name. For pixelpop_parameters, these are used on the
+        parametric side of the ξ-mixture. For other_parameters, these
+        **override** the default models inherited from PixelPopData
+        (e.g. replace PowerlawRedshiftPsi with NormalizedPowerlawRedshiftPsi).
       - ``mixture_parameter_to_hyperparameters``: hyperparameter mappings
         for the mixture parametric models.
       - ``mixture_priors``: custom priors for mixture hyperparameters.
@@ -464,9 +466,27 @@ class MixturePixelPopData(PixelPopData):
     skip_mixture: bool = False
 
     def __post_init__(self):
+        # Before calling super(), stash any mixture_parametric_models entries
+        # that target other_parameters. These will override the parent's
+        # defaults after super().__post_init__ resolves them.
+        _overrides_for_other = {
+            p: self.mixture_parametric_models[p]
+            for p in list(self.mixture_parametric_models)
+            if p in self.other_parameters
+        }
+
         super().__post_init__()
 
-        # Resolve mixture parametric models for pixelpop_parameters
+        # Override parent's parametric_models for other_parameters
+        # that have custom models provided via mixture_parametric_models.
+        for p, model_fn in _overrides_for_other.items():
+            old_name = self.parametric_models[p].__name__
+            self.parametric_models[p] = model_fn
+            print(f"[Mixture] Overriding '{p}' model: "
+                  f"{old_name} -> {model_fn.__name__}")
+
+        # Resolve mixture parametric models for pixelpop_parameters only
+        # (other_parameters are handled above via the parent's parametric_models)
         resolved_models = {}
         for p in self.pixelpop_parameters:
             if p in self.mixture_parametric_models:

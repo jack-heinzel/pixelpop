@@ -508,6 +508,33 @@ def PowerlawRedshiftPsi(data, lamb, max_z=1.9):
     p = jnp.where(window, ln_p, -INF*jnp.ones_like(z))
     return p
 
+def _log_expm1_stable(a):
+    """Compute log(expm1(a)) stably for real a (a can be small/large)."""
+    return jnp.where(a > 0,
+                     a + jnp.log1p(-jnp.exp(-a)),
+                     jnp.log(jnp.expm1(a)))
+
+def NormalizedPowerlawRedshiftPsi(data, lamb, max_z=1.9):
+    """Normalized (1+z)^lambda density over [min_z, max_z]."""
+    tol = 1e-8
+    z = data["redshift"] if isinstance(data, dict) else data
+
+    # unnormalized log shape
+    ln_unnorm = lamb * jnp.log1p(z)
+
+    # log normalization constant logZ
+    a = (lamb + 1.0) * jnp.log1p(max_z)
+
+    logZ_general = _log_expm1_stable(a) - jnp.log(lamb + 1.0)
+    logZ_lm1 = jnp.log(jnp.log1p(max_z))  # log( log(1+max_z) )
+
+    logZ = jnp.where(jnp.abs(lamb + 1.0) < tol, logZ_lm1, logZ_general)
+
+    # cutoff outside [0, max_z]
+    window = (z >= 0.0) & (z <= max_z)
+    ln_p = ln_unnorm - logZ
+    return jnp.where(window, ln_p, -INF * jnp.ones_like(z))
+
 def MadauDickinsonRedshift(data, gamma, kappa, z_peak, z_max=1.9, normalize=True, return_normalization=False):
     """
     Madau–Dickinson star-formation rate redshift distribution.
@@ -968,6 +995,120 @@ def gwtc3_spin_default(data, mu, var, sig_tilt, zeta):
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
+def logpdf_chieff_correlated_linear(
+    data,
+    mu_chieff_0,
+    mu_chieff_1,
+    ln_sigma_chieff_0,
+    ln_sigma_chieff_1,
+    x0,
+    parameter,   # string: "mass_ratio" or "redshift" 
+    amax=1.0,
+    min_sigma=1e-6,
+):
+    """
+    Log p(chi_eff | x) where chi_eff is TruncatedNormal(mu(x), sigma(x), [-amax, amax]),
+    and mu(x), ln sigma(x) are linear in (x - x0).
+
+    Returns: array of log-prob with the same broadcasted shape as chi_eff and x.
+    """
+    if isinstance(data, dict):
+        chi_eff = data['chi_eff']
+    else:
+        chi_eff = data
+
+    x = data[parameter]
+
+    # Linear mean and log-sigma
+    mu = mu_chieff_0 + mu_chieff_1 * (x - x0)
+    ln_sigma = ln_sigma_chieff_0 + ln_sigma_chieff_1 * (x - x0)
+
+    # sigma must be > 0; clip to avoid numerical issues
+    sigma = jnp.exp(ln_sigma)
+    sigma = jnp.maximum(sigma, min_sigma)
+
+    # Truncated normal on [-amax, amax]
+    logp = trunc_gaussian(chi_eff, mu, sigma, lower=-amax, upper=amax)
+
+    # Match gwpopulation's nan_to_num(posinf=0) behavior in LOGSPACE:
+    # - any nan/inf should become -inf (i.e., probability 0)
+    logp = jnp.where(jnp.isfinite(logp), logp, -INF)
+    return logp
+
+def trunc_gaussian_lims(data, mean, sig, lower, upper):
+    px = -(data - mean)**2 / 2 / sig**2
+    width = 0.001 #Hardcoding it for now
+    taper_l = jnp.where(data > lower, 0, ((data-lower)/width))
+    taper_r = jnp.where(data < upper, 0, -((data-upper)/width))
+    px = px + taper_l + taper_r
+    up = (upper - mean) / sig / jnp.sqrt(2)
+    lo = (lower - mean) / sig / jnp.sqrt(2)
+    trunc = 0.5*(scs.erf(up) - scs.erf(lo))
+    norm = 0.5*jnp.log(2*jnp.pi*sig**2) + jnp.log(trunc)
+    return px - norm
+
+def log_tukey_norm(x, tx0, tr, tk, eps=1e-10, normalize=True):
+    # Define parameters to add/subtract
+    x0 = jnp.where(-1 > tx0 - tk, -1, tx0 - tk)
+    x1 = tx0 - tk * (1 - tr)
+    x2 = tx0 + tk * (1 - tr)
+    x3 = jnp.where(1 < tx0 + tk, 1, tx0 + tk)
+    
+    # Adding an epsilon to avoid numerical errors
+    ln_t01 = jnp.log((1 + jnp.cos((x - x1) * jnp.pi / tk / tr)) / 2 + eps)
+    ln_t23 = jnp.log((1 + jnp.cos((x - x2) * jnp.pi / tk / tr)) / 2 + eps)
+    
+    # Applying the windowing
+    ln_t = jnp.ones(x.shape)*(-100) # All values outside near -inf
+    ln_t = jnp.where((x0 <= x) * (x < x1), ln_t01, ln_t)
+    ln_t = jnp.where((x1 <= x) * (x < x2), 0, ln_t)
+    ln_t = jnp.where((x2 <= x) * (x < x3), ln_t23, ln_t)
+    
+    
+    # Calculate the normalization
+    if normalize:
+        xs_fixed = jnp.linspace(-1, 1, 1000)
+        dx = xs_fixed[1] - xs_fixed[0]
+        ln_t01_n = jnp.log((1 + jnp.cos((xs_fixed - x1) * jnp.pi / tk / tr)) / 2 + eps)
+        ln_t23_n = jnp.log((1 + jnp.cos((xs_fixed - x2) * jnp.pi / tk / tr)) / 2 + eps)
+    
+        t_n = jnp.ones(xs_fixed.shape)*(-100) # All values outside near -inf
+        t_n = jnp.where((x0 <= xs_fixed) * (xs_fixed < x1), ln_t01_n, t_n)
+        t_n = jnp.where((x1 <= xs_fixed) * (xs_fixed < x2), 0, t_n)
+        t_n = jnp.where((x2 <= xs_fixed) * (xs_fixed < x3), ln_t23_n, t_n) 
+    
+        t_norm = scs.logsumexp(t_n) + jnp.log(dx)
+        ln_t -= t_norm
+        
+    window = jnp.logical_and(x >= -1, x <= 1)
+    t = jnp.where(window, ln_t, -100.*jnp.ones_like(x))
+    
+    return t
+
+def chieff_gaussian_tukey_original_parametrization(data, mean, sig, tx0, tr, tk, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    gaussian = trunc_gaussian_lims(x, mean, sig, lower=-1, upper=1)
+    tukey = log_tukey_norm(x, tx0, tr, tk)
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
+    return model
+
+
+def logpdf_1g1g_chieff(data, mu_x, sig_x, chieff_min=-1.0, chieff_max=1.0):
+    
+    chi_eff = data['chi_eff']
+    logp_eff = trunc_gaussian(chi_eff, mu_x, sig_x, chieff_min, chieff_max)
+    return logp_eff 
+
+def logpdf_1g1g_chip(data, mu_xp, sigma_xp, chip_min=0.0, chip_max=1.0):
+    chi_p = data['chi_p']
+    logp_p   = trunc_gaussian(chi_p, mu_xp, sigma_xp, chip_min, chip_max)
+    return logp_p 
+
+
+
 @partial(jit, static_argnames=['rate_likelihood','return_likelihood_info'])
 def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
     """
@@ -1067,7 +1208,7 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
 
 
 bbh_minima = {'log_mass_1': jnp.log(3), 'mass_1': 3., 'mass_2': 3., 'mass_ratio': 0., 'log_mass_2': jnp.log(3), 'chi_eff': -1., 'redshift': 0.}
-bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 2.4}
+bbh_maxima = {'log_mass_1': jnp.log(200), 'mass_1': 200., 'mass_2': 200., 'mass_ratio': 1., 'log_mass_2': jnp.log(200), 'chi_eff': 1., 'redshift': 1.9}
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
@@ -1075,6 +1216,7 @@ gwparameter_to_model = {
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
+    'chi_p': logpdf_1g1g_chip,  #(data, mean, sig)
     'spin': spin_default, #(data, mu, var, sig, zeta)
     'a': iid_normal_spin, #(data, mu, var)
     't': tilt_iid, #(data, mu, sig, zeta)
@@ -1082,13 +1224,13 @@ gwparameter_to_model = {
 
 typical_hyperparameters = {
     'alpha':3, 'beta':2, 'mmin':2, 'mmax':199, 'delta_m':5, 'mpp':35, 'sigpp':5, 
-    'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
+    'lam':0.005, 'lamb':2, 'mu_x':0.06, 'sig_x':0.1, 'mu_xp':0.06, 'sig_xp':0.1, 'mu_spin':0.2, 'var_spin':0.1, 
     'mu_tilt':0.6, 'sig_tilt':0.6, 'zeta_tilt':0.5, 'lnsigma':-1, 'lncor': -5, 
-    'mean': 0, 'qmin': 0.02, 'max_z': 2.4,
+    'mean': 0, 'qmin': 0.02, 'max_z': 1.9,
 }
 
 parameter_values = {
-    'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 'redshift': 0.2, 
+    'mass_1': 40., 'log_mass_1': np.log(40.), 'mass_ratio': 0.9, 'chi_eff': 0., 'chi_p': 0., 'redshift': 0.2, 
     'a_1': 0.2, 'a_2': 0.2, 'cos_tilt_1': 0., 'cos_tilt_2': 0.
     }
 
@@ -1099,6 +1241,7 @@ gwparameter_to_hyperparameters = {
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],
     'chi_eff': ['mu_x', 'sig_x'], 
+    'chi_p': ['mu_xp', 'sig_xp'], 
     'spin': ['mu_spin', 'var_spin', 'sig_tilt', 'zeta_tilt'], 
     'a': ['mu_spin', 'var_spin'],
     't': ['mu_tilt', 'sig_tilt', 'zeta_tilt'],
@@ -1117,13 +1260,15 @@ default_priors = {
     'lamb': ([-2, 10], dist.Uniform), 
     'mu_x': ([-1, 1], dist.Uniform), 
     'sig_x': ([0.005, 1.], dist.Uniform), 
+    'mu_xp': ([0, 1], dist.Uniform), 
+    'sig_xp': ([0.005, 1.], dist.Uniform), 
     'mu_spin': ([0, 1], dist.Uniform),
     'var_spin': ([0.005, 0.25], dist.Uniform), 
     'mu_tilt': ([-1, 1], dist.Uniform), 
     'sig_tilt': ([0.1, 4], dist.Uniform), 
     'zeta_tilt': ([0, 1], dist.Uniform), 
     'z_minimum': ([0.], dist.Delta), 
-    'max_z': ([2.4], dist.Delta),
+    'max_z': ([1.9], dist.Delta),
 }
 
 map_to_gwpop_parameters = {
