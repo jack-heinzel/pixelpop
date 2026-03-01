@@ -1,14 +1,334 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import * 
-from ..models.car import lower_triangular_map, mult_outer, add_outer
-from .car import DiagonalizedICARTransform
+from ..models.car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular_map, mult_outer, add_outer
+from .car import (
+    DiagonalizedICARTransform,
+    sigma_marginalized_ICAR,
+    lower_triangular_sigma_marg_log_prob,
+    lower_triangular_sigma_marg_log_prob_and_log_quad
+)
+
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
 from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
 import numpyro
+
+def setup_probabilistic_model_multiply(pixelpop_data, log='default'):
+    """
+    Construct a hierarchical probabilistic model for GW population inference.
+    """
+
+    if pixelpop_data.lower_triangular:
+        lt_map = lower_triangular_map(pixelpop_data.bins[0])
+        tri_size = int(pixelpop_data.bins[0] * (pixelpop_data.bins[0] + 1) / 2)
+        unique_sample_shape = (tri_size,) + tuple(pixelpop_data.bins[2:])
+        normalization_dof = tri_size * int(np.prod(pixelpop_data.bins[2:]))
+    else:
+        normalization_dof = int(np.prod(pixelpop_data.bins))
+
+    all_parametric_factors = getattr(
+        pixelpop_data,
+        "all_parametric_factors",
+        pixelpop_data.other_parameters
+    )
+
+    pixelpop_init_factors = getattr(
+        pixelpop_data,
+        "pixelpop_init_factors",
+        [p.replace('redshift', 'redshift_psi') for p in pixelpop_data.pixelpop_parameters]
+    )
+
+    def get_initial_value(plausible_hyperparameters, init_factors, Nobs, inj_weights, random_initialization):
+        """
+        Construct initial values for the pixelized merger rate density.
+        """
+        bin_med = [
+            (pixelpop_data.bin_axes[ii][:-1] + pixelpop_data.bin_axes[ii][1:]) / 2
+            for ii in range(pixelpop_data.dimension)
+        ]
+        interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
+
+        return_key = 'merger_rate_density'
+        if random_initialization:
+            if pixelpop_data.lower_triangular:
+                return_dict = {
+                    'base_interpolation': jnp.array(
+                        np.random.normal(loc=0, scale=1, size=unique_sample_shape)
+                    )
+                }
+            else:
+                return_dict = {
+                    return_key: jnp.array(
+                        np.random.normal(loc=0, scale=1, size=interpolation_grid[0].shape)
+                    )
+                }
+        else:
+            # Build a grid dictionary keyed by the actual PixelPop axes.
+            # Example:
+            #   pixelpop_parameters = ["mass_1", "mass_2"]
+            #   data_grid["mass_1"], data_grid["mass_2"] are available
+            data_grid = {
+                p: interpolation_grid[ii]
+                for ii, p in enumerate(pixelpop_data.pixelpop_parameters)
+            }
+
+            if len(init_factors) == 0:
+                initial_interpolation = np.zeros_like(interpolation_grid[0])
+            else:
+                initial_terms = []
+                for p in init_factors:
+                    initial_terms.append(
+                        pixelpop_data.parametric_models[p](
+                            data_grid,
+                            *[
+                                plausible_hyperparameters[h]
+                                for h in pixelpop_data.parameter_to_hyperparameters[p]
+                            ]
+                        )
+                    )
+                initial_interpolation = np.sum(initial_terms, axis=0)
+
+            pdet = (
+                LSE(initial_interpolation[pixelpop_data.inj_bins] + inj_weights)
+                - jnp.log(pixelpop_data.injections['total_generated'])
+            )
+            Rexp = (
+                jnp.log(Nobs)
+                - pdet
+                - jnp.log(pixelpop_data.injections['analysis_time'])
+            )
+
+            initial_interpolation = np.logaddexp(
+                initial_interpolation,
+                -10 * np.ones_like(initial_interpolation)
+            )
+
+            return_dict = {return_key: Rexp + initial_interpolation}
+
+        return return_dict
+
+    if pixelpop_data.skip_nonparametric:
+        initial_value = {}
+    else:
+        initial_value = get_initial_value(
+            pixelpop_data.plausible_hyperparameters,
+            pixelpop_init_factors,
+            pixelpop_data.posteriors['ln_dVTc'].shape[0],
+            pixelpop_data.injections['ln_dVTc'] - pixelpop_data.injections['log_prior'],
+            random_initialization=pixelpop_data.random_initialization
+        )
+
+    def parametric_model(data, injections, event_weights, inj_weights):
+        """
+        Evaluate the parametric population model contribution.
+        """
+        sample = {}
+        for key in pixelpop_data.priors:
+            args, distribution = pixelpop_data.priors[key]
+            if distribution.__name__ == 'Delta':
+                sample[key] = args[0]
+            else:
+                sample[key] = numpyro.sample(key, distribution(*args))
+
+        if log == 'debug':
+            for p in all_parametric_factors:
+                jaxprint('[DEBUG] =================================')
+                jaxprint('[DEBUG] parametric parameters: {p}', p=p)
+                jaxprint('[DEBUG] =================================')
+                for k in pixelpop_data.parameter_to_hyperparameters[p]:
+                    jaxprint('[DEBUG] \t {k} sample: {s}', k=k, s=sample[k])
+
+        for constraint_func in pixelpop_data.constraint_funcs:
+            numpyro.factor(constraint_func.__name__, constraint_func(sample))
+            if log == 'debug':
+                jaxprint('[DEBUG] constraint functions:', constraint_func.__name__, constraint_func(sample))
+
+        for p in all_parametric_factors:
+            event_weights += pixelpop_data.parametric_models[p](
+                data,
+                *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]]
+            )
+            inj_weights += pixelpop_data.parametric_models[p](
+                injections,
+                *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]]
+            )
+
+            if log == 'debug':
+                jaxprint(
+                    '[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}',
+                    p=p, ew=LSE(event_weights), iw=LSE(inj_weights)
+                )
+                if not jnp.isfinite(LSE(event_weights)):
+                    for parameter in pixelpop_data.parameter_to_hyperparameters[p]:
+                        if parameter in data:
+                            jaxprint(
+                                '[DEBUG] inf event weights at {pp}={d}',
+                                pp=parameter,
+                                d=data[parameter][jnp.where(event_weights == jnp.inf)]
+                            )
+                if not jnp.isfinite(LSE(inj_weights)):
+                    for parameter in pixelpop_data.parameter_to_hyperparameters[p]:
+                        if parameter in injections:
+                            jaxprint(
+                                '[DEBUG] inf injection weights at {pp}={d}',
+                                pp=parameter,
+                                d=injections[parameter][jnp.where(inj_weights == jnp.inf)]
+                            )
+
+        return event_weights, inj_weights
+
+    if pixelpop_data.marginalize_sigma:
+        ICAR_model = sigma_marginalized_ICAR
+    else:
+        ICAR_model = ICAR_length_scales
+
+    def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
+        """
+        Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
+        """
+        if skip:
+            R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
+            return event_weights + R[None, None], inj_weights + R[None]
+
+        if not pixelpop_data.marginalize_sigma:
+            coupling_prior = pixelpop_data.coupling_prior
+            if pixelpop_data.length_scales:
+                lsigma = numpyro.sample(
+                    'lnsigma',
+                    coupling_prior[1](*coupling_prior[0]),
+                    sample_shape=(pixelpop_data.dimension,)
+                )
+            else:
+                lsigma = numpyro.sample(
+                    'lnsigma',
+                    coupling_prior[1](*coupling_prior[0]),
+                    sample_shape=()
+                )
+
+        if pixelpop_data.lower_triangular:
+            base_interpolation = numpyro.sample(
+                'base_interpolation',
+                dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ())
+            )
+            merger_rate_density = numpyro.deterministic(
+                'merger_rate_density',
+                lt_map(base_interpolation)
+            )
+
+            if pixelpop_data.marginalize_sigma:
+                prior_factor, quad = lower_triangular_sigma_marg_log_prob_and_log_quad(
+                    merger_rate_density,
+                    normalization_dof,
+                    pixelpop_data.adj_matrices
+                )
+            else:
+                prior_factor = lower_triangular_log_prob(
+                    merger_rate_density,
+                    normalization_dof,
+                    lsigma,
+                    pixelpop_data.adj_matrices
+                )
+            numpyro.factor('prior_factor', prior_factor)
+
+        else:
+            if pixelpop_data.marginalize_sigma:
+                icar = ICAR_model(
+                    single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+                    is_sparse=True
+                )
+                merger_rate_density = numpyro.sample(
+                    'merger_rate_density',
+                    dist.ImproperUniform(
+                        dist.constraints.real,
+                        tuple(pixelpop_data.bins),
+                        (),
+                    ),
+                )
+                prior_factor, quad = icar.log_prob_and_quad(merger_rate_density)
+                numpyro.factor('prior_factor', prior_factor)
+            else:
+                merger_rate_density = numpyro.sample(
+                    'merger_rate_density',
+                    ICAR_model(
+                        log_sigmas=lsigma,
+                        single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+                        is_sparse=True,
+                    ),
+                )
+
+        if not pixelpop_data.lower_triangular:
+            normalization = numpyro.deterministic(
+                'log_rate',
+                LSE(merger_rate_density) + jnp.sum(pixelpop_data.logdV)
+            )
+            for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
+                sum_axes = tuple(
+                    np.arange(pixelpop_data.dimension)[np.r_[0:ii, ii+1:pixelpop_data.dimension]]
+                )
+                numpyro.deterministic(
+                    f'log_marginal_{p}',
+                    LSE(merger_rate_density - normalization, axis=sum_axes)
+                    + jnp.sum(pixelpop_data.logdV[:ii])
+                    + jnp.sum(pixelpop_data.logdV[ii+1:])
+                )
+
+        if pixelpop_data.marginalize_sigma:
+            unscaled_gamma = numpyro.sample(
+                'unscaled_gamma',
+                numpyro.distributions.Gamma(concentration=(normalization_dof / 2))
+            )
+            precision = 2 * unscaled_gamma / quad
+            numpyro.deterministic('lnsigma', -0.5 * jnp.log(precision))
+
+        event_weights += merger_rate_density[event_bins]
+        inj_weights += merger_rate_density[inj_bins]
+
+        if log == 'debug':
+            jaxprint(
+                '[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}',
+                ew=LSE(event_weights),
+                iw=LSE(inj_weights)
+            )
+
+        return event_weights, inj_weights
+
+    def probabilistic_model(posteriors, injections):
+        event_weights, inj_weights = nonparametric_model(
+            pixelpop_data.event_bins,
+            pixelpop_data.inj_bins,
+            posteriors['ln_dVTc'] - posteriors['log_prior'],
+            injections['ln_dVTc'] - injections['log_prior'],
+            skip=pixelpop_data.skip_nonparametric
+        )
+
+        event_weights, inj_weights = parametric_model(
+            posteriors,
+            injections,
+            event_weights,
+            inj_weights
+        )
+
+        ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(
+            event_weights,
+            inj_weights,
+            injections['total_generated'],
+            live_time=injections['analysis_time']
+        )
+
+        taper = smooth(total_var, pixelpop_data.UncertaintyCut**2, 0.1)
+
+        numpyro.deterministic("log_likelihood", ln_likelihood)
+        numpyro.deterministic("log_likelihood_variance", total_var)
+        numpyro.deterministic("pe_variance", pe_var)
+        numpyro.deterministic("vt_variance", vt_var)
+        numpyro.deterministic("Nexp", nexp)
+
+        numpyro.factor("log_likelihood_plus_taper", ln_likelihood + taper)
+
+    return probabilistic_model, initial_value
 
 def prior_probabilistic_model(pixelpop_data, log='default'):
     """

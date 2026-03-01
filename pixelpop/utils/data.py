@@ -464,3 +464,190 @@ class PixelPopData:
                 if not k in hyperposterior:
                     hyperposterior[k] = delta_pars[k]*jnp.ones(Nsamples)
         return hyperposterior, Nsamples
+
+
+@dataclass
+class PixelPopDataMultiply:
+    """
+    Container for event posteriors, injections, and PixelPop configuration.
+    """
+    name: str
+
+    # Data
+    posteriors: Dict[str, Any]
+    injections: Dict[str, Any]
+
+    # Gravitational wave parameter space
+    pixelpop_parameters: List[str]
+    other_parameters: List[str]
+    bins: Union[int, List[int]]
+
+    # NEW:
+    # Parametric factors evaluated on the PixelPop coordinates.
+    # These can be:
+    #   - actual PixelPop-axis names, e.g. ["mass_ratio", "chi_eff"]
+    #   - joint factor names, e.g. ["mass_powerlaw"]
+    pixelpop_factors: List[str] = field(default_factory=list)
+
+    # Axis limits
+    minima: Dict[str, float] = field(default_factory=dict)
+    maxima: Dict[str, float] = field(default_factory=dict)
+
+    # Models and priors
+    parametric_models: Dict[str, Callable] = field(default_factory=dict)
+    parameter_to_hyperparameters: Dict[str, List[str]] = field(default_factory=dict)
+    priors: Dict[str, Any] = field(default_factory=dict)
+
+    # Analysis settings
+    UncertaintyCut: float = 1.0
+    lower_triangular: bool = False
+    marginalize_sigma: bool = False
+    length_scales: bool = False
+
+    # Additional settings
+    random_initialization: bool = True
+    plausible_hyperparameters: Dict[str, float] = field(default_factory=dict)
+    skip_nonparametric: bool = False
+    constraint_funcs: List[Callable] = field(default_factory=list)
+    coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+
+    def preprocess_cosmology(self, cosmology):
+        """
+        Calculates differential comoving volumes if 'redshift' is a parameter.
+        Modifies self.posteriors and self.injections in-place to add 'ln_dVTc'.
+        """
+        print("Preprocessing cosmology data...")
+
+        event_z = self.posteriors['redshift']
+        inj_z = self.injections['redshift']
+
+        max_z = np.maximum(np.max(inj_z), np.max(event_z))
+        zs = np.linspace(1e-6, max_z, 10000)
+
+        dVs = cosmology.differential_comoving_volume(zs)
+        try:
+            dVs = dVs.value
+        except AttributeError:
+            pass
+        dVs = 4 * np.pi * 1e-9 * dVs
+
+        ln_dVTc = np.log(dVs) - np.log(1 + zs)
+
+        self.posteriors['ln_dVTc'] = jnp.interp(event_z, zs, ln_dVTc)
+        self.injections['ln_dVTc'] = jnp.interp(inj_z, zs, ln_dVTc)
+
+    def __post_init__(self):
+        if self.marginalize_sigma and self.length_scales:
+            raise ValueError("Cannot marginalize over sigma with different sigmas in different axes")
+
+        self.dimension = len(self.pixelpop_parameters)
+        if jnp.ndim(self.bins) == 0:
+            self.bins = [self.bins] * self.dimension
+
+        # Full list of parametric factors that will be sampled/evaluated.
+        # other_parameters are outside the PixelPop grid.
+        # pixelpop_factors are evaluated on the PixelPop coordinates.
+        self.all_parametric_factors = list(dict.fromkeys(
+            self.other_parameters + self.pixelpop_factors
+        ))
+
+        # For backward compatibility in initialization: if pixelpop_factors is empty,
+        # fall back to the old behavior of using pixelpop_parameters.
+        self.pixelpop_init_factors = list(dict.fromkeys(
+            self.pixelpop_factors if len(self.pixelpop_factors) > 0
+            else [p.replace('redshift', 'redshift_psi') for p in self.pixelpop_parameters]
+        ))
+
+        self.window_parameters = [
+            p.replace('_window', '') for p in self.all_parametric_factors if '_window' in p
+        ]
+        self.has_window = len(self.window_parameters) > 0
+
+        self.adj_matrices = [
+            create_CAR_coupling_matrix(self.bins[ii], 1, isVisible=False)
+            for ii in range(self.dimension)
+        ]
+
+        new_minima = gwpop_models.bbh_minima.copy()
+        new_maxima = gwpop_models.bbh_maxima.copy()
+        new_minima.update(self.minima)
+        new_maxima.update(self.maxima)
+        self.minima = new_minima
+        self.maxima = new_maxima
+
+        self.event_bins, self.inj_bins, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+            self.pixelpop_parameters,
+            self.posteriors,
+            self.injections,
+            bins=self.bins,
+            minima=self.minima,
+            maxima=self.maxima
+        )
+        self.posteriors['log_prior'] += eprior
+        self.injections['log_prior'] += iprior
+
+        full_hyperparams = gwpop_models.gwparameter_to_hyperparameters.copy()
+        full_hyperparams.update(self.parameter_to_hyperparameters)
+        self.parameter_to_hyperparameters = full_hyperparams
+
+        final_models = {}
+        for p in self.all_parametric_factors:
+            if p in self.parametric_models:
+                print(f'Updating {p} model to {self.parametric_models[p].__name__}')
+                final_models[p] = self.parametric_models[p]
+            else:
+                if p not in gwpop_models.gwparameter_to_model:
+                    raise KeyError(
+                        f'No parametric model found for "{p}". '
+                        f'Please provide it in parametric_models.'
+                    )
+                print(f'Using default {p} model {gwpop_models.gwparameter_to_model[p].__name__}')
+                final_models[p] = gwpop_models.gwparameter_to_model[p]
+        self.parametric_models = final_models
+
+        final_priors = {}
+        for p in self.all_parametric_factors:
+            for h in self.parameter_to_hyperparameters[p]:
+                if h in self.priors:
+                    pprint = self.priors[h]
+                    print(f'Using custom prior {h} = {pprint[1].__name__}{tuple(pprint[0])}')
+                    final_priors[h] = self.priors[h]
+                else:
+                    if h not in gwpop_models.default_priors:
+                        raise KeyError(
+                            f'No default prior found for hyperparameter "{h}". '
+                            f'Please provide it in priors.'
+                        )
+                    pprint = gwpop_models.default_priors[h]
+                    print(f'Using default prior {h} = {pprint[1].__name__}{tuple(pprint[0])}')
+                    final_priors[h] = gwpop_models.default_priors[h]
+        self.priors = final_priors
+
+        for p in self.window_parameters:
+            if p + '_window' not in self.parametric_models:
+                raise ValueError(f'Window parameter {p} not found in parametric_models')
+            if p not in self.pixelpop_parameters:
+                raise ValueError(f'Window parameter {p} not found in pixelpop_parameters')
+
+        self.preprocess_cosmology(gwpop_models.COSMO)
+
+    def fill_out_hyperposterior(self, hyperposterior):
+        """
+        Helper function for adding delta parameters to the hyperposterior.
+        """
+        delta_pars = {}
+        for p in self.all_parametric_factors:
+            for h in self.parameter_to_hyperparameters[p]:
+                if self.priors[h][1].__name__ == 'Delta':
+                    delta_pars[h] = self.priors[h][0][0]
+
+        key0 = list(hyperposterior.keys())[0]
+        Nsamples = len(hyperposterior[key0])
+
+        for par in self.all_parametric_factors:
+            required_keys = self.parameter_to_hyperparameters[par]
+            for k in required_keys:
+                if k not in hyperposterior:
+                    hyperposterior[k] = delta_pars[k] * jnp.ones(Nsamples)
+
+        return hyperposterior, Nsamples
