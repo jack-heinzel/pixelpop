@@ -220,6 +220,67 @@ def PlanckWindow_PrimaryMass(data, mmin, delta_m):
 
     return m_smoother(x, mmin, delta_m)
 
+def PlanckWindow_SecondaryMass(data, mmin, delta_m):
+    """
+    Planck-taper style window acting on log(m1), returned in log-space.
+
+    This is intended to be used as a *multiplicative* window on the merger
+    rate in linear space, so the returned quantity is added to other
+    log-densities. It does **not** enforce any normalization; it is purely
+    a shape modifier.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        During inference, this will be the full event/injection dictionary
+        containing at least 'log_mass_2' or 'mass_2' or 'mass_ratio' and 
+        'mass_1' or 'log_mass_1'. 
+        When called from ``save_popsummary`` it may instead be a dict with key
+        'log_mass_2_window' and a 1D grid.
+    mmin : float
+        Window edges in log-mass space.
+    delta_m : float
+        Taper width (0 < delta_m).
+
+    Returns
+    -------
+    jnp.ndarray
+        log w(log_m1), suitable for adding to the population log-density.
+    """
+    if isinstance(data, dict):
+        if 'log_mass_2' in data:
+            x = jnp.exp(data['log_mass_2'])
+        elif 'mass_2' in data:
+            x = data['mass_2']
+        elif 'mass_ratio' in data:
+            q = data['mass_ratio']
+            if 'mass_1' in data:
+                m = data['mass_1']
+            elif 'log_mass_1' in data:
+                m = jnp.exp(data['log_mass_1'])
+            else:
+                raise KeyError("PlanckWindow_SecondaryMass has 'mass_ratio', and expects 'log_mass_1', or 'mass_1' in data.")
+            x = m * q
+        else:
+            raise KeyError("PlanckWindow_SecondaryMass expects 'log_mass_2', 'mass_2', or 'mass_ratio' in data.")
+    else:
+        # Assume data is already mass_1.
+        x = data
+
+    return m_smoother(x, mmin, delta_m)
+
+def PlanckWindow_MassRatio(data, qmin, delta_q):
+    if isinstance(data, dict):
+        if 'mass_ratio' in data:
+            x = data['mass_ratio']
+        else:
+            raise KeyError("PlanckWindow_MassRatio expects 'mass_ratio' in data.")
+    else:
+        # Assume data is already mass_ratio.
+        x = data
+
+    return m_smoother(x, qmin, delta_q, buffer=1e-5)
+
 def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin_1, delta_m_1, mmin_2, delta_m_2):
     """
     Planck-taper style window acting on m1 and m2, returned in log-space.
@@ -1154,6 +1215,8 @@ bbh_minima = {
     'redshift': 0.,
     # Use the same support for the auxiliary window parameter as for log_mass_1.
     'log_mass_1_window': jnp.log(3),
+    'log_mass_2_window': jnp.log(3),
+    'mass_ratio_window': 0,
 }
 bbh_maxima = {
     'log_mass_1': jnp.log(200),
@@ -1165,12 +1228,13 @@ bbh_maxima = {
     'chi_p': 1.,
     'redshift': 1.9,
     'log_mass_1_window': jnp.log(200),
+    'log_mass_2_window': jnp.log(200),
+    'mass_ratio_window': 1,
 }
 
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'log_mass_1_window': PlanckWindow_PrimaryMass, #(data, mmin, delta_m)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
@@ -1178,6 +1242,9 @@ gwparameter_to_model = {
     'spin': spin_default, #(data, mu, var, sig, zeta)
     'a': iid_normal_spin, #(data, mu, var)
     't': tilt_iid, #(data, mu, sig, zeta)
+    'log_mass_1_window': PlanckWindow_PrimaryMass, #(data, mmin, delta_m)
+    'log_mass_2_window':  PlanckWindow_SecondaryMass, #(data, mmin, delta_m)
+    'mass_ratio_window':  PlanckWindow_MassRatio, #(data, qmin, delta_q)
 }
 
 typical_hyperparameters = {
@@ -1197,6 +1264,8 @@ gwparameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
     'log_mass_1_window': ['mmin', 'delta_m'],
+    'log_mass_2_window': ['mmin', 'delta_m'], # use same for simplicity
+    'mass_ratio_window': ['qmin', 'delta_q'], 
     'mass_ratio': ['beta', 'qmin'], 
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],
@@ -1249,4 +1318,6 @@ map_to_gwpop_parameters = {
     'a': ['a_1', 'a_2'],
     't': ['cos_tilt_1', 'cos_tilt_2'],
     'log_mass_1_window': ['log_mass_1'],
+    'mass_ratio_window': ['mass_ratio'],
+    'log_mass_2_window': ['log_mass_2'],
 }
