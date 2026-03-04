@@ -244,11 +244,70 @@ def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin_1, delta_m_1, mmin_
     return m1smoothed + m2smoothed
 
 def PlanckWindow_PrimaryMassSecondaryMass(data, mmin, delta_m):
-    """
+    """x
     Planck-taper style window acting on m1 and m2, returned in log-space.
     """
     
     return PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin, delta_m, mmin, delta_m)
+
+def logpdf_powerlaw_m1_m2(
+    data,
+    alpha1, mmin1, alpha2, mmin2, delta_m1, delta_m2, mmax1=300, mmax2=300
+):
+    if 'log_mass_1' in data:
+        m1 = jnp.exp(data['log_mass_1'])
+    elif 'mass_1' in data:
+        m1 = data['mass_1']
+    else:
+        raise KeyError("Need 'log_mass_1' or 'mass_1'")
+
+    if 'log_mass_2' in data:
+        m2 = jnp.exp(data['log_mass_2'])
+    elif 'mass_2' in data:
+        m2 = data['mass_2']
+    elif 'mass_ratio' in data:
+        m2 = m1 * data['mass_ratio']
+    else:
+        raise KeyError("Need 'log_mass_2', 'mass_2', or 'mass_ratio'")
+
+    logp = (
+        powerlaw(m1, alpha1, mmin1, mmax1)
+        + powerlaw(m2, alpha2, mmin2, mmax2)
+        + PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(
+            {'mass_1': m1, 'mass_2': m2},
+            mmin_1=mmin1,
+            delta_m_1=delta_m1,
+            mmin_2=mmin2,
+            delta_m_2=delta_m2,
+        )
+    )
+
+    valid = (m2 <= m1)
+    return jnp.where(valid, logp, -INF)
+
+def logpdf_powerlaw_m2(
+    data, beta, mmin_2, delta_m_2, mmax_2=300
+):
+    if 'log_mass_1' in data:
+        m1 = jnp.exp(data['log_mass_1'])
+    elif 'mass_1' in data:
+        m1 = data['mass_1']
+    else:
+        raise KeyError("Need 'log_mass_1' or 'mass_1'")
+
+    if 'log_mass_2' in data:
+        m2 = jnp.exp(data['log_mass_2'])
+    elif 'mass_2' in data:
+        m2 = data['mass_2']
+    elif 'mass_ratio' in data:
+        m2 = m1 * data['mass_ratio']
+    else:
+        raise KeyError("Need 'log_mass_2', 'mass_2', or 'mass_ratio'")
+
+    logp = (powerlaw(m2, beta, mmin_2, mmax_2) + m_smoother(m2, mmin_2, delta_m_2))
+
+    valid = (m2 <= m1)
+    return jnp.where(valid, logp, -INF)
 
 def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
     """
@@ -433,6 +492,46 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     px -= log_norm
     in_support = jnp.logical_and(data < upper, data > lower)
     return jnp.where(in_support, px, -jnp.inf*jnp.ones_like(data))
+
+def logpdf_chieff_correlated_linear(
+    data,
+    mu_chieff_0,
+    mu_chieff_1,
+    ln_sigma_chieff_0,
+    ln_sigma_chieff_1,
+    x0,
+    parameter,   # string: "mass_ratio" or "redshift" 
+    amax=1.0,
+    min_sigma=1e-6,
+):
+    """
+    Log p(chi_eff | x) where chi_eff is TruncatedNormal(mu(x), sigma(x), [-amax, amax]),
+    and mu(x), ln sigma(x) are linear in (x - x0).
+
+    Returns: array of log-prob with the same broadcasted shape as chi_eff and x.
+    """
+    if isinstance(data, dict):
+        chi_eff = data['chi_eff']
+    else:
+        chi_eff = data
+
+    x = data[parameter]
+
+    # Linear mean and log-sigma
+    mu = mu_chieff_0 + mu_chieff_1 * (x - x0)
+    ln_sigma = ln_sigma_chieff_0 + ln_sigma_chieff_1 * (x - x0)
+
+    # sigma must be > 0; clip to avoid numerical issues
+    sigma = jnp.exp(ln_sigma)
+    sigma = jnp.maximum(sigma, min_sigma)
+
+    # Truncated normal on [-amax, amax]
+    logp = trunc_gaussian(chi_eff, mu, sigma, lower=-amax, upper=amax)
+
+    # Match gwpopulation's nan_to_num(posinf=0) behavior in LOGSPACE:
+    # - any nan/inf should become -inf (i.e., probability 0)
+    logp = jnp.where(jnp.isfinite(logp), logp, -INF)
+    return logp
 
 def chieff_gaussian(data, mean, sig):
     """
