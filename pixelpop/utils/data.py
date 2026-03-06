@@ -464,3 +464,96 @@ class PixelPopData:
                 if not k in hyperposterior:
                     hyperposterior[k] = delta_pars[k]*jnp.ones(Nsamples)
         return hyperposterior, Nsamples
+
+@dataclass
+class MixtureConfig:
+    """
+    Configuration for a pixelpopped mixing fraction between two parametric
+    component models.
+
+    The mixing fraction xi lives on an ICAR grid over `grid_parameters`,
+    and blends `component_a_model` (weight xi) with `component_b_model`
+    (weight 1-xi) for some target parameter(s).
+
+    Parameters
+    ----------
+    name : str
+        Identifier for this mixture (used in NumPyro site names).
+    grid_parameters : list of str
+        Parameters that the mixing fraction depends on (e.g.,
+        ['log_mass_1', 'mass_ratio']). These must exist in posteriors
+        and injections.
+    grid_bins : list of int
+        Number of bins along each grid_parameter axis.
+    component_a_model : callable
+        First mixture component: f(data, *hyperparams) -> log_prob array.
+    component_a_hyperparameters : list of str
+        Hyperparameter names for component A.
+    component_b_model : callable
+        Second mixture component: f(data, *hyperparams) -> log_prob array.
+    component_b_hyperparameters : list of str
+        Hyperparameter names for component B.
+    component_a_priors : dict
+        Priors for component A hyperparameters: {name: (args, dist_class)}.
+    component_b_priors : dict
+        Priors for component B hyperparameters: {name: (args, dist_class)}.
+    grid_minima : dict, optional
+        Minimum values for grid parameters. Defaults filled from bbh_minima.
+    grid_maxima : dict, optional
+        Maximum values for grid parameters. Defaults filled from bbh_maxima.
+    marginalize_sigma : bool, optional
+        If True, analytically marginalize the ICAR coupling strength.
+    length_scales : bool, optional
+        If True, use independent coupling per grid axis.
+    coupling_prior : tuple, optional
+        Prior specification for the ICAR coupling: (args, distribution).
+    """
+    name: str
+    grid_parameters: List[str]
+    grid_bins: List[int]
+
+    component_a_model: Callable
+    component_a_hyperparameters: List[str]
+    component_b_model: Callable
+    component_b_hyperparameters: List[str]
+
+    component_a_priors: Dict[str, Any] = field(default_factory=dict)
+    component_b_priors: Dict[str, Any] = field(default_factory=dict)
+
+    grid_minima: Dict[str, float] = field(default_factory=dict)
+    grid_maxima: Dict[str, float] = field(default_factory=dict)
+
+    marginalize_sigma: bool = True
+    length_scales: bool = False
+    coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+
+    def __post_init__(self):
+        from . import gwpop_models
+
+        if self.marginalize_sigma and self.length_scales:
+            raise ValueError(
+                "Cannot marginalize over sigma with length_scales=True"
+            )
+
+        self.dimension = len(self.grid_parameters)
+
+        # Fill in default minima/maxima
+        full_minima = gwpop_models.bbh_minima.copy()
+        full_maxima = gwpop_models.bbh_maxima.copy()
+        full_minima.update(self.grid_minima)
+        full_maxima.update(self.grid_maxima)
+        self.grid_minima = full_minima
+        self.grid_maxima = full_maxima
+
+        # Build adjacency matrices for the ICAR grid
+        self.adj_matrices = [
+            create_CAR_coupling_matrix(self.grid_bins[ii], 1, isVisible=False)
+            for ii in range(self.dimension)
+        ]
+
+        self.normalization_dof = int(np.prod(self.grid_bins))
+
+        # Collect all mixture-specific priors
+        self.all_priors = {}
+        self.all_priors.update(self.component_a_priors)
+        self.all_priors.update(self.component_b_priors)
