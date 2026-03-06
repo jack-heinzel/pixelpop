@@ -1668,6 +1668,27 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     in_support = jnp.logical_and(data < upper, data > lower)
     return jnp.where(in_support, px, -jnp.inf*jnp.ones_like(data))
 
+
+def chieff_two_gaussians(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x):
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1,
+        jnp.log(lamb_x) + log_g2
+    )
+    
+
 def chieff_gaussian(data, mean, sig):
     """
     Effective spin distribution: Gaussian in chi_eff.
@@ -1691,6 +1712,7 @@ def chieff_gaussian(data, mean, sig):
     else:
         x = data
     return trunc_gaussian(x, mean, sig, -1, 1)
+
 
 def chip_gaussian(data, mean, sig):
     """
