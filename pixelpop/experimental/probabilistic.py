@@ -6,7 +6,7 @@ from .car import (DiagonalizedICARTransform, sigma_marginalized_ICAR, lower_tria
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
-from jax.nn import log_sigmoid
+from jax.nn import sigmoid, log_sigmoid
 from ..utils.data import place_in_bins
 from jax.scipy.special import logsumexp as LSE
 from ..utils.data import place_in_bins
@@ -100,7 +100,9 @@ def setup_probabilistic_model_with_mixture(
     # =================================================================
     # Initial values: phi=0  =>  xi = sigmoid(0) = 0.5 everywhere
     # =================================================================
-    initial_value = {f'{mix_name}_field': jnp.zeros(grid_shape)}
+    initial_value = {f'{mix_name}_field': jnp.array(
+        np.random.normal(loc=0, scale=0.1, size=grid_shape)
+    )}
 
     # =================================================================
     # Parametric model (unchanged — handles m1, q, z, etc.)
@@ -193,7 +195,7 @@ def setup_probabilistic_model_with_mixture(
             log_xi = log_sigmoid(logit_xi)
             log_1mxi = log_sigmoid(-logit_xi)
             numpyro.deterministic(
-                f'{mix_name}_xi_global', jnp.sigmoid(logit_xi),
+                f'{mix_name}_xi_global', sigmoid(logit_xi),
             )
             return log_xi, log_1mxi
 
@@ -252,7 +254,7 @@ def setup_probabilistic_model_with_mixture(
 
         # --- Convert to mixing fractions ---
         xi_field = numpyro.deterministic(
-            f'{mix_name}_xi_field', jnp.sigmoid(mix_field),
+            f'{mix_name}_xi_field', sigmoid(mix_field),
         )
         log_xi_field = log_sigmoid(mix_field)
         log_1mxi_field = log_sigmoid(-mix_field)

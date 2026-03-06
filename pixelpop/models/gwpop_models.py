@@ -519,6 +519,46 @@ def chieff_gaussian(data, mean, sig):
         x = data
     return trunc_gaussian(x, mean, sig, -1, 1)
 
+### Antonini models
+
+def chieff_trunc_gaussian(data, mu_x, log10_sig_x):
+    """
+    Field (1G) chi_eff component: truncated Gaussian on [-1, 1].
+
+    Parameterized with log10(sigma) following Antonini+ Table S1.
+
+    Parameters
+    ----------
+    data : dict or jnp.ndarray
+        Either a dict containing key 'chi_eff', or a direct array.
+    mu_x : float
+        Mean of the truncated Gaussian.
+    log10_sig_x : float
+        log10 of the standard deviation.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density.
+    """
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+        
+    sig_x = 10.0 ** log10_sig_x
+    return trunc_gaussian(x, mu_x, sig_x, -1.0, 1.0)
+
+def chieff_bounded_uniform_fixed(data):
+    """U(chi_eff; w=0.47), no free parameters."""
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    w = 0.47
+    in_support = jnp.logical_and(x >= -w, x <= w)
+    return jnp.where(in_support, -jnp.log(2.0 * w), -INF)
+
 def chip_gaussian(data, mean, sig):
     """
     Effective precessing spin distribution: Gaussian in chi_p.
@@ -1202,39 +1242,6 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     
     ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
     return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
-
-### Antonini models
-
-def chieff_trunc_gaussian(data, mu_x, log10_sig_x):
-    """
-    Field (1G) chi_eff component: truncated Gaussian on [-1, 1].
-
-    Parameterized with log10(sigma) following Antonini+ Table S1.
-
-    Parameters
-    ----------
-    data : dict or jnp.ndarray
-        Either a dict containing key 'chi_eff', or a direct array.
-    mu_x : float
-        Mean of the truncated Gaussian.
-    log10_sig_x : float
-        log10 of the standard deviation.
-
-    Returns
-    -------
-    jnp.ndarray
-        Log-probability density.
-    """
-    x = _get_chieff(data)
-    sig_x = 10.0 ** log10_sig_x
-    return trunc_gaussian(x, mu_x, sig_x, -1.0, 1.0)
-
-def chieff_bounded_uniform_fixed(data):
-    """U(chi_eff; w=0.47), no free parameters."""
-    x = data['chi_eff'] if isinstance(data, dict) else data
-    w = 0.47
-    in_support = jnp.logical_and(x >= -w, x <= w)
-    return jnp.where(in_support, -jnp.log(2.0 * w), -INF)
 
 
 bbh_minima = {
