@@ -2,7 +2,7 @@ import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import * 
 from ..models.car import ICAR_length_scales, lower_triangular_map, lower_triangular_log_prob, mult_outer, add_outer
-from .car import DiagonalizedICARTransform, sigma_marginalized_ICAR, lower_triangular_sigma_marg_log_prob, lower_triangular_sigma_marg_log_prob_and_log_quad,
+from .car import (DiagonalizedICARTransform, sigma_marginalized_ICAR, lower_triangular_sigma_marg_log_prob, lower_triangular_sigma_marg_log_prob_and_log_quad)
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
