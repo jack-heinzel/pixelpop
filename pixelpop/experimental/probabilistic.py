@@ -98,11 +98,22 @@ def setup_probabilistic_model_with_mixture(
         ICAR_model = ICAR_length_scales
 
     # =================================================================
-    # Initial values: phi=0  =>  xi = sigmoid(0) = 0.5 everywhere
+    # Initial values
     # =================================================================
-    initial_value = {f'{mix_name}_field': jnp.array(
-        np.random.normal(loc=0, scale=0.1, size=grid_shape)
-    )}
+    # Initialize the field with moderate noise so that:
+    #   - sigmoid(phi) spans a reasonable range (not stuck at 0.5)
+    #   - the ICAR quadratic form is non-degenerate
+    # Also initialize lnsigma at a value that allows the field to move.
+    initial_value = {
+        f'{mix_name}_field': jnp.array(
+            np.random.normal(loc=0, scale=1.0, size=grid_shape)
+        ),
+        "log_rate": jnp.log(50.),
+    }
+    if not mixture_config.marginalize_sigma:
+        # Initialize lnsigma at 0 => sigma = 1, moderate smoothing.
+        # This avoids the trap where high precision freezes the field.
+        initial_value[f'{mix_name}_lnsigma'] = jnp.array(0.0)
 
     # =================================================================
     # Parametric model (unchanged — handles m1, q, z, etc.)
@@ -371,6 +382,16 @@ def setup_probabilistic_model_with_mixture(
         event_weights = posteriors['ln_dVTc'] - posteriors['log_prior']
         inj_weights = injections['ln_dVTc'] - injections['log_prior']
 
+        # 0) Overall rate normalization (needed when there is no
+        #    pixelpop rate-density field, i.e. skip_nonparametric=True)
+        if pixelpop_data.skip_nonparametric:
+            R = numpyro.sample(
+                'log_rate',
+                dist.ImproperUniform(dist.constraints.real, (), ()),
+            )
+            event_weights = event_weights + R
+            inj_weights = inj_weights + R
+
         # 1) Standard parametric models
         event_weights, inj_weights, sample = parametric_model(
             posteriors, injections, event_weights, inj_weights,
@@ -380,14 +401,13 @@ def setup_probabilistic_model_with_mixture(
         mix_sample = sample_mixture_hyperparameters()
 
         # 3) ICAR mixing fraction field
-        skip = pixelpop_data.skip_nonparametric
-        log_xi_field, log_1mxi_field = mixing_fraction_icar(skip=skip)
+        log_xi_field, log_1mxi_field = mixing_fraction_icar(skip=False)
 
         # 4) Apply mixture to weights
         event_weights, inj_weights = apply_mixture(
             event_weights, inj_weights, mix_sample,
             log_xi_field, log_1mxi_field,
-            posteriors, injections, skip=skip,
+            posteriors, injections, skip=False,
         )
 
         # 5) Rate likelihood
