@@ -3,6 +3,7 @@ from .gwpop_models import *
 from .car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular_map
 from ..experimental.car import (
     DiagonalizedICARTransform, 
+    StudentICAR,
     sigma_marginalized_ICAR,
     lower_triangular_sigma_marg_log_prob,
     lower_triangular_sigma_marg_log_prob_and_log_quad
@@ -176,7 +177,9 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                         jaxprint('[DEBUG] inf injection weights at {pp}={d}', pp=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
         return event_weights, inj_weights
 
-    if pixelpop_data.marginalize_sigma:
+    if pixelpop_data.cauchy_icar:
+        ICAR_model = StudentICAR
+    elif pixelpop_data.marginalize_sigma:
         ICAR_model = sigma_marginalized_ICAR
     else:
         ICAR_model = ICAR_length_scales
@@ -214,14 +217,46 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
         
-        if not pixelpop_data.marginalize_sigma:
+        if pixelpop_data.cauchy_icar:
             coupling_prior = pixelpop_data.coupling_prior
             if pixelpop_data.length_scales:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
             else:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
+            if not pixelpop_data.lower_triangular:
+                merger_rate_density = numpyro.sample(
+                        'merger_rate_density',
+                        ICAR_model(
+                            nu=1., 
+                            log_sigmas=lsigma,
+                            single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+                            dof_correction=1.,
+                            is_sparse=True,
+                        ),
+                    )
+            else:
+                base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
+                merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
+                
+                prior_factor = ICAR_model(
+                            nu=1., 
+                            log_sigmas=lsigma,
+                            single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+                            dof_correction=normalization_dof / np.prod(pixelpop_data.bins),
+                            is_sparse=True,
+                        ).log_prob(merger_rate_density)
+                
+                numpyro.factor('prior_factor', prior_factor)
 
-        if pixelpop_data.lower_triangular:
+            
+        elif not pixelpop_data.marginalize_sigma:
+            coupling_prior = pixelpop_data.coupling_prior
+            if pixelpop_data.length_scales:
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
+            else:
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
+        
+        elif pixelpop_data.lower_triangular:
             
             base_interpolation = numpyro.sample('base_interpolation', dist.ImproperUniform(dist.constraints.real, unique_sample_shape, ()))
             merger_rate_density = numpyro.deterministic('merger_rate_density', lt_map(base_interpolation))
