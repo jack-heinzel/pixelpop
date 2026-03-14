@@ -309,8 +309,15 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
         # Use the raw ICAR field for event and injection weights; any
         # parametric windows are applied in parametric_model.
-        event_weights += merger_rate_density[event_bins] 
-        inj_weights += merger_rate_density[inj_bins]
+        if pixelpop_data.IID:
+            event_weights += merger_rate_density[event_bins_1] 
+            inj_weights += merger_rate_density[inj_bins_1]
+
+            event_weights += merger_rate_density[event_bins_2] - normalization
+            inj_weights += merger_rate_density[inj_bins_2] - normalization
+        else:
+            event_weights += merger_rate_density[event_bins] 
+            inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
         return event_weights, inj_weights

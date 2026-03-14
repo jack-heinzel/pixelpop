@@ -279,6 +279,8 @@ class PixelPopData:
         If True, initialize ICAR model with random noise instead of plausible values.
     lower_triangular : bool, optional
         If True, enforce p1 > p2 triangular support (used for joint m1–m2 models).
+    IID : bool, optional
+        If True, the merger rate field is evaluated on both BHs 1 and 2
     cauchy_icar : bool, optional (EXPERIMENTAL)
         If True, use Cauchy ICAR coupling prior, more sensitivity to gaps and more robust uncertainties
     skip_nonparametric : bool, optional
@@ -316,6 +318,7 @@ class PixelPopData:
     cauchy_icar: bool = False
     marginalize_sigma: bool = False
     length_scales: bool = False
+    IID: bool = False # TODO: make this IID parameters, so some parameters can be IID others not (e.g., a1, a2 IID, mass ratio not)
     
     # Additional settings
     random_initialization: bool = True
@@ -388,16 +391,40 @@ class PixelPopData:
         self.maxima = new_maxima
 
         # bin up events and injections
-        self.event_bins, self.inj_bins, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
-            self.pixelpop_parameters, 
-            self.posteriors, 
-            self.injections, 
-            bins=self.bins, 
-            minima=self.minima, 
-            maxima=self.maxima
-        )
-        self.posteriors['log_prior'] += eprior
-        self.injections['log_prior'] += iprior
+        if self.IID:
+            self.event_bins_1, self.inj_bins_1, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                [x + '_1' for x in self.pixelpop_parameters], 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
+            )
+            self.posteriors['log_prior'] += eprior
+            self.injections['log_prior'] += iprior
+
+            self.event_bins_2, self.inj_bins_2, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                [x + '_2' for x in self.pixelpop_parameters], 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
+            )
+            self.posteriors['log_prior'] += eprior
+            self.injections['log_prior'] += iprior
+
+        else:
+            self.event_bins, self.inj_bins, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                self.pixelpop_parameters, 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
+            )
+            self.posteriors['log_prior'] += eprior
+            self.injections['log_prior'] += iprior
         
         full_hyperparams = gwpop_models.gwparameter_to_hyperparameters.copy()
         full_hyperparams.update(self.parameter_to_hyperparameters)

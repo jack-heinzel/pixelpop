@@ -1280,6 +1280,7 @@ default_priors = {
     'alpha': ([-4, 12], dist.Uniform), 
     'beta': ([-2, 7], dist.Uniform), 
     'qmin': ([0.1], dist.Delta), 
+    'delta_q': ([0,0.3], dist.Uniform),
     'mmin': ([2, 10], dist.Uniform), 
     'mmax': ([60, 200], dist.Uniform), 
     'delta_m': ([0, 10], dist.Uniform), 
