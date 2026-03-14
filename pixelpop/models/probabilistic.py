@@ -247,7 +247,8 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                         ).log_prob(merger_rate_density)
                 
                 numpyro.factor('prior_factor', prior_factor)
-
+            numpyro.factor('tail_regularization', -jnp.sum(((merger_rate_density - jnp.mean(merger_rate_density)) / 100)**2 / 2))
+        
             
         elif not pixelpop_data.marginalize_sigma:
             coupling_prior = pixelpop_data.coupling_prior
