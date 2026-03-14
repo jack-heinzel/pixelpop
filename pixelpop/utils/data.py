@@ -279,6 +279,8 @@ class PixelPopData:
         If True, initialize ICAR model with random noise instead of plausible values.
     lower_triangular : bool, optional
         If True, enforce p1 > p2 triangular support (used for joint m1–m2 models).
+    cauchy_icar : bool, optional (EXPERIMENTAL)
+        If True, use Cauchy ICAR coupling prior, more sensitivity to gaps and more robust uncertainties
     skip_nonparametric : bool, optional
         If True, disable the pixelized (nonparametric) component.
     constraint_funcs : list of callables, optional
@@ -311,6 +313,7 @@ class PixelPopData:
     # Analysis settings
     UncertaintyCut: float = 1.0
     lower_triangular: bool = False
+    cauchy_icar: bool = False
     marginalize_sigma: bool = False
     length_scales: bool = False
     

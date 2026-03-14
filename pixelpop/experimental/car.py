@@ -106,6 +106,179 @@ class sigma_marginalized_ICAR(ICAR_length_scales):
         return batch_shape, event_shape
 
 
+class StudentICAR(Distribution):
+    
+    arg_constraints = {
+        "nu": constraints.real, 
+        "log_sigmas": constraints.real_vector, 
+        "single_dimension_adj_matrices": constraints.independent(constraints.dependent(is_discrete=False, event_dim=2), 1),
+        "dof_correction": constraints.positive, 
+    }
+    reparametrized_params = [
+        "nu",
+        "log_sigmas",
+        "single_dimension_adj_matrices",
+        "dof_correction",
+    ]
+    pytree_aux_fields = ("is_sparse", "single_dimension_adj_matrices")
+
+    def __init__(
+        self,
+        nu,
+        log_sigmas,
+        single_dimension_adj_matrices,
+        *,
+        dof_correction=1,
+        is_sparse=False,
+        validate_args=None,
+    ):
+        self.nu = nu
+        self.dof_correction = dof_correction
+        self.dimension = len(single_dimension_adj_matrices)
+        
+        if jnp.ndim(log_sigmas) == 1:
+            self.log_sigmas = log_sigmas
+        elif jnp.ndim(log_sigmas) == 0:
+            self.log_sigmas = lax.broadcast(log_sigmas, (self.dimension,))
+        assert self.log_sigmas.shape[0] == self.dimension
+        
+        self.is_sparse = is_sparse
+        batch_shape = ()
+        
+        self.single_dimension_adj_matrices = []
+        self.edges = [] 
+        
+        if self.is_sparse:
+            for single_dimension_adj_matrix in single_dimension_adj_matrices:
+                if single_dimension_adj_matrix.ndim != 2:
+                    raise ValueError("Currently, we only support 2-dimensional adj_matrix.")
+                if not (isinstance(single_dimension_adj_matrix, np.ndarray) or _is_sparse(single_dimension_adj_matrix)):
+                    raise ValueError("adj_matrix needs to be a numpy array or a scipy sparse matrix.")
+                
+                sparse_mat = _to_sparse(single_dimension_adj_matrix)
+                self.single_dimension_adj_matrices.append(sparse_mat)
+                u, v = np.where(np.triu(sparse_mat.toarray()) > 0)
+                self.edges.append((jnp.array(u), jnp.array(v)))
+        else:
+            for single_dimension_adj_matrix in single_dimension_adj_matrices:
+                assert not _is_sparse(single_dimension_adj_matrix), "single_dimension_adj_matrix is sparse; specify `is_sparse=True`."
+                
+                (single_dimension_adj_matrix,) = promote_shapes(
+                    single_dimension_adj_matrix, shape=batch_shape + single_dimension_adj_matrix.shape[-2:]
+                )
+                self.single_dimension_adj_matrices.append(single_dimension_adj_matrix)
+                dense_mat = np.asarray(single_dimension_adj_matrix)
+                u, v = np.where(np.triu(dense_mat) > 0)
+                self.edges.append((jnp.array(u), jnp.array(v)))
+
+        event_shape = tuple([jnp.shape(mat)[-1] for mat in self.single_dimension_adj_matrices])
+
+        super(StudentICAR, self).__init__(
+            batch_shape=batch_shape,
+            event_shape=event_shape,
+            validate_args=False,
+        )
+
+    def sample(self, key, sample_shape=()):
+        raise NotImplementedError 
+
+    @property
+    def support(self):
+        return constraints.independent(constraints.real, self.dimension)
+
+    @validate_sample
+    def log_prob(self, phi):
+        precs = jnp.exp(-2.0 * self.log_sigmas)
+        
+        # 1. Precompute expensive terms and constants outside the loop
+        half_nu = 0.5 * self.nu
+        half_nu_plus_half = half_nu + 0.5
+        
+        log_gamma_term = (
+            gammaln(half_nu_plus_half) 
+            - gammaln(half_nu) 
+            - 0.5 * jnp.log(self.nu * jnp.pi)
+        )
+        
+        log_prob_total = 0.0
+        total_edges_evaluated = 0
+        v_nodes = float(np.prod(self.event_shape))
+        
+        # 2. Use a static tuple for event axes
+        event_axes = tuple(range(-self.dimension, 0))
+
+        for ii, (u, v) in enumerate(self.edges):
+            axis = -self.dimension + ii
+            
+            # 3. Gather adjacent slices
+            phi_u = jnp.take(phi, u, axis=axis)
+            phi_v = jnp.take(phi, v, axis=axis)
+            
+            # 4. Use jnp.square for slightly faster XLA compilation
+            sq_diffs = jnp.square(phi_u - phi_v)
+            
+            tau = precs[ii]
+            log_term = jnp.log1p(tau * sq_diffs / self.nu)
+            quad_term = jnp.sum(log_term, axis=event_axes)
+            
+            # 5. Compute static edge counts using Python integers
+            n_edges = 1
+            for ax_idx in range(-self.dimension, 0):
+                if ax_idx == axis:
+                    n_edges *= int(u.shape[0])
+                else:
+                    n_edges *= int(self.event_shape[ax_idx])
+            
+            total_edges_evaluated += n_edges
+            
+            norm_const = n_edges * (log_gamma_term + 0.5 * jnp.log(tau))
+            log_prob_total += norm_const - half_nu_plus_half * quad_term
+            
+        dof_correction = (v_nodes * self.dof_correction - 1) / v_nodes
+        
+        return log_prob_total * dof_correction
+    
+    @staticmethod
+    def infer_shapes(log_sigmas, single_dimension_adj_matrices):
+        event_shape = tuple([jnp.shape(mat)[-1] for mat in single_dimension_adj_matrices])
+        batch_shape = lax.broadcast_shapes(
+            jnp.shape(log_sigmas)[:-1], *[jnp.shape(mat)[:-2] for mat in single_dimension_adj_matrices]
+        )
+        return batch_shape, event_shape
+
+    def tree_flatten(self):
+        data, aux = super().tree_flatten()
+        single_dimension_adj_matrix_data_idx = type(self).gather_pytree_data_fields().index("single_dimension_adj_matrices")
+        single_dimension_adj_matrix_aux_idx = type(self).gather_pytree_aux_fields().index("single_dimension_adj_matrices")
+
+        if not self.is_sparse:
+            aux = list(aux)
+            aux[single_dimension_adj_matrix_aux_idx] = None
+            aux = tuple(aux)
+        else:
+            data = list(data)
+            data[single_dimension_adj_matrix_data_idx] = None
+            data = tuple(data)
+        return data, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, params):
+        d = super().tree_unflatten(aux_data, params)
+        if not d.is_sparse:
+            adj_matrix_data_idx = cls.gather_pytree_data_fields().index("single_dimension_adj_matrices")
+            setattr(d, "single_dimension_adj_matrices", params[adj_matrix_data_idx])
+        else:
+            adj_matrix_aux_idx = cls.gather_pytree_aux_fields().index("single_dimension_adj_matrices")
+            setattr(d, "single_dimension_adj_matrices", aux_data[adj_matrix_aux_idx])
+            
+        d.edges = []
+        for mat in d.single_dimension_adj_matrices:
+            dense_adj = mat.toarray() if d.is_sparse else np.asarray(mat)
+            u, v = np.where(np.triu(dense_adj) > 0)
+            d.edges.append((jnp.array(u), jnp.array(v)))
+            
+        return d
+
 class DiagonalizedICARTransform:
     '''
     TODO: can we use the numpyro syntax more natively for this transform?
