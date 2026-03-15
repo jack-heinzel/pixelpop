@@ -234,8 +234,8 @@ class StudentICAR(Distribution):
             norm_const = n_edges * (log_gamma_term + 0.5 * jnp.log(tau))
             log_prob_total += norm_const - half_nu_plus_half * quad_term
             
-        dof_correction = (v_nodes * self.dof_correction - 1) / v_nodes
-        
+        dof_correction = (v_nodes * self.dof_correction - 1.0) / float(total_edges_evaluated) if total_edges_evaluated > 0 else 1.0
+
         return log_prob_total * dof_correction
     
     @staticmethod
