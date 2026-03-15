@@ -217,12 +217,14 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
         
-        if pixelpop_data.cauchy_icar:
+        if not pixelpop_data.marginalize_sigma:
             coupling_prior = pixelpop_data.coupling_prior
             if pixelpop_data.length_scales:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
             else:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
+        
+        if pixelpop_data.cauchy_icar:
             if not pixelpop_data.lower_triangular:
                 merger_rate_density = numpyro.sample(
                         'merger_rate_density',
@@ -248,14 +250,6 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 
                 numpyro.factor('prior_factor', prior_factor)
             numpyro.factor('tail_regularization', -jnp.sum(((merger_rate_density - jnp.mean(merger_rate_density)) / 100)**2 / 2))
-        
-            
-        elif not pixelpop_data.marginalize_sigma:
-            coupling_prior = pixelpop_data.coupling_prior
-            if pixelpop_data.length_scales:
-                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
-            else:
-                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
         
         elif pixelpop_data.lower_triangular:
             
