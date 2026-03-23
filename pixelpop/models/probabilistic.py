@@ -2,9 +2,10 @@ import numpy as np
 from .gwpop_models import * 
 from .car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular_map
 from ..experimental.car import (
-    DiagonalizedICARTransform, 
+    DiagonalizedICARTransform,
     StudentICAR,
     sigma_marginalized_ICAR,
+    grid_marginalized_ICAR_length_scales,
     lower_triangular_sigma_marg_log_prob,
     lower_triangular_sigma_marg_log_prob_and_log_quad
 )
@@ -179,6 +180,16 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
     if pixelpop_data.cauchy_icar:
         ICAR_model = StudentICAR
+    elif pixelpop_data.marginalize_sigma and pixelpop_data.length_scales:
+        print("[experimental] Using grid-marginalized ICAR with per-dimension length scales")
+        lnsigma_range = tuple(pixelpop_data.coupling_prior[0])
+        ICAR_model = None  # constructed directly in nonparametric_model
+        grid_icar = grid_marginalized_ICAR_length_scales(
+            single_dimension_adj_matrices=pixelpop_data.adj_matrices,
+            lnsigma_ranges=lnsigma_range,
+            grid_points=100,
+            is_sparse=True,
+        )
     elif pixelpop_data.marginalize_sigma:
         ICAR_model = sigma_marginalized_ICAR
     else:
@@ -264,7 +275,18 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
         else:
 
-            if pixelpop_data.marginalize_sigma:
+            if pixelpop_data.marginalize_sigma and pixelpop_data.length_scales:
+                merger_rate_density = numpyro.sample(
+                    'merger_rate_density',
+                    dist.ImproperUniform(
+                        dist.constraints.real,
+                        tuple(pixelpop_data.bins),
+                        (),
+                    ),
+                )
+                prior_factor = grid_icar.log_prob(merger_rate_density)
+                numpyro.factor('prior_factor', prior_factor)
+            elif pixelpop_data.marginalize_sigma:
                 icar = ICAR_model(single_dimension_adj_matrices=pixelpop_data.adj_matrices, is_sparse=True)
                 merger_rate_density = numpyro.sample(
                     'merger_rate_density',
@@ -297,9 +319,21 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                     + jnp.sum(pixelpop_data.logdV[ii+1:])
                 )
 
-        if pixelpop_data.marginalize_sigma:
+        if pixelpop_data.marginalize_sigma and pixelpop_data.length_scales:
+            # Compute conditional moments of p(lnsigma | phi) on the grid.
+            _, cond_log_weights = grid_icar.log_prob_and_conditional_lnsigma(merger_rate_density)
+            flat_log_weights = cond_log_weights.ravel()
+            weights = jnp.exp(flat_log_weights - LSE(flat_log_weights))  # softmax
+            meshes = jnp.meshgrid(*grid_icar._grids_1d, indexing='ij')
+            lnsigma_grid_flat = jnp.stack(meshes, axis=-1).reshape(-1, pixelpop_data.dimension)
+            # Conditional mean and std: shape (D,)
+            cond_mean = jnp.sum(weights[:, None] * lnsigma_grid_flat, axis=0)
+            cond_std = jnp.sqrt(jnp.sum(weights[:, None] * (lnsigma_grid_flat - cond_mean) ** 2, axis=0))
+            # Sample lnsigma from the Gaussian approximation of p(lnsigma | phi).
+            numpyro.sample('lnsigma', dist.Normal(cond_mean, cond_std).to_event(1))
+        elif pixelpop_data.marginalize_sigma:
             unscaled_gamma = numpyro.sample('unscaled_gamma', numpyro.distributions.Gamma(concentration=(normalization_dof/2)))
-            precision = 2 * unscaled_gamma / quad 
+            precision = 2 * unscaled_gamma / quad
             numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
         # Use the raw ICAR field for event and injection weights; any

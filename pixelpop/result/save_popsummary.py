@@ -155,18 +155,7 @@ def create_popsummary(
         assert isinstance(hyperposterior_chains, dict)
         hyperposterior = hyperposterior_chains 
 
-    delta_pars = {}
-    for p in other_parameters:
-        for h in parameter_to_hyperparameters[p]:
-            if priors[h][1].__name__ == 'Delta':
-                delta_pars[h] = priors[h][0][0]
-
-    Nsamples = len(hyperposterior['log_likelihood'])
-    for par in other_parameters:
-        required_keys = parameter_to_hyperparameters[par]
-        for k in required_keys:
-            if not k in hyperposterior:
-                hyperposterior[k] = delta_pars[k]*np.ones(Nsamples)
+    hyperposterior, Nsamples = pixelpop_data.fill_out_hyperposterior(hyperposterior)
     
     popsummary_path = os.path.join(popsummary_path, run_name)
     if not os.path.exists(popsummary_path):

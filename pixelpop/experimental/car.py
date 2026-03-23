@@ -55,7 +55,7 @@ class sigma_marginalized_ICAR(ICAR_length_scales):
         n = 1
         for ii, single_dimension_adj_matrix in enumerate(self.single_dimension_adj_matrices):
             if self.is_sparse:
-                D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).squeeze(axis=-1)
+                D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).ravel()
                 scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
             else:
                 D = single_dimension_adj_matrix.sum(axis=-1)# .squeeze(axis=0)
@@ -571,6 +571,232 @@ def lower_triangular_sigma_marg_log_prob_and_log_quad(phi, n, single_dimension_a
     log_marg_term = 0.5 * n * (jnp.log(2) - jnp.log(logquad)) + gammaln(n / 2) - jnp.log(2)
 
     return -0.5 * n * jnp.log(2*jnp.pi) + log_marg_term, logquad
+
+
+class grid_marginalized_ICAR_length_scales(ICAR_length_scales):
+    """
+    ICAR distribution with per-dimension length scales numerically
+    marginalized over an ND grid.
+
+    For a D-dimensional ICAR model with independent length scales
+    ``(sigma_1, ..., sigma_D)``, this distribution computes:
+
+    .. math::
+        p(\\phi) = \\int p(\\phi \\mid \\sigma) \\, p(\\sigma) \\, d\\sigma
+
+    by evaluating ``p(phi | sigma) * p(sigma)`` on a Cartesian grid of
+    ``log(sigma)`` values and integrating via logsumexp (trapezoidal rule
+    in log-space).
+
+    Parameters
+    ----------
+    single_dimension_adj_matrices : list of ndarray or sparse matrices
+        List of adjacency matrices, one per spatial dimension.
+    lnsigma_ranges : list of (float, float)
+        Per-dimension ``(min, max)`` bounds for the ``log(sigma)`` grid.
+        If a single tuple is given, it is broadcast to all dimensions.
+    grid_points : int or list of int
+        Number of grid points per dimension. If a single int, broadcast
+        to all dimensions. Default 50.
+    log_prior_fn : callable or None
+        Function mapping a ``log(sigma)`` array of shape ``(D,)`` to a
+        scalar log-prior value. If ``None`` (default), uses a flat prior
+        in ``log(sigma)`` (Jeffreys prior on ``sigma``).
+    is_sparse : bool, optional
+        Whether the adjacency matrices are sparse (default False).
+
+    Notes
+    -----
+    Memory scales as ``prod(grid_points) * prod(bins_per_dim)``. For large
+    problems, reduce ``grid_points`` accordingly.
+    """
+
+    def __init__(
+        self,
+        single_dimension_adj_matrices,
+        lnsigma_ranges,
+        grid_points=50,
+        log_prior_fn=None,
+        *,
+        is_sparse=False,
+        validate_args=None,
+    ):
+        # Use a dummy log_sigma=0 to initialize the parent class
+        # (eigenvalues, precision matrices, shapes, etc.)
+        base_lsigma = 0.
+        super().__init__(
+            base_lsigma,
+            single_dimension_adj_matrices,
+            is_sparse=is_sparse,
+            validate_args=validate_args,
+        )
+
+        dimension = self.dimension
+
+        # Parse grid specification
+        if isinstance(lnsigma_ranges, tuple) and len(lnsigma_ranges) == 2 and not isinstance(lnsigma_ranges[0], tuple):
+            lnsigma_ranges = [lnsigma_ranges] * dimension
+        assert len(lnsigma_ranges) == dimension
+
+        if isinstance(grid_points, int):
+            grid_points = [grid_points] * dimension
+        assert len(grid_points) == dimension
+
+        # Build 1D grids and volume element
+        self._grids_1d = []
+        log_dvol = 0.
+        for i in range(dimension):
+            lo, hi = lnsigma_ranges[i]
+            g = jnp.linspace(lo, hi, grid_points[i])
+            self._grids_1d.append(g)
+            if grid_points[i] > 1:
+                log_dvol += jnp.log(g[1] - g[0])
+
+        self._log_dvol = log_dvol
+
+        # Precompute 1D eigenvalues (unscaled by precision)
+        self._eigenvalues_1d = []
+        self._prec_mats = []
+        self._n = 1
+        for ii, single_dimension_adj_matrix in enumerate(single_dimension_adj_matrices):
+            if is_sparse:
+                D = np.asarray(single_dimension_adj_matrix.sum(axis=-1)).ravel()
+                scaled_single_prec = np.diag(D) - single_dimension_adj_matrix.toarray()
+            else:
+                D = single_dimension_adj_matrix.sum(axis=-1)
+                scaled_single_prec = jnp.diag(D) - single_dimension_adj_matrix
+
+            self._n *= D.shape[-1]
+
+            if isinstance(scaled_single_prec, np.ndarray):
+                lam = np.linalg.eigvalsh(scaled_single_prec)
+                lam[0] = 0.
+            else:
+                lam = jnp.linalg.eigvalsh(scaled_single_prec)
+                lam = lam.at[0].set(0.)
+
+            self._eigenvalues_1d.append(jnp.asarray(lam))
+            self._prec_mats.append(jnp.asarray(scaled_single_prec))
+
+        # Precompute ND grid of precisions: shape (G1, ..., GD, D)
+        # and log-prior values: shape (G1, ..., GD)
+        meshes = jnp.meshgrid(*self._grids_1d, indexing='ij')
+        # lnsigma_grid: shape (G1, ..., GD, D)
+        lnsigma_grid = jnp.stack(meshes, axis=-1)
+        # prec_grid: shape (G1, ..., GD, D)
+        self._prec_grid = jnp.exp(-2. * lnsigma_grid)
+
+        if log_prior_fn is not None:
+            # Evaluate log-prior at every grid point
+            flat_lnsigma = lnsigma_grid.reshape(-1, dimension)
+            flat_lp = jnp.array([log_prior_fn(flat_lnsigma[j]) for j in range(flat_lnsigma.shape[0])])
+            self._log_prior_grid = flat_lp.reshape(lnsigma_grid.shape[:-1])
+        else:
+            # Flat prior in log-sigma (Jeffreys on sigma)
+            self._log_prior_grid = jnp.zeros(lnsigma_grid.shape[:-1])
+
+        # Precompute the logdet contribution for every grid point.
+        # eigenvalue array at grid point g: Lambda[k1,...,kD] = sum_i prec_g[i] * lam_i[ki]
+        # We build this via broadcasting.
+        # For each dimension i, create an array of shape
+        #   (1,...,Gi,...,1, 1,...,Ni,...,1)
+        #          ^ grid      ^ eigenvalue
+        # with Gi at position i (grid dims) and Ni at position dimension+i (eigenvalue dims).
+        total_ndim = 2 * dimension  # D grid dims + D eigenvalue dims
+        terms = []
+        for i in range(dimension):
+            prec_shape = [1] * total_ndim
+            prec_shape[i] = grid_points[i]
+            # Extract the 1D precision values for dimension i: shape (Gi,)
+            # Extract 1D precision along grid axis i: _prec_grid has shape (G1,...,GD, D)
+            # We want _prec_grid[:,...,0,...,0, i] with slice(None) at position i
+            idx = [0] * (dimension + 1)
+            idx[i] = slice(None)
+            idx[-1] = i
+            prec_1d = self._prec_grid[tuple(idx)]
+
+            lam_shape = [1] * total_ndim
+            lam_shape[dimension + i] = self._eigenvalues_1d[i].shape[0]
+
+            term = prec_1d.reshape(prec_shape) * self._eigenvalues_1d[i].reshape(lam_shape)
+            terms.append(term)
+
+        full_lam = sum(terms)  # shape (G1,...,GD, N1,...,ND)
+        # Fix the zero eigenvalue: at eigenvalue index (0,...,0), set to sum of precs
+        zero_eig_idx = (slice(None),) * dimension + (0,) * dimension
+        sum_precs = self._prec_grid.sum(axis=-1)  # shape (G1,...,GD)
+        full_lam = full_lam.at[zero_eig_idx].set(sum_precs)
+
+        # logdet: sum over eigenvalue dimensions
+        eig_axes = tuple(range(dimension, total_ndim))
+        self._logdet_grid = jnp.sum(jnp.log(full_lam), axis=eig_axes)
+        # shape (G1,...,GD)
+
+    @validate_sample
+    def log_prob(self, phi):
+        dimension = self.dimension
+        n = self._n
+
+        # Compute per-dimension quadratic forms: q_i = phi^T Q_i phi
+        quads = []
+        for ii in range(dimension):
+            z = jnp.moveaxis(
+                jnp.tensordot(self._prec_mats[ii], jnp.moveaxis(phi, ii, 0), axes=(0, 0)),
+                0, ii,
+            )
+            quads.append(jnp.tensordot(z, phi, axes=dimension))
+
+        # quadform at each grid point: sum_i prec_grid[..., i] * q_i
+        # shape (G1, ..., GD)
+        quads_arr = jnp.stack(quads)  # (D,)
+        logquad_grid = jnp.sum(self._prec_grid * quads_arr, axis=-1)
+
+        # log p(phi | sigma) at each grid point
+        log_p_grid = 0.5 * (-n * jnp.log(2 * jnp.pi) + self._logdet_grid - logquad_grid)
+
+        # Marginalize: logsumexp over grid + log(volume element) + log-prior
+        return LSE(log_p_grid + self._log_prior_grid) + self._log_dvol
+
+    def log_prob_and_conditional_lnsigma(self, phi):
+        """
+        Compute the marginal log-prob and the conditional posterior over
+        log(sigma) given phi.
+
+        Returns
+        -------
+        log_prob : scalar
+            The grid-marginalized log-probability.
+        conditional_log_weights : jnp.ndarray, shape (G1, ..., GD)
+            Log-posterior weights for each grid point (unnormalized).
+            Useful for drawing conditional sigma samples or diagnostics.
+        """
+        dimension = self.dimension
+        n = self._n
+
+        quads = []
+        for ii in range(dimension):
+            z = jnp.moveaxis(
+                jnp.tensordot(self._prec_mats[ii], jnp.moveaxis(phi, ii, 0), axes=(0, 0)),
+                0, ii,
+            )
+            quads.append(jnp.tensordot(z, phi, axes=dimension))
+
+        quads_arr = jnp.stack(quads)
+        logquad_grid = jnp.sum(self._prec_grid * quads_arr, axis=-1)
+
+        log_p_grid = 0.5 * (-n * jnp.log(2 * jnp.pi) + self._logdet_grid - logquad_grid)
+        log_joint = log_p_grid + self._log_prior_grid
+
+        log_marg = LSE(log_joint) + self._log_dvol
+        return log_marg, log_joint
+
+    @staticmethod
+    def infer_shapes(single_dimension_adj_matrices):
+        event_shape = tuple([jnp.shape(mat)[-1] for mat in single_dimension_adj_matrices])
+        batch_shape = lax.broadcast_shapes(
+            *[jnp.shape(mat)[:-2] for mat in single_dimension_adj_matrices]
+        )
+        return batch_shape, event_shape
 
 
 def lower_triangular_sigma_marg_log_prob(phi, n, single_dimension_adj_matrices):

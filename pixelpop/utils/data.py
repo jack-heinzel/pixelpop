@@ -366,7 +366,12 @@ class PixelPopData:
         Optional: Validation or automatic formatting after object creation.
         """
         if self.marginalize_sigma and self.length_scales:
-            raise ValueError("Cannot marginalize over sigma with different sigmas in different axes")        
+            import warnings
+            warnings.warn(
+                "Using experimental grid-marginalized ICAR for per-dimension length scales. "
+                "Grid bounds are taken from coupling_prior.",
+                stacklevel=2,
+            )
     
         # standardize bin dimension
         self.dimension = len(self.pixelpop_parameters)
