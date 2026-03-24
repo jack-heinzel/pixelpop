@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from jax.scipy.special import logsumexp as LSE
 from tqdm import tqdm
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, pearsonr
 import warnings
 from functools import reduce
 import os
@@ -346,9 +346,9 @@ def sample_nd_grid(*bins, p, size=1):
     samples = tuple(b[which[ii]] + intra_bin_scatter[ii] for ii, b in enumerate(bins))
     return samples
 
-def Spearman_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1), y_range=(0, 1)):
+def Correlation_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1), y_range=(0, 1), correlation_func=spearmanr):
     """
-    Compute Spearman correlations from a 2D log-probability grid.
+    Compute correlations from a 2D log-probability grid.
 
     Parameters
     ----------
@@ -360,14 +360,15 @@ def Spearman_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1),
         Number of samples to draw for the correlation estimate. Default is 40,000.
     x_range, y_range : tuple of float, optional
         Fractional window [0, 1] to sub-select the grid before computing correlation.
+    correlation_func : scipy.stats callable for computing the correlation statistic
 
     Returns
     -------
     rho : float
-        Spearman's rank correlation coefficient between x and y.
+        Correlation coefficient between x and y.
     rho_var : float
-        Spearman's rank correlation between x and the variance of y, 
-        often used as a diagnostic for heteroscedasticity.
+        Correlation between x and the variance of y, 
+        a diagnostic for heteroskedasticity.
     """
     if log_pxy.ndim != 2:
         raise ValueError(f"Expected 2D array for log_pxy, got {log_pxy.ndim}D.")
@@ -385,9 +386,21 @@ def Spearman_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1),
 
     x_samples, y_samples = sample_nd_grid(sub_x_bins, sub_y_bins, p=pxy_slice, size=precision)
         
-    rho, _ = spearmanr(x_samples, y_samples)
+    rho, _ = correlation_func(x_samples, y_samples)
     
     y_sq_dev = (y_samples - np.mean(y_samples))**2
-    rho_var, _ = spearmanr(x_samples, y_sq_dev)
+    rho_var, _ = correlation_func(x_samples, y_sq_dev)
 
     return rho, rho_var
+
+def Spearman_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1), y_range=(0, 1)):
+    return Correlation_Sample(
+        log_pxy, x_bins, y_bins, precision=precision, x_range=x_range, y_range=y_range, 
+        correlation_func=spearmanr
+        )
+
+def Pearson_Sample(log_pxy, x_bins, y_bins, precision=int(4e4), x_range=(0, 1), y_range=(0, 1)):
+    return Correlation_Sample(
+        log_pxy, x_bins, y_bins, precision=precision, x_range=x_range, y_range=y_range, 
+        correlation_func=pearsonr
+        )
