@@ -213,11 +213,11 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         else:
             lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
 
-        mask = jnp.ones(bins, dtype=bool).at[(0,) * len(unique_sample_shape)].set(False)
-
+        # mask = jnp.ones(bins, dtype=bool).at[(0,) * len(unique_sample_shape)].set(False)
+        
         _eigenbasis_sites = numpyro.sample(
             "_eigenbasis_sites",
-            dist.Normal(0., 1.).expand(unique_sample_shape).mask(mask)
+            dist.Normal(0., 1.).expand(unique_sample_shape)
         )
         # _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.ImproperUniform(dist.constraints.real, (), ()))
         _eigenbasis_site_0 = 0.
