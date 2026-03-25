@@ -18,4 +18,16 @@ unit_tests:
     - pip install -e .
     - pip install pytest
     - pytest
-    
+
+stages:
+  - deploy
+
+deploy_pypi:
+  stage: deploy
+  image: python:3.11
+  script:
+    - pip install --upgrade build twine
+    - python -m build
+    - twine upload dist/*
+  rules:
+    - if: $CI_COMMIT_TAG    
