@@ -307,7 +307,8 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 injections['total_generated'], 
                 live_time=injections['analysis_time']
                 )
-        taper = smooth(total_var, pixelpop_data.UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
+        steep = 0.01 # Previously 0.1
+        taper = smooth(total_var, pixelpop_data.UncertaintyCut**2, steep) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
         
         # save these values!
         numpyro.deterministic("log_likelihood", ln_likelihood)

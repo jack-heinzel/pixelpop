@@ -1120,6 +1120,17 @@ def chieff_gaussian_tukey_original_parametrization(data, mean, sig, tx0, tr, tk,
     model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
     return model
 
+def chieff_skewed_tukey(data, mean, sig, skew, tx0, tr, tk, lamb_x):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    gaussian = trunc_gaussian_lims(x, mean, sig, lower=-1, upper=1)
+    skewed = chieff_skew_gaussian(x, mean, sig, skew)
+    tukey = log_tukey_norm(x, tx0, tr, tk)
+    model = jnp.logaddexp(jnp.log(lamb_x) + gaussian, jnp.log(1 - lamb_x) + tukey)
+    return model
+
 
 def logpdf_1g1g_chieff(data, mu_x, sig_x, chieff_min=-1.0, chieff_max=1.0):
     
@@ -1668,27 +1679,6 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     in_support = jnp.logical_and(data < upper, data > lower)
     return jnp.where(in_support, px, -jnp.inf*jnp.ones_like(data))
 
-
-def chieff_two_gaussians(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x):
-    
-    if isinstance(data, dict):
-        x = data['chi_eff']
-    else:
-        x = data
-
-    eps = 1e-6
-    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
-
-    # log truncated gaussian components
-    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
-    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
-
-    return jnp.logaddexp(
-        jnp.log1p(-lamb_x) + log_g1,
-        jnp.log(lamb_x) + log_g2
-    )
-    
-
 def chieff_gaussian(data, mean, sig):
     """
     Effective spin distribution: Gaussian in chi_eff.
@@ -1712,6 +1702,409 @@ def chieff_gaussian(data, mean, sig):
     else:
         x = data
     return trunc_gaussian(x, mean, sig, -1, 1)
+
+
+# def chieff_skew_gaussian(data, mu_eff, sig_eff, eps):
+    
+#     if isinstance(data, dict):
+#         x = data['chi_eff']
+#     else:
+#         x = data
+
+#     tiny = 1e-6
+#     eps = jnp.clip(eps, -1.0 + tiny, 1.0 - tiny)
+#     sig_eff = jnp.clip(sig_eff, tiny)
+
+#     sig_left = sig_eff * (1.0 + eps)    # x <= 0
+#     sig_right = sig_eff * (1.0 - eps)   # x >= 0
+
+#     def log_unnorm(xx):
+#         log_left = jnp.log1p(eps) + trunc_gaussian(xx, mu_eff, sig_left, -1.0, 1.0)
+#         log_right = jnp.log1p(-eps) + trunc_gaussian(xx, mu_eff, sig_right, -1.0, 1.0)
+#         return jnp.where(xx <= 0.0, log_left, log_right)
+
+#     logp = log_unnorm(x)
+
+#     ngrid=2000
+#     grid = jnp.linspace(-1.0, 1.0, ngrid)
+#     dx = grid[1] - grid[0]
+
+#     logp_grid = log_unnorm(grid)
+#     logZ = scs.logsumexp(logp_grid) + jnp.log(dx)
+
+#     return logp - logZ
+
+def chieff_skew_gaussian(data, mu_x, sig_x, eps_x):
+    # Version from gwpop code.
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    tiny = 1e-12
+    eps = 1e-6
+
+    sig_x = jnp.clip(sig_x, tiny)
+    eps_x = jnp.clip(eps_x, -1.0 + eps, 1.0 - eps)
+
+    low = -1.0
+    high = 1.0
+
+    norm = sig_x * jnp.sqrt(jnp.pi / 2.0)
+    a = (high - mu_x) / (jnp.sqrt(2.0) * sig_x * (1.0 - eps_x))
+    b = (mu_x - low) / (jnp.sqrt(2.0) * sig_x * (1.0 + eps_x))
+    norm = norm * ((1.0 - eps_x) * scs.erf(a) + (1.0 + eps_x) * scs.erf(b))
+
+    log_p_left = -((x - mu_x) ** 2) / (2.0 * sig_x**2 * (1.0 + eps_x) ** 2)
+    log_p_right = -((x - mu_x) ** 2) / (2.0 * sig_x**2 * (1.0 - eps_x) ** 2)
+
+    log_p = jnp.where(x > mu_x, log_p_right, log_p_left) - jnp.log(norm)
+
+    return jnp.where((x >= low) & (x <= high), log_p, -jnp.inf)
+
+def chieff_two_gaussians(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x):
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1,
+        jnp.log(lamb_x) + log_g2
+    )
+
+
+def gaussian_2d_m1_chieff(data, mu_m1, sig_m1, mu_x, sig_x, rho):
+    """
+    2D Gaussian in (m1, chi_eff) with correlation.
+
+    The chi_eff marginal is truncated to [-1, 1].  Follows the same
+    data / Jacobian convention as BrokenPowerlawPlusTwoPeaks_PrimaryMass:
+    accepts 'log_mass_1' or 'mass_1', and adds the log(m1) Jacobian
+    when the data is in log space.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'chi_eff' and either 'log_mass_1' or 'mass_1'.
+    mu_m1 : float
+        Mean of m1.
+    sig_m1 : float
+        Std dev of m1.
+    mu_x : float
+        Mean of chi_eff.
+    sig_x : float
+        Std dev of chi_eff.
+    rho : float
+        Correlation coefficient between m1 and chi_eff, in (-1, 1).
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density evaluated at each event, shape (N,).
+    """
+    isLogMass = True
+    try:
+        log_m1 = data['log_mass_1']
+        m1 = jnp.exp(log_m1)
+    except KeyError:
+        isLogMass = False
+        m1 = data['mass_1']
+
+    x = data['chi_eff']
+
+    eps = 1e-6
+    rho = jnp.clip(rho, -1 + eps, 1 - eps)
+    sig_m1 = jnp.clip(sig_m1, eps)
+    sig_x = jnp.clip(sig_x, eps)
+
+    z_m = (m1 - mu_m1) / sig_m1
+    z_x = (x - mu_x) / sig_x
+
+    # bivariate normal log-pdf in (m1, chi_eff)
+    log_p = (
+        -0.5 / (1 - rho**2) * (z_m**2 - 2 * rho * z_m * z_x + z_x**2)
+        - jnp.log(sig_m1)
+        - jnp.log(sig_x)
+        - jnp.log(2 * jnp.pi)
+        - 0.5 * jnp.log(1 - rho**2)
+    )
+
+    # truncation normalisation in chi_eff direction
+    # conditional mean & std of chi_eff | m1
+    mu_x_cond = mu_x + rho * sig_x / sig_m1 * (m1 - mu_m1)
+    sig_x_cond = sig_x * jnp.sqrt(1 - rho**2)
+
+    up = (1.0 - mu_x_cond) / sig_x_cond
+    lo = (-1.0 - mu_x_cond) / sig_x_cond
+
+    log_trunc_norm = jnp.log(scs.ndtr(up) - scs.ndtr(lo))
+
+    log_p = log_p - log_trunc_norm
+
+    in_support = (x >= -1.0) & (x <= 1.0)
+    log_p = jnp.where(in_support, log_p, -jnp.inf)
+
+    if isLogMass:
+        log_p = log_p + log_m1
+
+    return log_p
+
+
+def chieff_two_gaussians_and_two_masses(data, mu_x1, sig_x1, alpha_1, alpha_2, mmin, break_mass, delta_m_1, lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, mu_m1, sig_m1, mu_x2, sig_x2, rho, lamb_x):
+
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # component 1: independent mass × chi_eff
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_bp2pk_1 = BrokenPowerlawPlusTwoPeaks_PrimaryMass(data, alpha_1, alpha_2, mmin,
+                                                         break_mass, delta_m_1, lam_fractions,
+                                                         mpp_1, sigpp_1, mpp_2, sigpp_2)
+
+    # component 2: correlated 2D Gaussian in (m1, chi_eff)
+    log_gauss2d = gaussian_2d_m1_chieff(data, mu_m1, sig_m1, mu_x2, sig_x2, rho)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1 + log_bp2pk_1,
+        jnp.log(lamb_x) + log_gauss2d
+    )  
+
+
+def make_chieff_two_gaussians_m1dep(n_nodes=5, log_m1_min=None, log_m1_max=None,
+                                     method='cubic'):
+    """Build a chi_eff two-Gaussian model whose branching fraction varies with m1.
+
+    The branching fraction lamb_x(m1) is parameterised at ``n_nodes`` control
+    points evenly spaced in log(m1).  Each node value lives in logit space
+    and is interpolated with ``interpax.interp1d``, then mapped to (0, 1)
+    with a sigmoid.
+
+    Parameters
+    ----------
+    n_nodes : int
+        Number of interpolation control points (default 5).
+    log_m1_min, log_m1_max : float or None
+        Bounds of the node grid in log(m1).  Defaults: log(2) and log(200).
+    method : str
+        ``interpax.interp1d`` method (default ``'linear'``).
+
+    Returns
+    -------
+    chieff_two_gaussians_m1dep : callable
+        ``(data, mu_x1, sig_x1, mu_x2, sig_x2,
+        logit_lamb_x_0, …, logit_lamb_x_{n-1})  ->  log p(chi_eff|m1)``
+
+    The returned function has attributes:
+
+    * ``hyper_names`` – ordered list of all hyperparameter names, ready for
+      ``parameter_to_hyperparameters['chi_eff']``.
+    * ``logit_names`` – just the node names (for setting up priors).
+    * ``nodes`` – the log(m1) node locations (jnp array).
+
+    Example usage (analogous to two-gaussians-onlypar.py)::
+
+        chieff_m1dep = make_chieff_two_gaussians_m1dep(
+            n_nodes=5,
+            log_m1_min=jnp.log(3),
+            log_m1_max=jnp.log(300),
+        )
+
+        mixture_parametric_models = {'chi_eff': chieff_m1dep}
+
+        parameter_to_hyperparameters = {
+            ...
+            'chi_eff': chieff_m1dep.hyper_names,
+        }
+
+        priors = {
+            ...
+            'mu_x1': ([-1, 0.2], dist.Uniform),
+            'sig_x1': ([0.03, 0.6], dist.Uniform),
+            'mu_x2': ([0.2, 1.], dist.Uniform),
+            'sig_x2': ([0.03, 0.4], dist.Uniform),
+            # logit-space node priors (0 ↔ lamb_x=0.5)
+            **{k: ([-5., 5.], dist.Uniform) for k in chieff_m1dep.logit_names},
+        }
+    """
+    import interpax as ipx
+    from jax.nn import sigmoid
+
+    if log_m1_min is None:
+        log_m1_min = np.log(3.)
+    if log_m1_max is None:
+        log_m1_max = np.log(300.)
+
+    nodes = jnp.linspace(log_m1_min, log_m1_max, n_nodes)
+    logit_names = [f'logit_lamb_x_{i}' for i in range(n_nodes)]
+    hyper_names = ['mu_x1', 'sig_x1', 'mu_x2', 'sig_x2'] + logit_names
+
+    def chieff_two_gaussians_m1dep(data, mu_x1, sig_x1, mu_x2, sig_x2,
+                                   *logit_lamb_nodes):
+        if isinstance(data, dict):
+            x = data['chi_eff']
+            if 'log_mass_1' in data:
+                log_m1 = data['log_mass_1']
+            else:
+                log_m1 = jnp.log(data['mass_1'])
+        else:
+            raise ValueError(
+                "chieff_two_gaussians_m1dep requires a data dict with "
+                "'chi_eff' and 'mass_1' or 'log_mass_1'"
+            )
+
+        logit_vals = jnp.array(logit_lamb_nodes)
+
+        # Interpolate logit(lamb_x) at each sample's log(m1)
+        shape = log_m1.shape
+        logit_lamb = ipx.interp1d(
+            log_m1.ravel(), nodes, logit_vals,
+            method=method, extrap=True,
+        )
+        logit_lamb = logit_lamb.reshape(shape)
+
+        lamb_x = sigmoid(logit_lamb)
+        eps = 1e-6
+        lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+        # Truncated Gaussian components
+        log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+        log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+        return jnp.logaddexp(
+            jnp.log1p(-lamb_x) + log_g1,
+            jnp.log(lamb_x) + log_g2
+        )
+
+    chieff_two_gaussians_m1dep.__name__ = (
+        f'chieff_two_gaussians_m1dep_{n_nodes}nodes'
+    )
+    chieff_two_gaussians_m1dep.hyper_names = hyper_names
+    chieff_two_gaussians_m1dep.logit_names = logit_names
+    chieff_two_gaussians_m1dep.nodes = nodes
+
+    return chieff_two_gaussians_m1dep
+
+
+def chieff_three_gaussians(data, mu_x1, sig_x1, mu_x2, sig_x2, mu_x3, sig_x3, lamb_x1, lamb_x2):
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+    eps = 1e-6
+    lamb_x1 = jnp.clip(lamb_x1, eps, 1 - eps)
+    lamb_x2 = jnp.clip(lamb_x2, eps, 1 - eps)
+    # Ensure weights sum to 1: w1 = lamb_x1, w2 = (1 - lamb_x1) * lamb_x2, w3 = (1 - lamb_x1) * (1 - lamb_x2)
+    log_w1 = jnp.log(lamb_x1)
+    log_w2 = jnp.log1p(-lamb_x1) + jnp.log(lamb_x2)
+    log_w3 = jnp.log1p(-lamb_x1) + jnp.log1p(-lamb_x2)
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+    log_g3 = trunc_gaussian(x, mu_x3, sig_x3, -1, 1)
+    return jnp.logaddexp(
+        jnp.logaddexp(log_w1 + log_g1, log_w2 + log_g2),
+        log_w3 + log_g3
+    )
+
+def chieff_skew_plus_gaussian(data, mu_x1, sig_x1, mu_x2, sig_x2, eps_x, lamb_x):
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    tiny = 1e-6
+    eps_x = jnp.clip(eps_x, -1 + tiny, 1 - tiny)
+    lamb_x = jnp.clip(lamb_x, tiny, 1 - tiny)
+
+    # log truncated-gaussian components
+    log_g1 = chieff_skew_gaussian(x, mu_x1, sig_x1, eps_x)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1,
+        jnp.log(lamb_x) + log_g2
+    )
+
+# BrokenPowerlawPlusTwoPeaks_PrimaryMass(
+# data, alpha_1, alpha_2, mmin, break_mass, delta_m_1, 
+# lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2
+
+
+def chieff_two_gaussians_and_mass(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x, alpha_1_1, alpha_2_1, mmin_1, break_mass_1, delta_m_1_1,lam_fractions_1, mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1, alpha_1_2, alpha_2_2, mmin_2, break_mass_2, delta_m_1_2,lam_fractions_2, mpp_1_2, sigpp_1_2, mpp_2_2, sigpp_2_2):
+    
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+    #mass parameters
+    log_bp2pk_1 = BrokenPowerlawPlusTwoPeaks_PrimaryMass(data, alpha_1_1, alpha_2_1, mmin_1, 
+                                                       break_mass_1, delta_m_1_1,lam_fractions_1, 
+                                                       mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1)
+    log_bp2pk_2 = BrokenPowerlawPlusTwoPeaks_PrimaryMass(data, alpha_1_2, alpha_2_2, mmin_2, 
+                                                       break_mass_2, delta_m_1_2,lam_fractions_2, 
+                                                       mpp_1_2, sigpp_1_2, mpp_2_2, sigpp_2_2)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1 + log_bp2pk_1,
+        jnp.log(lamb_x) + log_g2 + log_bp2pk_2
+    )  
+
+# PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam)
+def chieff_two_gaussians_and_mass_simpler(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x, alpha_1_1, alpha_2_1, mmin_1, break_mass_1, delta_m_1_1,lam_fractions_1, mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1, alpha_1_2, mmin_2, mmax_2, delta_m_2, mpp_1_2, sigpp_1_2, lam_2):
+        
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_g2 = trunc_gaussian(x, mu_x2, sig_x2, -1, 1)
+
+    #mass parameters
+    log_bp2pk_1 = BrokenPowerlawPlusTwoPeaks_PrimaryMass(data, alpha_1_1, alpha_2_1, mmin_1, 
+                                                       break_mass_1, delta_m_1_1,lam_fractions_1, 
+                                                       mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1)
+    log_plpk = PowerlawPlusPeak_PrimaryMass(data, alpha_1_2, mmin_2, mmax_2, delta_m_2, mpp_1_2,
+                                            sigpp_1_2, lam_2)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1 + log_bp2pk_1,
+        jnp.log(lamb_x) + log_g2 + log_plpk
+    )  
+
+    
+
+def nothing(data):
+    return jnp.log(1)
 
 
 def chip_gaussian(data, mean, sig):
