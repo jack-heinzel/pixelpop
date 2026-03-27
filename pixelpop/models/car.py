@@ -97,6 +97,7 @@ class ICAR_length_scales(Distribution):
         single_dimension_adj_matrices,
         *,
         is_sparse=False,
+        dof_correction=1,
         validate_args=None,
     ):
         
@@ -145,6 +146,8 @@ class ICAR_length_scales(Distribution):
             event_shape=event_shape,
             validate_args=False,
         )
+
+        self.dof_correction = dof_correction
 
         for single_dimension_adj_matrix in self.single_dimension_adj_matrices:
             if self._validate_args and (isinstance(single_dimension_adj_matrix, np.ndarray) or is_sparse):
@@ -212,10 +215,11 @@ class ICAR_length_scales(Distribution):
             logquad += step * precs[ii]
             #return step
 
+        logdet *= self.dof_correction # dof_correction is Ndof / Nbin = 1 for normal, (nbin + 1)/(2 nbin) for lower triangular ~ 0.505 with nbin = 100
         # kronecker_terms = jax.vmap(step_fn)(jnp.arange(dimension, dtype=int))
         # logquad = jnp.dot(kronecker_terms, precs)
         
-        return 0.5 * (-n * jnp.log(2*jnp.pi) + logdet - logquad)
+        return 0.5 * (logdet - logquad) # - 0.5 * n * jnp.log(2*jnp.pi)
 
     @staticmethod
     def infer_shapes(log_sigmas, single_dimension_adj_matrices):
