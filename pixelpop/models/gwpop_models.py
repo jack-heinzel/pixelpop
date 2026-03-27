@@ -412,7 +412,6 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     lam_0, lam_1, lam_2 = lam_fractions
     break_fraction = (break_mass  - mmin) / (mmax - mmin)
     p_pow = BrokenPowerLaw(m1, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
-    p_pow += m_smoother(m1, mmin, delta_m_1)
 
     p_norm1 = trunc_gaussian(
         m1, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
@@ -426,11 +425,12 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         jnp.log(lam_2) + p_norm2
         ]), axis=0)
     
+    pm1 += m_smoother(m1, mmin, delta_m_1)
+    
     # unnormalized, unsmoothed
     m1s_test = jnp.linspace(3.0, 300.0, 2000)
     dm1 = m1s_test[1] - m1s_test[0]
     p_powtest = BrokenPowerLaw(m1s_test, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
-    p_powtest += m_smoother(m1s_test, mmin, delta_m_1)
 
     p_norm1test = trunc_gaussian(
         m1s_test, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
@@ -443,6 +443,9 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         jnp.log(lam_1) + p_norm1test, 
         jnp.log(lam_2) + p_norm2test
         ]), axis=0)
+
+    pm1test += m_smoother(m1s_test, mmin, delta_m_1) # do this at the end to be consistent with gwpop
+
     pm1 -= scs.logsumexp(pm1test) + jnp.log(dm1) # simple Riemann rule. 
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
