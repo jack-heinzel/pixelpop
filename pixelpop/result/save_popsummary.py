@@ -301,7 +301,7 @@ def create_popsummary(
                 except:
                     rate_func = parametric_models[par]
                 required_keys = parameter_to_hyperparameters[par]
-                rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][ii] for k in required_keys]) for jj in tqdm(range(Nsamples))])
+                rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][jj] for k in required_keys]) for jj in tqdm(range(Nsamples))])
                 rates += lrs[:,None]
             except:
                 print(f'Could not save {par} rates on grids, skipping...')
