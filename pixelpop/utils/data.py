@@ -19,6 +19,10 @@ def convert_m1q_to_lm1m2(data):
     data['log_prior'] = jnp.log(data.pop('prior')) + data['log_mass_2']
     return data
 
+def convert_m1q_to_lm1lm2(data):
+    # without typo in name
+    return convert_m1q_to_lm1m2(data)
+
 def convert_m1_to_lm1(data):
     m1 = data.pop('mass_1')
     data['log_mass_1'] = jnp.log(m1)

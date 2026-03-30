@@ -339,13 +339,13 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         # Use the raw ICAR field for event and injection weights; any
         # parametric windows are applied in parametric_model.
         if pixelpop_data.IID:
-            event_weights += merger_rate_density[event_bins_1] 
-            inj_weights += merger_rate_density[inj_bins_1]
+            event_weights += merger_rate_density[event_bins[0]]
+            inj_weights += merger_rate_density[inj_bins[0]]
 
-            event_weights += merger_rate_density[event_bins_2] - normalization
-            inj_weights += merger_rate_density[inj_bins_2] - normalization
+            event_weights += merger_rate_density[event_bins[1]] - normalization
+            inj_weights += merger_rate_density[inj_bins[1]] - normalization
         else:
-            event_weights += merger_rate_density[event_bins] 
+            event_weights += merger_rate_density[event_bins]
             inj_weights += merger_rate_density[inj_bins]
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
@@ -379,11 +379,16 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         None
             (Factors likelihood into NumPyro’s computation graph.)
         """
+        if pixelpop_data.IID:
+            eb = [pixelpop_data.event_bins_1, pixelpop_data.event_bins_2]
+            ib = [pixelpop_data.inj_bins_1, pixelpop_data.inj_bins_2]
+        else:
+            eb, ib = pixelpop_data.event_bins, pixelpop_data.inj_bins
+
         event_weights, inj_weights = nonparametric_model(
-            pixelpop_data.event_bins, 
-            pixelpop_data.inj_bins, 
-            posteriors['ln_dVTc']-posteriors['log_prior'], 
-            injections['ln_dVTc']-injections['log_prior'], 
+            eb, ib,
+            posteriors['ln_dVTc']-posteriors['log_prior'],
+            injections['ln_dVTc']-injections['log_prior'],
             skip=pixelpop_data.skip_nonparametric
             )
         event_weights, inj_weights = parametric_model(

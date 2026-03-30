@@ -84,21 +84,35 @@ class PixelPopRateFunction(object):
             'other_parameters', 
             'parameter_to_hyperparameters', 
             'parametric_models', 
+            'IID',
             ]
         
         for attr in attrs_to_copy:
             value = getattr(pixelpop_data, attr)
             setattr(self, attr, value)
 
-        if dataset_type == 'posteriors':
-            self.dataset_bins = pixelpop_data.event_bins
-        elif dataset_type == 'injections':
-            self.dataset_bins = pixelpop_data.inj_bins
-        else:
-            raise ValueError(
-                f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}' 
+        if self.IID:
+            if dataset_type == 'posteriors':
+                self.dataset_bins_1 = pixelpop_data.event_bins_1
+                self.dataset_bins_2 = pixelpop_data.event_bins_2
+            elif dataset_type == 'injections':
+                self.dataset_bins_1 = pixelpop_data.inj_bins_1
+                self.dataset_bins_2 = pixelpop_data.inj_bins_2
+            else:
+                raise ValueError(
+                    f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
                 )
-        self.shape = self.dataset_bins[0].shape
+            self.shape = self.dataset_bins_1[0].shape
+        else:
+            if dataset_type == 'posteriors':
+                self.dataset_bins = pixelpop_data.event_bins
+            elif dataset_type == 'injections':
+                self.dataset_bins = pixelpop_data.inj_bins
+            else:
+                raise ValueError(
+                    f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
+                )
+            self.shape = self.dataset_bins[0].shape
 
     def __call__(self, dataset, hyperparameters):
         """
@@ -139,7 +153,11 @@ class PixelPopRateFunction(object):
 
         ln_dVTc = dataset['ln_dVTc']
         pp_rates = hyperparameters['merger_rate_density']
-        return pp_rates[self.dataset_bins] + ln_dVTc
+        if self.IID:
+            norm = hyperparameters['log_rate']
+            return pp_rates[self.dataset_bins_1] + pp_rates[self.dataset_bins_2] + ln_dVTc - norm
+        else:
+            return pp_rates[self.dataset_bins] + ln_dVTc
 
 def resample_posteriors(hyperposterior, nsamples, pixelpop_data, samples_per_event=1, verbose=True):
     '''
