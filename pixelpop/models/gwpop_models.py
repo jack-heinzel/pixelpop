@@ -1244,8 +1244,8 @@ bbh_maxima = {
 }
 
 gwparameter_to_model = {
-    'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
-    'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
+    'mass_1': BrokenPowerlawPlusTwoPeaks_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
+    'log_mass_1': BrokenPowerlawPlusTwoPeaks_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
@@ -1272,8 +1272,8 @@ parameter_values = {
     }
 
 gwparameter_to_hyperparameters = {
-    'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
-    'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
+    'mass_1': ['alpha_1', 'alpha_2', 'mmin', 'break_mass', 'delta_m_1', 'lam_fractions', 'mpp_1', 'sigpp_1', 'mpp_2', 'sigpp_2'], 
+    'log_mass_1': ['alpha_1', 'alpha_2', 'mmin', 'break_mass', 'delta_m_1', 'lam_fractions', 'mpp_1', 'sigpp_1', 'mpp_2', 'sigpp_2'], 
     'log_mass_1_window': ['mmin', 'delta_m'],
     'log_mass_2_window': ['mmin', 'delta_m'], # use same for simplicity
     'mass_ratio_window': ['qmin', 'delta_q'], 
@@ -1292,7 +1292,7 @@ default_priors = {
     'beta': ([-2, 7], dist.Uniform), 
     'qmin': ([0.1], dist.Delta), 
     'delta_q': ([0,0.3], dist.Uniform),
-    'mmin': ([2, 10], dist.Uniform), 
+    'mmin': ([3, 10], dist.Uniform), 
     'mmax': ([60, 200], dist.Uniform), 
     'delta_m': ([0, 10], dist.Uniform), 
     'mpp': ([20, 50], dist.Uniform), 
@@ -1310,6 +1310,15 @@ default_priors = {
     'zeta_tilt': ([0, 1], dist.Uniform), 
     'z_minimum': ([0.], dist.Delta), 
     'max_z': ([1.9], dist.Delta),
+    'alpha_1': ([-4, 12], dist.Uniform),
+    'alpha_2': ([-4, 12], dist.Uniform),
+    'break_mass': ([20, 50], dist.Uniform),
+    'delta_m_1': ([0, 10], dist.Uniform),
+    'lam_fractions': ([jnp.ones(3)], dist.Dirichlet),
+    'mpp_1': ([5, 20], dist.Uniform),
+    'sigpp_1': ([0, 10], dist.Uniform),
+    'mpp_2': ([25, 60], dist.Uniform),
+    'sigpp_2': ([0, 10], dist.Uniform),
 }
 
 map_to_gwpop_parameters = {
