@@ -23,9 +23,9 @@ unit_tests:
 deploy_pypi:
   stage: deploy
   image: python:3.11
-  id_tokens:
-    PYPI_ID_TOKEN:
-      aud: pypi
+  variables:
+    TWINE_USERNAME: __token__
+    TWINE_PASSWORD: $PYPI_TOKEN
   script:
     - pip install --upgrade build twine
     - python -m build
