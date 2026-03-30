@@ -267,10 +267,12 @@ def create_popsummary(
         log_norms = LSE(R, axis=tuple(range(1, R.ndim))) + np.sum(pixelpop_data.logdV)
         hyperposterior['log_rate'] = log_norms
         for par in pixelpop_parameters:
-            par_axis = pixelpop_parameters.index(par) + 1
+            par_idx = pixelpop_parameters.index(par)
+            par_axis = par_idx + 1
             sum_axes = tuple(ax for ax in range(1, R.ndim) if ax != par_axis)
+            logdV_other = np.sum(pixelpop_data.logdV[:par_idx]) + np.sum(pixelpop_data.logdV[par_idx+1:])
             assert 'log_marginal_' + par in hyperposterior
-            hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) - log_norms[:,None]
+            hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) + logdV_other - log_norms[:,None]
 
         hyperposterior['merger_rate_density'] = R
     lrs = hyperposterior['log_rate']
