@@ -242,53 +242,35 @@ def create_popsummary(
     
     
     assert 'log_rate' in hyperposterior
-    old_lrs = hyperposterior['log_rate']
     R = hyperposterior['merger_rate_density']
-    
-    if pixelpop_data.has_window:    
+
+    if pixelpop_data.has_window:
+        # build full meshgrid so window functions that depend on multiple
+        # pixelpop parameters (e.g. m2 = m1*q) have all values available
+        grids = np.meshgrid(*pp_grids, indexing='ij')
+        grid_data = {par: grids[jj] for jj, par in enumerate(pixelpop_parameters)}
+
         window_in_bins = np.zeros(R.shape)
-        windows_pos = {}
-        windows_vals = {}
-        windows_bins = {}
-        
         for par in pixelpop_data.window_parameters:
             assert 'log_marginal_' + par in hyperposterior
-            rates = hyperposterior['log_marginal_'+par]
-            # update the log_rate normalization to account for window factor
-            par_pos = np.linspace(minima[par], maxima[par], bins[pixelpop_parameters.index(par)]+1)
-            window_pos = np.linspace(minima[par], maxima[par], 10*bins[pixelpop_parameters.index(par)])
-            dwindow = window_pos[1] - window_pos[0]
-            # I will do this by integrating the window factor over each bin
+
+            # evaluate window on the full N-D grid of bin centers
             window_factors = np.array([parametric_models[par+'_window'](
-                    {par: window_pos}, 
+                    grid_data,
                     *[hyperposterior[k][ii] for k in parameter_to_hyperparameters[par+'_window']]
                     )
                 for ii in range(Nsamples)])
-            window_bins = np.digitize(window_pos, par_pos) - 1
-            window_bins[-1] = window_bins[-2] # hardcode this to avoid error
-            # Integrate (sum) window_factors within each bin for each sample
-            wind = np.zeros((Nsamples, bins[pixelpop_parameters.index(par)]))
-            for b in range(bins[pixelpop_parameters.index(par)]):
-                idx = (window_bins == b)
-                wind[:, b] = LSE(window_factors[:, idx] + np.log(dwindow), axis=1)
-                
-            axes = tuple([ii for ii in range(1, R.ndim) if ii != pixelpop_parameters.index(par)+1])
-            window_in_bins += np.expand_dims(wind, axis=axes)
-            # integrate hyperposterior['merger_rate_density'] over the window factor    
-            windows_pos[par] = window_pos
-            windows_vals[par] = window_factors
-            windows_bins[par] = window_bins
-            
+            window_in_bins += window_factors
+
         R = R + window_in_bins
         log_norms = LSE(R, axis=tuple(range(1, R.ndim))) + np.sum(pixelpop_data.logdV)
-        hyperposterior['log_rate'] = log_norms # update with windowed rate
+        hyperposterior['log_rate'] = log_norms
         for par in pixelpop_parameters:
-            if par not in pixelpop_data.window_parameters:
-                par_axis = pixelpop_parameters.index(par) + 1
-                sum_axes = tuple(ax for ax in range(1, R.ndim) if ax != par_axis)
-                assert 'log_marginal_' + par in hyperposterior
-                hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) - log_norms[:,None] # overwrite with windowed marginal
-        
+            par_axis = pixelpop_parameters.index(par) + 1
+            sum_axes = tuple(ax for ax in range(1, R.ndim) if ax != par_axis)
+            assert 'log_marginal_' + par in hyperposterior
+            hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) - log_norms[:,None]
+
         hyperposterior['merger_rate_density'] = R
     lrs = hyperposterior['log_rate']
     
@@ -303,18 +285,10 @@ def create_popsummary(
                     # naive marginalization over redshift neglects implicit dVc/dz 1/1+z term
                     continue
             assert 'log_marginal_' + par in hyperposterior
-            if par in pixelpop_data.window_parameters:
-                window_pos = windows_pos[par]
-                window_factors = windows_vals[par]
-                window_bins = windows_bins[par]
-                rates = hyperposterior['log_marginal_'+par] + old_lrs[:,None]
-                rates = rates[:,window_bins] + window_factors
-                pos = window_pos
-            else:
-                rates = hyperposterior['log_marginal_'+par]
-                rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
-                rates += lrs[:,None]
-                pos = np.linspace(minima[par], maxima[par], bins[ii]+1)
+            rates = hyperposterior['log_marginal_'+par]
+            rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
+            rates += lrs[:,None]
+            pos = np.linspace(minima[par], maxima[par], bins[ii]+1)
             
         else:
             try:
