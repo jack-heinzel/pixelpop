@@ -10,7 +10,7 @@ from gwpopulation.models.mass import SinglePeakSmoothedMassDistribution
 from gwpopulation.models.redshift import PowerLawRedshift
 
 
-from o4_default_mass_model import TwoPeakBrokenPowerLawSmoothedMassDistribution
+from .o4_default_mass_model import TwoPeakBrokenPowerLawSmoothedMassDistribution
 # Assuming your models are saved in a file named `gwpop_models.py`
 from pixelpop.models.gwpop_models import (
     log_expit, gaussian, trunc_gaussian, powerlaw, beta_spin, PowerlawPlusPeak_PrimaryMass, 
