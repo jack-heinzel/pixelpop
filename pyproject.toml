@@ -19,7 +19,7 @@ dynamic = ["version"]
 dependencies = [
     "numpy",
     "scipy",
-    "jax<=0.8.2",
+    "jax==0.8.2",
     "pandas",
     "numpyro",
     "gwpopulation",
