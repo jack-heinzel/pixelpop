@@ -247,7 +247,8 @@ def create_popsummary(
     if pixelpop_data.has_window:
         # build full meshgrid so window functions that depend on multiple
         # pixelpop parameters (e.g. m2 = m1*q) have all values available
-        grids = np.meshgrid(*pp_grids, indexing='ij')
+        bin_centers = [0.5 * (g[:-1] + g[1:]) for g in pp_grids]
+        grids = np.meshgrid(*bin_centers, indexing='ij')
         grid_data = {par: grids[jj] for jj, par in enumerate(pixelpop_parameters)}
 
         window_in_bins = np.zeros(R.shape)
