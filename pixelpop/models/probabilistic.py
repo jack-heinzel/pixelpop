@@ -417,7 +417,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         if pixelpop_data.EventNeffCut > 0.:
             numpyro.factor("single_event_neff_taper", jnp.sum(smooth(
                 -jnp.log(likelihood_dict['single_event_neffs']),
-                -jnp.log(pixelpop_data.EventNeffCut)
+                -jnp.log(pixelpop_data.EventNeffCut),
                 0.1))
             )
         if pixelpop_data.SelectionNeffCut:
