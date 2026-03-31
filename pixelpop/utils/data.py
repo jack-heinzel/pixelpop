@@ -323,7 +323,8 @@ class PixelPopData:
     marginalize_sigma: bool = False
     length_scales: bool = False
     IID: bool = False # TODO: make this IID parameters, so some parameters can be IID others not (e.g., a1, a2 IID, mass ratio not)
-    
+    EventNeffCut: float = 0.
+    SelectionNeffCut: bool = False
     # Additional settings
     random_initialization: bool = True
     plausible_hyperparameters: Dict[str, float] = field(default_factory=dict)
@@ -376,7 +377,7 @@ class PixelPopData:
                 "Grid bounds are taken from coupling_prior.",
                 stacklevel=2,
             )
-    
+        self.Nobs = self.posteriors.shape[0]
         # standardize bin dimension
         self.dimension = len(self.pixelpop_parameters)
         if jnp.ndim(self.bins) == 0:

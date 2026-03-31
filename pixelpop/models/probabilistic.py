@@ -112,7 +112,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         initial_value = get_initial_value(
             pixelpop_data.plausible_hyperparameters, 
             parameters_psi, 
-            pixelpop_data.posteriors['ln_dVTc'].shape[0], 
+            pixelpop_data.Nobs, 
             pixelpop_data.injections['ln_dVTc']-pixelpop_data.injections['log_prior'],
             random_initialization=pixelpop_data.random_initialization
             )
@@ -398,15 +398,34 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             inj_weights
             )
 
-        ln_likelihood, nexp, pe_var, vt_var, total_var = \
+        likelihood_dict = \
             rate_likelihood(
                 event_weights, 
                 inj_weights, 
                 injections['total_generated'], 
                 live_time=injections['analysis_time']
                 )
+        
+        ln_likelihood  =likelihood_dict['log_likelihood']
+        nexp = likelihood_dict['nexp']
+        pe_var = likelihood_dict['total_pe_lnL_variance']
+        vt_var = likelihood_dict['total_vt_lnL_variance']
+        total_var = likelihood_dict['total_lnL_variance']        
+        
         taper = smooth(total_var, pixelpop_data.UncertaintyCut**2, 0.1) # "smooth" cutoff above Talbot+Golomb 2022 recommendation to retain autodifferentiability
         
+        if pixelpop_data.EventNeffCut > 0.:
+            numpyro.factor("single_event_neff_taper", jnp.sum(smooth(
+                -jnp.log(likelihood_dict['single_event_neffs']),
+                -jnp.log(pixelpop_data.EventNeffCut)
+                0.1))
+            )
+        if pixelpop_data.SelectionNeffCut:
+            numpyro.factor("selection_neff_taper", smooth(
+                -jnp.log(likelihood_dict['vt_neff']),
+                -jnp.log(4*pixelpop_data.Nobs),
+                0.1
+                ))
         # save these values!
         numpyro.deterministic("log_likelihood", ln_likelihood)
         numpyro.deterministic("log_likelihood_variance", total_var)

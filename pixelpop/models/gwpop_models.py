@@ -848,7 +848,7 @@ def smooth(x, cutoff, width):
     jnp.ndarray
         Smooth step function, transitioning quadratically at cutoff.
     """
-    return jnp.where(x<cutoff, 0., -((x-cutoff)/width)**2)
+    return jnp.where(x<cutoff, jnp.zeros_like(x), -((x-cutoff)/width)**2)
 
 def mu_var_to_alpha_beta(mu, var):
     """
@@ -1200,11 +1200,23 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
     
-    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
+    pe_neffs = 1 / (jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
+    pe_ln_likelihood_variance = jnp.sum(1 / pe_neffs)
+    
+    vt_neff = jnp.exp(2*denominator - square_sum)
     vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
     
     ln_likelihood_variance = pe_ln_likelihood_variance + vt_ln_likelihood_variance
-    return ln_likelihood, nexp, pe_ln_likelihood_variance, vt_ln_likelihood_variance, ln_likelihood_variance
+    
+    return {
+        'log_likelihood': ln_likelihood, 
+        'nexp': nexp, 
+        'total_pe_lnL_variance': pe_ln_likelihood_variance, 
+        'total_vt_lnL_variance': vt_ln_likelihood_variance, 
+        'total_lnL_variance': ln_likelihood_variance, 
+        'single_event_neffs': pe_neffs,
+        'vt_neff': vt_neff,
+    }
 
 
 bbh_minima = {
