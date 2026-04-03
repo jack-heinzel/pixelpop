@@ -275,8 +275,19 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         event_weights, inj_weights = nonparametric_prior(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'])
         event_weights, inj_weights = parametric_prior(posteriors, injections, event_weights, inj_weights)
 
-        ln_likelihood, nexp, pe_var, vt_var, total_var = rate_likelihood(event_weights, inj_weights, injections['total_generated'], live_time=injections['analysis_time'])
-
+        likelihood_dict = \
+            rate_likelihood(
+                event_weights, 
+                inj_weights, 
+                injections['total_generated'], 
+                live_time=injections['analysis_time']
+                )
+        
+        ln_likelihood = likelihood_dict['log_likelihood']
+        nexp = likelihood_dict['nexp']
+        pe_var = likelihood_dict['total_pe_lnL_variance']
+        vt_var = likelihood_dict['total_vt_lnL_variance']
+        total_var = likelihood_dict['total_lnL_variance']  
         # save these values!
         numpyro.deterministic("log_likelihood", ln_likelihood)
         numpyro.deterministic("log_likelihood_variance", total_var)
