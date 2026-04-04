@@ -134,6 +134,24 @@ def Peak_PrimaryMass(data, mpp, sigpp):
         pm1 = pm1 + data['log_mass_1']
     return pm1
 
+def TwoPeaks_PrimaryMass(data, mpp1, sigpp1, mpp2, sigpp2, lam):
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+    pm1 = gaussian(m1, mpp1, sigpp1)
+    pm2 = gaussian(m1, mpp2, sigpp2)
+    pm = jnp.logaddexp(pm1 + jnp.log(1-lam), pm2 + jnp.log(lam))
+    
+    if isLogMass: # include jacobian
+        pm = pm + data['log_mass_1']
+    return pm
+
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     """
     Power-law + Gaussian-peak model for primary BH masses.
