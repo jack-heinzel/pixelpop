@@ -243,6 +243,7 @@ def create_popsummary(
     R = hyperposterior['merger_rate_density']
 
     if pixelpop_data.has_window:
+        print('Calculating window factors for joint pixelpop rate')
         # build full meshgrid so window functions that depend on multiple
         # pixelpop parameters (e.g. m2 = m1*q) have all values available
         bin_centers = [0.5 * (g[:-1] + g[1:]) for g in pp_grids]
