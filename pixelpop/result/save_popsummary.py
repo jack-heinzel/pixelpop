@@ -181,8 +181,6 @@ def create_popsummary(
         event_sample_IDs=[metadata[p]['label'] for p in wf_paths],
         event_parameters=gwparameters
         )
-    result.set_hyperparameter_samples(np.array([hyperposterior[h] for h in h_keys]).T, overwrite=overwrite)
-
     # set one dimensional rates
     skip_parameters = []
     pp_grids = pixelpop_data.bin_axes
@@ -263,18 +261,26 @@ def create_popsummary(
                 for ii in range(Nsamples)])
             window_in_bins += window_factors
 
-        R = R + window_in_bins
-        log_norms = LSE(R, axis=tuple(range(1, R.ndim))) + np.sum(pixelpop_data.logdV)
+        # Use a local variable for the windowed rate — do NOT mutate
+        # hyperposterior['merger_rate_density'], which is the raw ICAR
+        # field and still needed by reweight_events_and_injections
+        # (where the window is applied per-event via the parametric model).
+        R_windowed = R + window_in_bins
+        log_norms = LSE(R_windowed, axis=tuple(range(1, R_windowed.ndim))) + np.sum(pixelpop_data.logdV)
         hyperposterior['log_rate'] = log_norms
         for par in pixelpop_parameters:
             par_idx = pixelpop_parameters.index(par)
             par_axis = par_idx + 1
-            sum_axes = tuple(ax for ax in range(1, R.ndim) if ax != par_axis)
+            sum_axes = tuple(ax for ax in range(1, R_windowed.ndim) if ax != par_axis)
             logdV_other = np.sum(pixelpop_data.logdV[:par_idx]) + np.sum(pixelpop_data.logdV[par_idx+1:])
             assert 'log_marginal_' + par in hyperposterior
-            hyperposterior['log_marginal_' + par] = LSE(R, axis=sum_axes) + logdV_other - log_norms[:,None]
+            hyperposterior['log_marginal_' + par] = LSE(R_windowed, axis=sum_axes) + logdV_other - log_norms[:,None]
 
-        hyperposterior['merger_rate_density'] = R
+        R = R_windowed
+
+    # Save hyperparameter samples after the window block has corrected log_rate
+    result.set_hyperparameter_samples(np.array([hyperposterior[h] for h in h_keys]).T, overwrite=overwrite)
+
     lrs = hyperposterior['log_rate']
     
     for ii, par in enumerate(parameters):
@@ -320,12 +326,11 @@ def create_popsummary(
     pos = np.vstack([
         x.flatten() for x in x_axes
         ])
-    nd_pp = hyperposterior['merger_rate_density']
     result.set_rates_on_grids(
         grid_key='joint_pixelpop_rate',
         grid_params=pixelpop_parameters,
         positions=pos,
-        rates=np.exp(nd_pp.reshape(Nsamples,np.prod(bins))),
+        rates=np.exp(R.reshape(Nsamples,np.prod(bins))),
         overwrite=overwrite
     )
 
