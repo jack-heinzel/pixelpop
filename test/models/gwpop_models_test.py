@@ -56,12 +56,12 @@ def comp_powerlawredshiftpsi(data, lamb):
     zmodel = PowerLawRedshift(z_max=1.9)# , cosmo_model="FlatLambdaCDM")
     return zmodel.psi_of_z(data['redshift'], lamb=lamb)
 
-def comp_spins(data, mu, var, amax=1):
-    iid_spin_magnitude_gaussian(data, mu, np.sqrt(var), amax)
+def comp_spins(data, mu, var):
+    return iid_spin_magnitude_gaussian(data, mu, np.sqrt(var), 1)
     
-def comp_spins_beta(data, mu, var, amax=1):
-    converted, _ = convert_to_beta_parameters({'mu_chi': mu, 'sigma_chi': var})
-    return iid_spin_magnitude_beta(data, amax=amax, alpha_chi=converted['alpha_chi'], beta_chi=converted['beta_chi'])
+def comp_spins_beta(data, mu, var):
+    converted, _ = convert_to_beta_parameters({'mu_chi': mu, 'sigma_chi': var, 'amax': 1})
+    return iid_spin_magnitude_beta(data, amax=1, alpha_chi=converted['alpha_chi'], beta_chi=converted['beta_chi'])
     
 comp_tilts = lambda d, mu, sig, zeta: iid_spin_orientation_gaussian_isotropic(d, xi_spin=zeta, sigma_spin=sig, mu_spin=mu)
 comp_gaussian_chieff = lambda d, mean, sig: gaussian_chi_eff(d, mu_chi_eff=mean, sigma_chi_eff=sig)
@@ -147,8 +147,6 @@ def test_against_standard_libraries(model_name):
     jax_result = np.exp(jax_func(**kwargs))
     ref_result = ref_func(*kwargs.values())
     
-    print(kwargs.get('data'))
-    print(jax_result / ref_result)
     np.testing.assert_allclose(
         jax_result, 
         ref_result,
