@@ -56,8 +56,8 @@ def comp_powerlawredshiftpsi(data, lamb):
     zmodel = PowerLawRedshift(z_max=1.9)# , cosmo_model="FlatLambdaCDM")
     return zmodel.psi_of_z(data['redshift'], lamb=lamb)
 
-def comp_spins(data, mu_chi, sigma_chi, amax=1):
-    iid_spin_magnitude_gaussian(data, mu_chi, sigma_chi, amax)
+def comp_spins(data, mu, var, amax=1):
+    iid_spin_magnitude_gaussian(data, mu, np.sqrt(var), amax)
     
 def comp_spins_beta(data, mu, var, amax=1):
     converted, _ = convert_to_beta_parameters({'mu_chi': mu, 'sigma_chi': var})
@@ -114,12 +114,12 @@ TEST_MODELS = {
     "spins beta": (
         iid_beta_spin,
         comp_spins_beta,
-        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu_chi': 0.2, 'sigma_chi': 0.1} 
+        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu': 0.2, 'var': 0.1} 
     ),
     "spins gauss": (
         iid_normal_spin,
         comp_spins,
-        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu_chi': 0.2, 'sigma_chi': 0.1} 
+        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu': 0.2, 'var': 0.1} 
     ),
     "tilts iso+gauss": (
         tilt_model,
