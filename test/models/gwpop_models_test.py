@@ -5,16 +5,26 @@ import scipy.special as scs
 import scipy.stats as stats
 
 # If testing against gwpopulation for powerlaw/smoothing:
+from gwpopulation.conversions import convert_to_beta_parameters
 from gwpopulation.utils import powerlaw as gwpop_powerlaw
 from gwpopulation.models.mass import SinglePeakSmoothedMassDistribution
 from gwpopulation.models.redshift import PowerLawRedshift
-
+from gwpopulation.models.spin import (
+    iid_spin_orientation_gaussian_isotropic,
+    iid_spin_magnitude_beta,
+    gaussian_chi_eff,
+    gaussian_chi_p,
+)
 
 from .o4_default_mass_model import TwoPeakBrokenPowerLawSmoothedMassDistribution
+from .o4_default_spin_model import iid_spin_magnitude_gaussian
 # Assuming your models are saved in a file named `gwpop_models.py`
 from pixelpop.models.gwpop_models import (
-    log_expit, gaussian, trunc_gaussian, powerlaw, beta_spin, PowerlawPlusPeak_PrimaryMass, 
-    BrokenPowerlawPlusTwoPeaks_PrimaryMass, PowerlawRedshift, PowerlawRedshiftPsi, 
+    log_expit, gaussian, trunc_gaussian, powerlaw, # generic functions
+    PowerlawPlusPeak_PrimaryMass, BrokenPowerlawPlusTwoPeaks_PrimaryMass, # mass functions
+    PowerlawRedshiftPsi, # redshift
+    beta_spin, chieff_gaussian,  chip_gaussian, iid_beta_spin, iid_normal_spin, # spins + effective spins
+    tilt_model, # tilt models
 )
 # import wcosmo
 
@@ -42,13 +52,20 @@ def comp_bpl2p(data, alpha_1, alpha_2, mmin, mmax, break_mass, delta_m_1, lam_fr
         lam_0=lam_0, lam_1=lam_1, mpp_1=mpp_1, sigpp_1=sigpp_1, mpp_2=mpp_2, sigpp_2=sigpp_2,
         )
 
-def comp_powerlawredshift(data, lamb):
-    zmodel = PowerLawRedshift(z_max=1.9, cosmo_model="FlatLambdaCDM")
-    return zmodel(data, lamb=lamb, H0=67.90, Om0=0.3065)
-
 def comp_powerlawredshiftpsi(data, lamb):
     zmodel = PowerLawRedshift(z_max=1.9)# , cosmo_model="FlatLambdaCDM")
     return zmodel.psi_of_z(data['redshift'], lamb=lamb)
+
+def comp_spins(data, mu_chi, sigma_chi, amax=1):
+    iid_spin_magnitude_gaussian(data, mu_chi, sigma_chi, amax)
+    
+def comp_spins_beta(data, mu_chi, sigma_chi, amax=1):
+    converted, _ = convert_to_beta_parameters({'mu_chi': mu_chi, 'sigma_chi': sigma_chi})
+    return iid_spin_magnitude_beta(data, amax=amax, alpha_chi=converted['alpha_chi'], beta_chi=converted['beta_chi'])
+    
+comp_tilts = lambda d, mu, sig, zeta: iid_spin_orientation_gaussian_isotropic(d, xi_spin=zeta, sigma_spin=sig, mu_spin=mu)
+comp_gaussian_chieff = lambda d, mean, sig: gaussian_chi_eff(d, mu_chi_eff=mean, sigma_chi_eff=sig)
+comp_gaussian_chip = lambda d, mean, sig: gaussian_chi_p(d, mu_chi_p=mean, sigma_chi_p=sig)
 
 # Dictionary structure: 
 # "model_name": (custom_jax_function, standard_ref_function, dictionary_of_kwargs)
@@ -94,6 +111,32 @@ TEST_MODELS = {
         comp_powerlawredshiftpsi,
         {'data': {'redshift': np.linspace(0.001, 1.5, 1000)}, 'lamb': 2.0}
     ),
+    "spins beta": (
+        iid_beta_spin,
+        comp_spins_beta,
+        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu_chi': 0.2, 'sigma_chi': 0.1} 
+    ),
+    "spins gauss": (
+        iid_normal_spin,
+        comp_spins,
+        {'data': {'a_1': np.linspace(1e-5, 1-1e-5, 100), 'a_2': 1 - np.linspace(1e-5, 1-1e-5, 100)}, 'mu_chi': 0.2, 'sigma_chi': 0.1} 
+    ),
+    "tilts iso+gauss": (
+        tilt_model,
+        comp_tilts,
+        {'data': {'cos_tilt_1': np.linspace(-1,1,100), 'cos_tilt_2': -np.linspace(-1,1,100)}, 'mu': 0.5, 'sig': 0.2, 'zeta': 0.4}
+    ),
+    "chi_eff gauss": (
+        chieff_gaussian,
+        comp_gaussian_chieff,
+        {'data': {'chi_eff': np.linspace(-1+1e-5, 1-1e-5, 1000)}, 'mean': 0.05, 'sig': 0.2}
+    ),
+    "chi_p gauss": (
+        chip_gaussian,
+        comp_gaussian_chip,
+        {'data': {'chi_p': np.linspace(1e-5, 1-1e-5, 1000)}, 'mean': 0.25, 'sig': 0.2}
+    ),
+    
     # more here, spins spin tilts
 }
 
@@ -104,12 +147,11 @@ def test_against_standard_libraries(model_name):
     jax_result = np.exp(jax_func(**kwargs))
     ref_result = ref_func(*kwargs.values())
     
-    # valid_mask = jnp.isfinite(jax_result)
     print(kwargs.get('data'))
     print(jax_result / ref_result)
     np.testing.assert_allclose(
-        jax_result, # [valid_mask], 
-        ref_result, # [valid_mask], 
+        jax_result, 
+        ref_result,
         rtol=1e-5, 
         atol=1e-6,
         err_msg=f"Mismatch found in model: {model_name}"
