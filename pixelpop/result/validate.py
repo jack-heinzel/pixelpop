@@ -331,21 +331,6 @@ def validate_pixelpop_inference(
     # convert to arviz formatted InferenceData object
     az_posterior = convert_to_arviz(hyperposterior)
 
-    # arviz rank normalized rhat expects an InferenceData object
-    rhat_results, convergence_pass = rank_normalized_rhat(
-        az_posterior, 
-        threshold=rhat_threshold,
-        fail_percentage_threshold=fail_percentage_threshold, 
-        verbose=verbose
-    )
-
-    ess_results, efficiency_pass = compute_effective_sample_sizes(
-        az_posterior, 
-        threshold=ess_threshold,
-        fail_percentage_threshold=fail_percentage_threshold,
-        verbose=verbose
-        )
-    
     # convert arviz InferenceData object to dict: (samples, ...) for error stats
     flat_az_posterior = az.extract(az_posterior, combined=True)
 
@@ -360,6 +345,21 @@ def validate_pixelpop_inference(
         pixelpop_data, 
         verbose=verbose
     )
+
+    # arviz rank normalized rhat expects an InferenceData object
+    rhat_results, convergence_pass = rank_normalized_rhat(
+        az_posterior,
+        threshold=rhat_threshold,
+        fail_percentage_threshold=fail_percentage_threshold,
+        verbose=verbose
+    )
+
+    ess_results, efficiency_pass = compute_effective_sample_sizes(
+        az_posterior,
+        threshold=ess_threshold,
+        fail_percentage_threshold=fail_percentage_threshold,
+        verbose=verbose
+        )
 
     summary = {
         'error_statistic': error_stats['error_statistic'],
