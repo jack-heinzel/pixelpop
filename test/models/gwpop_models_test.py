@@ -59,8 +59,8 @@ def comp_powerlawredshiftpsi(data, lamb):
 def comp_spins(data, mu_chi, sigma_chi, amax=1):
     iid_spin_magnitude_gaussian(data, mu_chi, sigma_chi, amax)
     
-def comp_spins_beta(data, mu_chi, sigma_chi, amax=1):
-    converted, _ = convert_to_beta_parameters({'mu_chi': mu_chi, 'sigma_chi': sigma_chi})
+def comp_spins_beta(data, mu, var, amax=1):
+    converted, _ = convert_to_beta_parameters({'mu_chi': mu, 'sigma_chi': var})
     return iid_spin_magnitude_beta(data, amax=amax, alpha_chi=converted['alpha_chi'], beta_chi=converted['beta_chi'])
     
 comp_tilts = lambda d, mu, sig, zeta: iid_spin_orientation_gaussian_isotropic(d, xi_spin=zeta, sigma_spin=sig, mu_spin=mu)
