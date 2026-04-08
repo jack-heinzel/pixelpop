@@ -152,6 +152,97 @@ def TwoPeaks_PrimaryMass(data, mpp1, sigpp1, mpp2, sigpp2, lam):
         pm = pm + data['log_mass_1']
     return pm
 
+def TwoTruncPeaks_PrimaryMass(data, mpp1, sigpp1, mpp2, sigpp2, lam):
+    isLogMass = True
+    if isinstance(data, dict):
+        try:
+            m1 = jnp.exp(data['log_mass_1'])
+        except KeyError:
+            isLogMass = False
+            m1 = data['mass_1']
+    else:
+        m1 = data
+    pm1 = trunc_gaussian(m1, mpp1, sigpp1, 6, 16)
+    pm2 = trunc_gaussian(m1, mpp2, sigpp2, 20, 50) 
+    pm = jnp.logaddexp(pm1 + jnp.log(1-lam), pm2 + jnp.log(lam))
+    
+    if isLogMass: # include jacobian
+        pm = pm + data['log_mass_1']
+    return pm
+
+def gaussian_cdf(x, mean, sig):
+    """
+    CDF of N(mean, sig^2).
+    """
+    z = (x - mean) / (jnp.sqrt(2.0) * sig)
+    return 0.5 * (1.0 + scs.erf(z))
+
+
+def TwoPeaks_SecondaryMass_given_PrimaryMass(
+    data,
+    mpp1_m2,
+    sigpp1_m2,
+    mpp2_m2,
+    sigpp2_m2,
+    lam_m2,
+):
+    if not isinstance(data, dict):
+        raise ValueError(
+            "data must be a dict containing mass_1/log_mass_1 and mass_2/log_mass_2"
+        )
+
+    # Conditioning variable: m1
+    try:
+        m1 = jnp.exp(data["log_mass_1"])
+    except KeyError:
+        m1 = data["mass_1"]
+
+    # Evaluated variable: m2
+    isLogMass2 = True
+    try:
+        logm2 = data["log_mass_2"]
+        m2 = jnp.exp(logm2)
+    except KeyError:
+        isLogMass2 = False
+        m2 = data["mass_2"]
+
+    lam_m2 = jnp.clip(lam_m2, 1e-6, 1.0 - 1e-6)
+
+    # Numerator: ordinary Gaussian mixture evaluated at m2
+    logg1 = gaussian(m2, mpp1_m2, sigpp1_m2)
+    logg2 = gaussian(m2, mpp2_m2, sigpp2_m2)
+    log_num = jnp.logaddexp(
+        logg1 + jnp.log(1.0 - lam_m2),
+        logg2 + jnp.log(lam_m2),
+    )
+
+    # Mixture normalization over the allowed interval 0 < m2 <= m1
+    Z1 = gaussian_cdf(m1, mpp1_m2, sigpp1_m2) - gaussian_cdf(
+        0.0, mpp1_m2, sigpp1_m2
+    )
+    Z2 = gaussian_cdf(m1, mpp2_m2, sigpp2_m2) - gaussian_cdf(
+        0.0, mpp2_m2, sigpp2_m2
+    )
+
+    Z1 = jnp.clip(Z1, 1e-300, None)
+    Z2 = jnp.clip(Z2, 1e-300, None)
+
+    log_den = jnp.logaddexp(
+        jnp.log(1.0 - lam_m2) + jnp.log(Z1),
+        jnp.log(lam_m2) + jnp.log(Z2),
+    )
+
+    logp = log_num - log_den
+
+    # Enforce physical support
+    logp = jnp.where((m2 > 0.0) & (m2 <= m1), logp, -jnp.inf)
+
+    # Jacobian only for the variable being evaluated
+    if isLogMass2:
+        logp = logp + logm2
+
+    return logp
+
 def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam):
     """
     Power-law + Gaussian-peak model for primary BH masses.
@@ -258,7 +349,7 @@ def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
 def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     data, alpha_1, alpha_2, mmin, break_mass, delta_m_1, 
     lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, 
-    mmax=300., gaussian_mass_maximum=100.):
+    mmax=100., gaussian_mass_maximum=100.):
     """
     Primary mass distribution: broken power-law + two Gaussian peaks.
 
@@ -293,7 +384,7 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     sigpp_2 : float
         Std. deviation of the second Gaussian peak.
     mmax : float, optional
-        Maximum primary mass cutoff (default 300).
+        Maximum primary mass cutoff (default 100).
     gaussian_mass_maximum : float, optional
         Upper truncation for Gaussian peaks (default 100).
 
@@ -331,7 +422,7 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         ]), axis=0)
     
     # unnormalized, unsmoothed
-    m1s_test = jnp.linspace(3.0, 300.0, 2000)
+    m1s_test = jnp.linspace(3.0, 100.0, 2000)
     dm1 = m1s_test[1] - m1s_test[0]
     p_powtest = BrokenPowerLaw(m1s_test, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
     p_powtest += m_smoother(m1s_test, mmin, delta_m_1)
@@ -1556,7 +1647,7 @@ def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
 def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     data, alpha_1, alpha_2, mmin, break_mass, delta_m_1, 
     lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2, 
-    mmax=300., gaussian_mass_maximum=100.):
+    mmax=100., gaussian_mass_maximum=100.):
     """
     Primary mass distribution: broken power-law + two Gaussian peaks.
 
@@ -1591,7 +1682,7 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     sigpp_2 : float
         Std. deviation of the second Gaussian peak.
     mmax : float, optional
-        Maximum primary mass cutoff (default 300).
+        Maximum primary mass cutoff (default 100).
     gaussian_mass_maximum : float, optional
         Upper truncation for Gaussian peaks (default 100).
 
@@ -1629,7 +1720,7 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         ]), axis=0)
     
     # unnormalized, unsmoothed
-    m1s_test = jnp.linspace(3.0, 300.0, 2000)
+    m1s_test = jnp.linspace(3.0, 100.0, 2000)
     dm1 = m1s_test[1] - m1s_test[0]
     p_powtest = BrokenPowerLaw(m1s_test, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
     p_powtest += m_smoother(m1s_test, mmin, delta_m_1)
@@ -1778,6 +1869,35 @@ def chieff_skew_gaussian(data, mu_x, sig_x, eps_x):
     log_p_right = -((x - mu_x) ** 2) / (2.0 * sig_x**2 * (1.0 - eps_x) ** 2)
 
     log_p = jnp.where(x > mu_x, log_p_right, log_p_left) - jnp.log(norm)
+
+    return jnp.where((x >= low) & (x <= high), log_p, -jnp.inf)
+
+def chip_skew_gaussian(data, mu_xp, sig_xp, eps_xp):
+    # Version from gwpop code.
+    
+    if isinstance(data, dict):
+        x = data['chi_p']
+    else:
+        x = data
+
+    tiny = 1e-12
+    eps = 1e-6
+
+    sig_xp = jnp.clip(sig_xp, tiny)
+    eps_xp = jnp.clip(eps_xp, -1.0 + eps, 1.0 - eps)
+
+    low = 0.
+    high = 1.0
+
+    norm = sig_xp * jnp.sqrt(jnp.pi / 2.0)
+    a = (high - mu_xp) / (jnp.sqrt(2.0) * sig_xp * (1.0 - eps_xp))
+    b = (mu_xp - low) / (jnp.sqrt(2.0) * sig_xp * (1.0 + eps_xp))
+    norm = norm * ((1.0 - eps_xp) * scs.erf(a) + (1.0 + eps_xp) * scs.erf(b))
+
+    log_p_left = -((x - mu_xp) ** 2) / (2.0 * sig_xp**2 * (1.0 + eps_xp) ** 2)
+    log_p_right = -((x - mu_xp) ** 2) / (2.0 * sig_xp**2 * (1.0 - eps_xp) ** 2)
+
+    log_p = jnp.where(x > mu_xp, log_p_right, log_p_left) - jnp.log(norm)
 
     return jnp.where((x >= low) & (x <= high), log_p, -jnp.inf)
 
@@ -1939,7 +2059,7 @@ def make_chieff_two_gaussians_m1dep(n_nodes=5, log_m1_min=None, log_m1_max=None,
         chieff_m1dep = make_chieff_two_gaussians_m1dep(
             n_nodes=5,
             log_m1_min=jnp.log(3),
-            log_m1_max=jnp.log(300),
+            log_m1_max=jnp.log(100),
         )
 
         mixture_parametric_models = {'chi_eff': chieff_m1dep}
@@ -1965,7 +2085,7 @@ def make_chieff_two_gaussians_m1dep(n_nodes=5, log_m1_min=None, log_m1_max=None,
     if log_m1_min is None:
         log_m1_min = np.log(3.)
     if log_m1_max is None:
-        log_m1_max = np.log(300.)
+        log_m1_max = np.log(100.)
 
     nodes = jnp.linspace(log_m1_min, log_m1_max, n_nodes)
     logit_names = [f'logit_lamb_x_{i}' for i in range(n_nodes)]
@@ -2091,6 +2211,39 @@ def chieff_two_gaussians_and_mass(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x, al
         jnp.log1p(-lamb_x) + log_g1 + log_bp2pk_1,
         jnp.log(lamb_x) + log_g2 + log_bp2pk_2
     )  
+
+def bounded_uniform(x, edge_low, edge_width):
+    edge_high = edge_low + edge_width
+    log_width_pos = jnp.log(edge_width)
+    log_uniform = jnp.where((x >= edge_low) & (x <= edge_high), -log_width_pos, -INF)
+    return log_uniform
+
+
+def chieff_gauss_unif_mass(data, mu_x1, sig_x1, edge_low, edge_width, lamb_x, alpha_1_1, alpha_2_1, mmin_1, break_mass_1, delta_m_1_1,lam_fractions_1, mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1, alpha_1_2, mmin_2, mmax_2, delta_m_2, mpp_1_2, sigpp_1_2, lam_2):
+    if isinstance(data, dict):
+        x = data['chi_eff']
+    else:
+        x = data
+
+    eps = 1e-6
+    lamb_x = jnp.clip(lamb_x, eps, 1 - eps)
+
+    # log truncated gaussian components
+    log_g1 = trunc_gaussian(x, mu_x1, sig_x1, -1, 1)
+    log_unif = bounded_uniform(x, edge_low, edge_width)
+
+    #mass parameters
+    log_bp2pk_1 = BrokenPowerlawPlusTwoPeaks_PrimaryMass(data, alpha_1_1, alpha_2_1, mmin_1, 
+                                                       break_mass_1, delta_m_1_1,lam_fractions_1, 
+                                                       mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1)
+    log_plpk = PowerlawPlusPeak_PrimaryMass(data, alpha_1_2, mmin_2, mmax_2, delta_m_2, mpp_1_2,
+                                            sigpp_1_2, lam_2)
+
+    return jnp.logaddexp(
+        jnp.log1p(-lamb_x) + log_g1 + log_bp2pk_1,
+        jnp.log(lamb_x) + log_unif + log_plpk
+    )  
+    
 
 # PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, sigpp, lam)
 def chieff_two_gaussians_and_mass_simpler(data, mu_x1, sig_x1, mu_x2, sig_x2, lamb_x, alpha_1_1, alpha_2_1, mmin_1, break_mass_1, delta_m_1_1,lam_fractions_1, mpp_1_1, sigpp_1_1, mpp_2_1, sigpp_2_1, alpha_1_2, mmin_2, mmax_2, delta_m_2, mpp_1_2, sigpp_1_2, lam_2):
@@ -2838,6 +2991,7 @@ bbh_maxima = {
 gwparameter_to_model = {
     'mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
     'log_mass_1': PowerlawPlusPeak_PrimaryMass, #(data, slope, minimum, maximum, delta_m, mpp, sigpp, lam)
+    'log_mass_2': nothing,
     'mass_ratio': SimplePowerlaw_MassRatio, #(data, slope)
     'redshift': PowerlawRedshiftPsi, #(data, lamb, maximum):
     'chi_eff': chieff_gaussian, #(data, mean, sig)
@@ -2862,6 +3016,7 @@ parameter_values = {
 gwparameter_to_hyperparameters = {
     'mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
     'log_mass_1': ['alpha', 'mmin', 'mmax', 'delta_m', 'mpp', 'sigpp', 'lam'], 
+    'log_mass_2': [],
     'mass_ratio': ['beta', 'qmin'], 
     'redshift': ['lamb', 'max_z'],
     'redshift_psi': ['lamb', 'max_z'],

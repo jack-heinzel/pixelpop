@@ -3,7 +3,7 @@ from .gwpop_models import *
 from .car import initialize_ICAR, lower_triangular_log_prob, lower_triangular_map
 from ..experimental.car import (
     DiagonalizedICARTransform, 
-    #initialize_sigma_marginalized_ICAR,
+    initialize_sigma_marginalized_ICAR,
     lower_triangular_sigma_marg_log_prob,
     lower_triangular_sigma_marg_log_prob_and_log_quad
 )
