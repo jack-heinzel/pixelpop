@@ -184,7 +184,7 @@ def create_popsummary(
     # set one dimensional rates
     skip_parameters = []
     pp_grids = pixelpop_data.bin_axes
-    print(pp_grids)
+    
     if lower_triangular:
         # first two axes are assumed lower triangular
         assert bins[0] == bins[1]
