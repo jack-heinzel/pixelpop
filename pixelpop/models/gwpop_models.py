@@ -63,6 +63,8 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
     jnp.ndarray
         Log-smoothing factor applied to the mass distribution.
     """
+    if delta == 0:
+        return jnp.where(m1s >= minimum, 0.0, -INF)
     m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
     return log_expit(-delta/m_prime - delta/(m_prime - delta))
 
