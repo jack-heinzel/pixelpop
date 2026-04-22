@@ -1,7 +1,7 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import *
-from ..models.car import lower_triangular_map, mult_outer, add_outer
+
 from .car import DiagonalizedICARTransform
 import numpyro.distributions as dist
 import jax.numpy as jnp
