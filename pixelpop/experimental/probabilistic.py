@@ -99,16 +99,7 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
                 pprint = default_priors[h]
                 print(f'Using default prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
                 hyperparameter_priors[h] = default_priors[h]
-
-    if lower_triangular:
-        lt_map = lower_triangular_map(bins[0])
-        tri_size = int(bins[0]*(bins[0]+1)/2) 
-        unique_sample_shape = (tri_size,) + tuple(bins[2:])
-        # lower triangular in first two dimensions
-    else:
-        unique_sample_shape = bins
-    normalization_dof = np.prod(unique_sample_shape)
-
+                
     def get_initial_value():
         """
         Construct initial values for the pixelized (nonparametric) merger rate density.
@@ -132,7 +123,7 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
             Dictionary containing initial 'merger_rate_density' or 'base_interpolation'.
         """
         return_dict = {'_eigenbasis_sites': jnp.array(
-            np.random.normal(loc=0, scale=1, size=unique_sample_shape))
+            np.random.normal(loc=0, scale=1, size=bins))
             }
         return return_dict
             
@@ -173,29 +164,28 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
         """
         if length_scales:
-            # TODO!!
             lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
         else:
             lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
-
-        # mask = jnp.ones(bins, dtype=bool).at[(0,) * len(unique_sample_shape)].set(False)
         
         _eigenbasis_sites = numpyro.sample(
             "_eigenbasis_sites",
-            dist.Normal(0., 1.).expand(unique_sample_shape)
+            dist.Normal(0., 1.).expand(bins)
         )
-        # _eigenbasis_site_0 = numpyro.sample("_eigenbasis_site_0", dist.ImproperUniform(dist.constraints.real, (), ()))
+        
         _eigenbasis_site_0 = 0.
         eigenbasis_sites = _eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0)
         
+        transformed = DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)(
+                eigenbasis_sites
+            )
+
         if lower_triangular:
-            eigenbasis_sites = lower_triangular_map(eigenbasis_sites)
+            transformed = 0.5*(transformed + transformed.swap_axes(0,1)) # symmetrize, equivalent to sampling from symmetrized space
 
         merger_rate_density = numpyro.deterministic(
             'merger_rate_density',
-            DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)(
-                eigenbasis_sites
-            )
+            transformed
         )
         if not lower_triangular:
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
