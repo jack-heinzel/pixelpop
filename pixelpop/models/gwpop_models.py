@@ -964,6 +964,10 @@ def iid_normal_spin(data, mu, var):
         Log-probability density of the truncated normal distribution.
     """
     sig = jnp.sqrt(var)
+    if 'a' in data and ('a_1' not in data and 'a_2' not in data):
+        # just return the marginal, this is used for saving marginals
+        return trunc_gaussian(data['a'], mu, sig, 0, 1)
+    
     return trunc_gaussian(data['a_1'], mu, sig, 0, 1) + trunc_gaussian(data['a_2'], mu, sig, 0, 1)
 
 def iid_normal_spin_fms(data, mu, var, NS_amax=0.4, NS_mmax=2.5):
@@ -1036,14 +1040,25 @@ def tilt_model(data, mu, sig, zeta):
     jnp.ndarray
         Log-probabilities of the tilt distribution.
     """
-    pfield1 = trunc_gaussian(data['cos_tilt_1'], mu, sig, -1, 1)
-    pfield2 = trunc_gaussian(data['cos_tilt_2'], mu, sig, -1, 1)
-
-    pisotropic = jnp.log(jnp.ones_like(data['cos_tilt_1']) / 4)
-    pfield = pfield1 + pfield2
-
+    
     ln_zeta = jnp.log(zeta)
     ln_1mzeta = jnp.log(1 - zeta)
+
+    if ('cos_tilt' in data or 't' in data) and ('cos_tilt_1' not in data and 'cos_tilt_2' not in data):
+        # just return the marginal, this is used for saving marginals in popsummary
+        if 't' in data:
+            costilt = data['t']
+        else:
+            costilt = data['cos_tilt']
+        pfield = trunc_gaussian(costilt, mu, sig, -1, 1)
+        pisotropic = jnp.log(jnp.ones_like(costilt) / 2)
+        
+    else:
+        pfield1 = trunc_gaussian(data['cos_tilt_1'], mu, sig, -1, 1)
+        pfield2 = trunc_gaussian(data['cos_tilt_2'], mu, sig, -1, 1)
+
+        pisotropic = jnp.log(jnp.ones_like(data['cos_tilt_1']) / 4)
+        pfield = pfield1 + pfield2
 
     return jnp.logaddexp(ln_zeta + pfield, ln_1mzeta + pisotropic)
 
@@ -1230,8 +1245,10 @@ bbh_minima = {
     'mass_2': 3.,
     'mass_ratio': 0.,
     'log_mass_2': jnp.log(3),
+    'cos_tilt': -1.,
     'cos_tilt_1': -1.,
     'cos_tilt_2': -1.,
+    'a': 0.,
     'a_1': 0.,
     'a_2': 0.,
     'chi_eff': -1.,
@@ -1248,8 +1265,10 @@ bbh_maxima = {
     'mass_2': 200.,
     'mass_ratio': 1.,
     'log_mass_2': jnp.log(200),
+    'cos_tilt': 1.,
     'cos_tilt_1': 1.,
     'cos_tilt_2': 1.,
+    'a': 1.,
     'a_1': 1.,
     'a_2': 1.,
     'chi_eff': 1.,

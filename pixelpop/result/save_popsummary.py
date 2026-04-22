@@ -302,6 +302,9 @@ def create_popsummary(
             
         else:
             try:
+                # for joint models where the marginal is known, e.g., IID spins which are treated as a joint distribution
+                # or spin tilts where the marginal is the same for cos_tilt_1 and cos_tilt_2, the parametric model should
+                # be constructed so that if it is called on a dataset without trailing _1 or _2, it returns the marginal
                 pos = jnp.linspace(minima[par], maxima[par], 1000)
                 try:
                     rate_func = jit(parametric_models[par])

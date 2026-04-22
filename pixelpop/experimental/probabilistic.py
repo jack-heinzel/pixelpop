@@ -1,7 +1,6 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import *
-
 from .car import DiagonalizedICARTransform
 import numpyro.distributions as dist
 import jax.numpy as jnp
@@ -51,6 +50,8 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
     dimension = len(parameters)
     if np.ndim(bins) == 0:
         bins = [bins] * dimension
+    elif len(bins) == 1 and dimension != 1:
+        bins = [bins[0]] * dimension
     adj_matrices = [create_CAR_coupling_matrix(bins[ii], 1, isVisible=False) for ii in range(dimension)]
     
     if 'redshift' in parameters:
@@ -181,7 +182,7 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
             )
 
         if lower_triangular:
-            transformed = 0.5*(transformed + transformed.swap_axes(0,1)) # symmetrize, equivalent to sampling from symmetrized space
+            transformed = 0.5*(transformed + transformed.swapaxes(0,1)) # symmetrize, equivalent to sampling from symmetrized space
 
         merger_rate_density = numpyro.deterministic(
             'merger_rate_density',
