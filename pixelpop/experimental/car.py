@@ -280,12 +280,37 @@ class StudentICAR(Distribution):
         return d
 
 class DiagonalizedICARTransform:
-    '''
-    TODO: can we use the numpyro syntax more natively for this transform?
+    """
+    A transformation class for Intrinsic Conditional Autoregressive (ICAR) priors.
+    
+    This class leverages the Cartesian product structure of the pixel grid to 
+    decompose the high-dimensional precision matrix into a Kronecker sum of 
+    1D Graph Laplacians. This allows for efficient sampling and log-probability 
+    evaluation by working in the diagonalized eigenbasis.
 
-    Relies on structure of kronecker sum to rapidly compute eigenbasis for the 
-    full adjacency structure, then sample in the diagonalized eigenbasis
-    '''
+    Parameters
+    ----------
+    log_sigmas : jnp.ndarray
+        Logarithm of the coupling/scale parameters $\sigma_i$ for each dimension.
+        If a scalar is provided, it is broadcast to all dimensions.
+    single_dimension_adj_matrices : list of jnp.ndarray or sparse matrix
+        A list of adjacency matrices $A_i$ defining the connectivity along each 
+        axis of the N-dimensional grid.
+    is_sparse : bool, optional
+        Whether the input adjacency matrices are in a sparse format. 
+        Defaults to False.
+
+    Attributes
+    ----------
+    dimension : int
+        The number of dimensions in the grid (e.g., 2 for an image).
+    eigenvector_list : list of jnp.ndarray
+        The eigenvectors for each 1D Laplacian, used to transform between 
+        the pixel basis and the eigenbasis.
+    multiD_eigenvalues : jnp.ndarray
+        The N-dimensional tensor of summed eigenvalues $\lambda = \sum \sigma_i^{-2} \lambda^{(i)}$.
+        The zero-frequency (DC) mode is regularized to prevent division by zero.
+    """
     def __init__(
             self, 
             log_sigmas,
@@ -329,13 +354,27 @@ class DiagonalizedICARTransform:
         # to fix the scale, otherwise divide by zero bc improper
 
     def __call__(self, eigenbasis):
-        '''
-        slick way to calculate the sum we want:
+        """
+        Transforms coordinates from the diagonalized eigenbasis to the pixel rate basis.
+        
+        Calculates the field $\phi$ by scaling the eigen-coefficients by the inverse 
+        square root of the eigenvalues and performing a multi-dimensional 
+        basis transformation:
+        
+        $$\phi = \sum_{i,j,k...} \frac{\alpha_{i,j,k...}}{\sqrt{\Lambda_{i,j,k...}}} (v_i \otimes v_j \otimes v_k ...)$$
 
-        \sum_{ijk...} \alpha[i,j,k,...] v_1[i] \otimes v_2[j] \otimes v_3[k] \otimes ...
+        Parameters
+        ----------
+        eigenbasis : jnp.ndarray
+            A tensor of coefficients (usually standard normal samples) in the 
+            spectral domain.
 
-        where v_1, v_2, ... are the eigenvectors 
-        '''
+        Returns
+        -------
+        jnp.ndarray
+            The resulting ICAR-distributed field (e.g., $\ln \mathcal{R}$) 
+            in the original pixel space.
+        """
 
         res = eigenbasis * self.multiD_eigenvalues ** (-1/2) 
         for v in self.eigenvector_list:
@@ -344,9 +383,24 @@ class DiagonalizedICARTransform:
         return res
 
     def log_prob(self, eigenbasis):
-        '''
-        log prob in transformed Cartesian basis.
-        '''
+        """
+        Calculates the log-probability density of the field in the transformed eigenbasis.
+        
+        The density is computed by treating the eigen-coefficients as independent 
+        standard normals, while accounting for the log-determinant of the 
+        ICAR precision matrix. The DC mode (index 0 for all dimensions) is 
+        pinned to zero to handle the impropriety of the ICAR prior.
+
+        Parameters
+        ----------
+        eigenbasis : jnp.ndarray or np.ndarray
+            The coefficients in the spectral domain.
+
+        Returns
+        -------
+        jnp.ndarray
+            The log-probability density $\ln p(\alpha | \sigma)$.
+        """
         if isinstance(eigenbasis, jnp.ndarray):
             eigenbasis = eigenbasis.at[(0,)*jnp.ndim(eigenbasis)].set(0.)
         elif isinstance(eigenbasis, np.ndarray):

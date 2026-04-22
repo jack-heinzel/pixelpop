@@ -24,42 +24,7 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
     of a gravitational-wave population model, returning a NumPyro-compatible model
     along with suitable initial values for MCMC warmup.
 
-    Parameters
-    ----------
-    posteriors : dict
-        Posterior samples keyed by parameter name. Each entry is shaped
-        (Nobs, Nsample). Must also include 'ln_prior'.
-    injections : dict
-        Injection data keyed by parameter name. Each entry is shaped (Nfound).
-        Must include 'ln_prior', 'total_generated' (int/float), and
-        'analysis_time' (float).
-    parameters : list of str
-        Parameters for the nonparametric pixelized model (e.g., ["mass_1", "chi_eff"]).
-    other_parameters : list of str
-        Additional parameters modeled with parametric forms.
-    bins : int or list of int
-        Number of bins along each axis in the pixelized model.
-    length_scales : bool, optional TODO!!!!
-        If True, use independent CAR coupling parameters per axis.
-    minima : dict, optional
-        Mapping of parameter → minimum value. Defaults to typical BBH values.
-    maxima : dict, optional
-        Mapping of parameter → maximum value. Defaults to typical BBH values.
-    parametric_models : dict, optional
-        Mapping of parameter → callable defining parametric model.
-    hyperparameters : dict, optional
-        Mapping of parameter → list of hyperparameter names for its parametric model.
-    priors : dict, optional
-        Mapping of hyperparameter → (args, distribution) prior specification.
-    random_initialization : bool, optional
-        If True, initialize ICAR model with random noise instead of plausible values.
-    lower_triangular : bool, optional
-        If True, enforce p1 > p2 triangular support (used for joint m1–m2 models).
-    constraint_funcs : list of callables, optional
-        Extra constraint functions applied to hyperparameters.
-    log : {"default", "debug"}, optional
-        Logging verbosity.
-        
+    
     Returns
     -------
     probabilistic_model : callable
