@@ -313,8 +313,8 @@ def create_popsummary(
                 required_keys = parameter_to_hyperparameters[par]
                 rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][jj] for k in required_keys]) for jj in tqdm(range(Nsamples))])
                 rates += lrs[:,None]
-            except:
-                print(f'Could not save {par} rates on grids, skipping...')
+            except Exception as e::
+                print(f'Could not save {par} rates on grids with exception\n{e}\n, skipping...')
                 continue
             
         result.set_rates_on_grids(
