@@ -1486,6 +1486,7 @@ map_to_gwpop_parameters = {
     'spin': ['a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2'],
     'a': ['a_1', 'a_2'],
     't': ['cos_tilt_1', 'cos_tilt_2'],
+    'cos_tilt': ['cos_tilt_1', 'cos_tilt_2'],
     'log_mass_1_window': ['log_mass_1'],
     'mass_ratio_window': ['mass_ratio'],
     'log_mass_2_window': ['log_mass_2'],
