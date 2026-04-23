@@ -285,8 +285,8 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
             warnings.warn(f"{event} population reweighted effective sample size is {neff}")
 
         reweighted_event = np.array([
-            pixelpop_data.posteriors[gw_parameter][ii,event_iloc[:,ii]] for gw_parameter in gw_parameters
-        ]).T        
+            pixelpop_data.posteriors[gw_parameter][ii,event_iloc[:,ii]] for gw_parameter in pixelpop_data.posteriors.keys()
+        ]).T
         reweighted_events.append(reweighted_event[None,...]) # 1 sample per hypersample to avoid bloat
     
     reweighted_events = np.array(reweighted_events) 
@@ -303,7 +303,7 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
         print(f"injection set population reweighted effective sample size is {inj_neff}")
     
     reweighted_injections = np.array([
-        pixelpop_data.injections[gw_parameter][inj_iloc] for gw_parameter in gw_parameters
+        pixelpop_data.injections[gw_parameter][inj_iloc] for gw_parameter in pixelpop_data.posteriors.keys()
     ]).swapaxes(0,-1)
     
     popsummary_result.set_reweighted_injections(
