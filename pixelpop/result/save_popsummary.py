@@ -312,8 +312,11 @@ def create_popsummary(
                     rate_func = parametric_models[par]
                 required_keys = parameter_to_hyperparameters[par]
                 rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][jj] for k in required_keys]) for jj in tqdm(range(Nsamples))])
-                rates += lrs[:,None]
-            except Exception as e::
+                if 'redshift' not in pixelpop_parameters:
+                    rates += lrs[:,None]
+                    # if redshift is one of the pp parameters, the log rate is a naive average over redshift which does 
+                    # not account for cosmo term. In this case, we just save the probability density instead.
+            except Exception as e:
                 print(f'Could not save {par} rates on grids with exception\n{e}\n, skipping...')
                 continue
             
