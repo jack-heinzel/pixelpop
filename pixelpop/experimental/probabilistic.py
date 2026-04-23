@@ -183,7 +183,6 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
             eb, ib,
             posteriors['ln_dVTc']-posteriors['log_prior'],
             injections['ln_dVTc']-injections['log_prior'],
-            skip=pixelpop_data.skip_nonparametric
             )
         event_weights, inj_weights = parametric_prior(
             posteriors, 
