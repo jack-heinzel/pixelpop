@@ -1107,14 +1107,25 @@ def tilt_iid(data, mu, sig, zeta):
     jnp.ndarray
         Log-probabilities of the tilt distribution.
     """
+    ln_zeta = jnp.log(zeta) 
+    ln_1mzeta = jnp.log(1 - zeta)
+
+    if ('cos_tilt' in data or 't' in data) and ('cos_tilt_1' not in data and 'cos_tilt_2' not in data):
+        # just return the marginal, this is used for saving marginals in popsummary
+        if 't' in data:
+            costilt = data['t']
+        else:
+            costilt = data['cos_tilt']
+        pfield = trunc_gaussian(costilt, mu, sig, -1, 1)
+        pisotropic = jnp.log(jnp.ones_like(costilt) / 2)
+
+        return jnp.logaddexp(ln_zeta + pfield, ln_1mzeta + pisotropic)
+    
     pfield1 = trunc_gaussian(data['cos_tilt_1'], mu, sig, -1, 1)
     pfield2 = trunc_gaussian(data['cos_tilt_2'], mu, sig, -1, 1)
 
     pisotropic = jnp.log(jnp.ones_like(data['cos_tilt_1']) / 2)
     
-    ln_zeta = jnp.log(zeta)
-    ln_1mzeta = jnp.log(1 - zeta)
-
     p1 = jnp.logaddexp(ln_zeta + pfield1, ln_1mzeta + pisotropic)
     p2 = jnp.logaddexp(ln_zeta + pfield2, ln_1mzeta + pisotropic)
     return p1 + p2
