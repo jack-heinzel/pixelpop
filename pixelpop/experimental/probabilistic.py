@@ -32,75 +32,11 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         Suggested initial values for MCMC warmup.
     """
 
-    posteriors = pixelpop_data.posteriors
-    injections = pixelpop_data.injections
     parameters = pixelpop_data.pixelpop_parameters
-    other_parameters = pixelpop_data.other_parameters
     bins = pixelpop_data.bins
-    length_scales = pixelpop_data.length_scales
-    minima = pixelpop_data.minima
-    maxima = pixelpop_data.maxima
-    parametric_models = pixelpop_data.parametric_models
-    hyperparameters = pixelpop_data.parameter_to_hyperparameters
-    priors = pixelpop_data.priors
-    lower_triangular = pixelpop_data.lower_triangular
-    constraint_funcs = pixelpop_data.constraint_funcs
-    coupling_prior = pixelpop_data.coupling_prior
+    dimension = pixelpop_data.dimension
+    adj_matrices = pixelpop_data.adj_matrices
 
-    dimension = len(parameters)
-    if np.ndim(bins) == 0:
-        bins = [bins] * dimension
-    elif len(bins) == 1 and dimension != 1:
-        bins = [bins[0]] * dimension
-    adj_matrices = [create_CAR_coupling_matrix(bins[ii], 1, isVisible=False) for ii in range(dimension)]
-    
-    if 'redshift' in parameters:
-        from astropy.cosmology import Planck15
-        from astropy import units
-        max_z = np.maximum(np.max(injections['redshift']), np.max(posteriors['redshift']))
-        zs = np.linspace(1e-6, max_z, 10000)
-        dVs = Planck15.differential_comoving_volume(zs) * 4 * np.pi * units.sr
-        ln_dVTc = np.log(dVs.to(units.Gpc**3).value) - np.log(1 + zs)
-        event_z = posteriors['redshift']
-        inj_z = injections['redshift']
-        event_ln_dVTc = jnp.array(np.interp(event_z, zs, ln_dVTc))
-        inj_ln_dVTc = jnp.array(np.interp(inj_z, zs, ln_dVTc))
-    else:
-        event_ln_dVTc = jnp.zeros_like(posteriors['log_prior'])
-        inj_ln_dVTc = jnp.zeros_like(injections['log_prior'])
-        
-    event_bins, inj_bins, bin_axes, logdV, eprior, iprior = place_in_bins(parameters, posteriors, injections, bins=bins, minima=minima, maxima=maxima)
-    
-    posteriors['log_prior'] += eprior
-    injections['log_prior'] += iprior
-
-    # update models
-    parameter_to_hyperparameters = gwparameter_to_hyperparameters.copy()
-    parameter_to_hyperparameters.update(hyperparameters)
-
-    parameter_to_gwpop_model = {}
-    for p in other_parameters:
-        if p in parametric_models:
-            print(f'Updating {p} model from {gwparameter_to_model[p].__name__} to {parametric_models[p].__name__}')
-            print(f'\t ...with hyperparameters {parameter_to_hyperparameters[p]}')
-            parameter_to_gwpop_model[p] = parametric_models[p]
-        else:
-            print(f'Using default {p} model {gwparameter_to_model[p].__name__}')
-            parameter_to_gwpop_model[p] = gwparameter_to_model[p]
-
-    # default priors
-    hyperparameter_priors = {}
-    for p in other_parameters:
-        for h in parameter_to_hyperparameters[p]:
-            if h in priors:    
-                pprint = priors[h]
-                print(f'Using custom prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
-                hyperparameter_priors[h] = priors[h]
-            else:
-                pprint = default_priors[h]
-                print(f'Using default prior {h} = {pprint[1].__name__}({str(pprint[0])[1:-1]}) in {p} model')
-                hyperparameter_priors[h] = default_priors[h]
-                
     def get_initial_value():
         """
         Construct initial values for the pixelized (nonparametric) merger rate density.
@@ -137,20 +73,20 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         Draws hyperparameters from their priors
         """
         sample = {}
-        for key in hyperparameter_priors:
-            args, distribution = hyperparameter_priors[key]
+        for key in pixelpop_data.priors:
+            args, distribution = pixelpop_data.priors[key]
             if distribution.__name__ == 'Delta':
                 sample[key] = args[0]
             else:
                 sample[key] = numpyro.sample(key, distribution(*args))        
-        for constraint_func in constraint_funcs:
+        for constraint_func in pixelpop_data.constraint_funcs:
             numpyro.factor(constraint_func.__name__, constraint_func(sample))
             if log == 'debug':
                 jaxprint('[DEBUG] constraint functions:', constraint_func.__name__, constraint_func(sample))
 
-        for p in other_parameters:
-            event_weights += parameter_to_gwpop_model[p](data, *[sample[h] for h in parameter_to_hyperparameters[p]])
-            inj_weights += parameter_to_gwpop_model[p](injections, *[sample[h] for h in parameter_to_hyperparameters[p]])
+        for p in pixelpop_data.other_parameters:
+            event_weights += pixelpop_data.parametric_models[p](data, *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]])
+            inj_weights += pixelpop_data.parametric_models[p](injections, *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]])
             if log == 'debug':
                 jaxprint('[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(event_weights), iw=LSE(inj_weights))
                 if not jnp.isfinite(LSE(event_weights)):
@@ -160,14 +96,15 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
                     for parameter in map_to_gwpop_parameters[p]:
                         jaxprint('[DEBUG] inf injection weights at {p}={d}', p=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
         return event_weights, inj_weights
+    
     def nonparametric_prior(event_bins, inj_bins, event_weights, inj_weights):
         """
         Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
         """
-        if length_scales:
-            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(dimension,))
+        if pixelpop_data.length_scales:
+            lsigma = numpyro.sample('lnsigma', pixelpop_data.coupling_prior[1](*pixelpop_data.coupling_prior[0]), sample_shape=(dimension,))
         else:
-            lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
+            lsigma = numpyro.sample('lnsigma', pixelpop_data.coupling_prior[1](*pixelpop_data.coupling_prior[0]), sample_shape=()) 
         
         _eigenbasis_sites = numpyro.sample(
             "_eigenbasis_sites",
@@ -181,21 +118,29 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
                 eigenbasis_sites
             )
 
-        if lower_triangular:
+        if pixelpop_data.lower_triangular:
             transformed = 0.5*(transformed + transformed.swapaxes(0,1)) # symmetrize, equivalent to sampling from symmetrized space
 
         merger_rate_density = numpyro.deterministic(
             'merger_rate_density',
             transformed
         )
-        if not lower_triangular:
-            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(logdV))
+        if not pixelpop_data.lower_triangular:
+            normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(parameters):
                 sum_axes = tuple(np.arange(dimension)[np.r_[0:ii,ii+1:dimension]])
-                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(logdV[:ii]) + jnp.sum(logdV[ii+1:]))
+                numpyro.deterministic(f'log_marginal_{p}', LSE(merger_rate_density-normalization, axis=sum_axes) + jnp.sum(pixelpop_data.logdV[:ii]) + jnp.sum(pixelpop_data.logdV[ii+1:]))
 
-        event_weights += merger_rate_density[event_bins] # (69,3194)
-        inj_weights += merger_rate_density[inj_bins]
+        if pixelpop_data.IID:
+            event_weights += merger_rate_density[event_bins[0]]
+            inj_weights += merger_rate_density[inj_bins[0]]
+
+            event_weights += merger_rate_density[event_bins[1]] - normalization
+            inj_weights += merger_rate_density[inj_bins[1]] - normalization
+        else:
+            event_weights += merger_rate_density[event_bins]
+            inj_weights += merger_rate_density[inj_bins]
+
         if log == 'debug':
             jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
         return event_weights, inj_weights
@@ -228,8 +173,24 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         None
             (Factors likelihood into NumPyro’s computation graph.)
         """
-        event_weights, inj_weights = nonparametric_prior(event_bins, inj_bins, event_ln_dVTc-posteriors['log_prior'], inj_ln_dVTc-injections['log_prior'])
-        event_weights, inj_weights = parametric_prior(posteriors, injections, event_weights, inj_weights)
+        if pixelpop_data.IID:
+            eb = [pixelpop_data.event_bins_1, pixelpop_data.event_bins_2]
+            ib = [pixelpop_data.inj_bins_1, pixelpop_data.inj_bins_2]
+        else:
+            eb, ib = pixelpop_data.event_bins, pixelpop_data.inj_bins
+
+        event_weights, inj_weights = nonparametric_prior(
+            eb, ib,
+            posteriors['ln_dVTc']-posteriors['log_prior'],
+            injections['ln_dVTc']-injections['log_prior'],
+            skip=pixelpop_data.skip_nonparametric
+            )
+        event_weights, inj_weights = parametric_prior(
+            posteriors, 
+            injections, 
+            event_weights, 
+            inj_weights
+            )
 
         likelihood_dict = \
             rate_likelihood(
