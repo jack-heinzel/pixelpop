@@ -88,7 +88,12 @@ TEST_MODELS = {
     "powerlaw": (
         powerlaw,
         comp_powerlaw,
-        {"data": np.linspace(5, 50, 100), "slope": -2.35, "minimum": 2.0, "maximum": 100.0}
+        {"data": np.linspace(2, 150, 100), "slope": -2.35, "minimum": 3.0, "maximum": 100.0}
+    ),
+    "powerlaw_close_to_1": (
+        powerlaw,
+        comp_powerlaw,
+        {"data": np.linspace(2, 150, 100), "slope": 1e-6 - 1, "minimum": 3.0, "maximum": 100.0}
     ),
     "beta_spin": (
         beta_spin,

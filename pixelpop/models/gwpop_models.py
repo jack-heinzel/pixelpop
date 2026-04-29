@@ -168,19 +168,21 @@ def PowerlawPlusPeak_PrimaryMass(data, alpha, minimum, maximum, delta_m, mpp, si
     else:
         m1 = data
         isLogMass = False
-    power_law = powerlaw(m1, slope, minimum, maximum)
-    smoothed_pl = power_law + m_smoother(m1, minimum, delta_m)
-    peak = gaussian(m1, mpp, sigpp)
-    pm1 = jnp.logaddexp(smoothed_pl + jnp.log(1-lam), peak + jnp.log(lam))
-    
+
+    def _nonorm_plp(m):
+        power_law = powerlaw(m, slope, minimum, maximum)
+        peak = gaussian(m, mpp, sigpp)
+        p = jnp.logaddexp(power_law + jnp.log(1-lam), peak + jnp.log(lam)) + m_smoother(m, minimum, delta_m)
+        return p
+
     m1s_test = jnp.linspace(2.0, 200., 2000)
     dm1 = m1s_test[1] - m1s_test[0]
-    power_law_test = powerlaw(m1s_test, slope, minimum, maximum)
-    smoothed_pl_test = power_law_test + m_smoother(m1s_test, minimum, delta_m)
-    peak_test = gaussian(m1s_test, mpp, sigpp)
-    smoothed_pl_test = jnp.logaddexp(smoothed_pl_test + jnp.log(1-lam), peak_test + jnp.log(lam))
+
+    pm1 = _nonorm_plp(m1)    
+    plp_test = _nonorm_plp(m1s_test)
     
-    pm1 -= scs.logsumexp(smoothed_pl_test) + jnp.log(dm1) # simple Riemann rule
+    pm1 -= scs.logsumexp(plp_test) + jnp.log(dm1) # simple Riemann rule
+
     if isLogMass: # include jacobian
         pm1 = pm1 + data['log_mass_1']
     return pm1
@@ -416,40 +418,30 @@ def BrokenPowerlawPlusTwoPeaks_PrimaryMass(
         m1 = data
     lam_0, lam_1, lam_2 = lam_fractions
     break_fraction = (break_mass  - mmin) / (mmax - mmin)
-    p_pow = BrokenPowerLaw(m1, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
 
-    p_norm1 = trunc_gaussian(
-        m1, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
-    )
-    p_norm2 = trunc_gaussian(
-        m1, mpp_2, sigpp_2, mmin, gaussian_mass_maximum
-    )
-    pm1 = scs.logsumexp(jnp.array([
-        jnp.log(lam_0) + p_pow, 
-        jnp.log(lam_1) + p_norm1, 
-        jnp.log(lam_2) + p_norm2
-        ]), axis=0)
+    def _unnorm_bpl2p(m):
+        p_pow = BrokenPowerLaw(m, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
+
+        p_norm1 = trunc_gaussian(
+            m, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
+        )
+        p_norm2 = trunc_gaussian(
+            m, mpp_2, sigpp_2, mmin, gaussian_mass_maximum
+        )
+        p = scs.logsumexp(jnp.array([
+            jnp.log(lam_0) + p_pow, 
+            jnp.log(lam_1) + p_norm1, 
+            jnp.log(lam_2) + p_norm2
+            ]), axis=0)
+        
+        p += m_smoother(m, mmin, delta_m_1)
+        return p
     
-    pm1 += m_smoother(m1, mmin, delta_m_1)
-    
-    # unnormalized, unsmoothed
     m1s_test = jnp.linspace(3.0, 300.0, 2000)
     dm1 = m1s_test[1] - m1s_test[0]
-    p_powtest = BrokenPowerLaw(m1s_test, -alpha_1, -alpha_2, mmin, mmax, break_fraction)
 
-    p_norm1test = trunc_gaussian(
-        m1s_test, mpp_1, sigpp_1, mmin, gaussian_mass_maximum
-    )
-    p_norm2test = trunc_gaussian(
-        m1s_test, mpp_2, sigpp_2, mmin, gaussian_mass_maximum
-    )
-    pm1test = scs.logsumexp(jnp.array([
-        jnp.log(lam_0) + p_powtest, 
-        jnp.log(lam_1) + p_norm1test, 
-        jnp.log(lam_2) + p_norm2test
-        ]), axis=0)
-
-    pm1test += m_smoother(m1s_test, mmin, delta_m_1) # do this at the end to be consistent with gwpop
+    pm1 = _unnorm_bpl2p(m1)
+    pm1test = _unnorm_bpl2p(m1s_test)
 
     pm1 -= scs.logsumexp(pm1test) + jnp.log(dm1) # simple Riemann rule. 
     if isLogMass: # include jacobian
