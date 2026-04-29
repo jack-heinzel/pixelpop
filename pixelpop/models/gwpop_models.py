@@ -701,6 +701,29 @@ def PowerlawPlusPeak_MassRatio(data, slope, minimum, delta_m):
     """
     Mass-ratio distribution: smoothed power law with minimum mass cut.
 
+    The normalization is performed in two steps to maintain computational efficiency:
+
+    1. Numerical Integration: Computed on a static fiducial grid with $q_{\min} = 0.02$.
+    2. Rescaling: Since the power law in the data uses $q_{\min} = m_{\min} / m_1$, we 
+    rescale the normalization from the fiducial grid to the physical value.
+
+    We define the target PDF as:
+    $$p(q) = \frac{q^{\beta} S(m_1 q \mid m_{\min}, \delta_m)}{\mathcal{I}}$$
+
+    Where the unnormalized density in the code is:
+    $$p_{\text{unnorm}} = \text{PL}(q \mid \beta, q_{\min} = \frac{m_{\min}}{m_1}) \times S(m_1 q \mid m_{\min}, \delta_m)$$
+    $$p_{\text{unnorm}} = \frac{q^{\beta} S(m_1 q \mid m_{\min}, \delta_m)}{Z(m_{\min}/m_1)}$$
+
+    The true normalization $\mathcal{I}$ is related to the numerical integral over the 
+    fiducial grid ($\mathcal{I}_{\text{num}}$) by:
+    $$\mathcal{I} = Z(0.02) \times \int_{0.02}^{1} \text{PL}(q \mid \beta, 0.02) S(m_1 q \mid m_{\min}, \delta_m) dq$$
+    $$\mathcal{I} = Z(0.02) \times \mathcal{I}_{\text{num}}$$
+
+    Therefore, the final normalized probability is:
+    $$p(q) = \frac{p_{\text{unnorm}} \times Z(m_{\min}/m_1)}{Z(0.02) \times \mathcal{I}_{\text{num}}}$$
+
+    where $Z(x) = \frac{1 - x^{\beta+1}}{\beta+1}$.
+    
     Parameters
     ----------
     data : dict
