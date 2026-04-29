@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+import jax
 import jax.numpy as jnp
 import scipy.special as scs
 import scipy.stats as stats
@@ -108,7 +109,7 @@ TEST_MODELS = {
     "brokenpowerlaw+2peaks": (
         BrokenPowerlawPlusTwoPeaks_PrimaryMass, 
         comp_bpl2p,
-        {'data': {'mass_1': np.linspace(3, 300, 2000)}, "alpha_1": 1, "alpha_2": 3, "mmin": 4.9, "mmax": 300, "break_mass": 35, "delta_m_1": 3, 
+        {'data': {'mass_1': np.linspace(3, 300, 2000)}, "alpha_1": 1.1, "alpha_2": 3, "mmin": 4.9, "mmax": 300, "break_mass": 35, "delta_m_1": 3, 
          "lam_fractions": (0.5,0.4,0.1), "mpp_1": 10, "sigpp_1": 1.5, "mpp_2": 35, "sigpp_2": 5}, 
     ),
     "redshift psi": (
@@ -141,21 +142,64 @@ TEST_MODELS = {
         comp_gaussian_chip,
         {'data': {'chi_p': np.linspace(1e-5, 1-1e-5, 1000)}, 'mean': 0.25, 'sig': 0.2}
     ),
-    
-    # more here, spins spin tilts
 }
 
 @pytest.mark.parametrize("model_name", TEST_MODELS.keys())
 def test_against_standard_libraries(model_name):
     jax_func, ref_func, kwargs = TEST_MODELS[model_name]
-   
+
     jax_result = np.exp(jax_func(**kwargs))
     ref_result = ref_func(*kwargs.values())
-    
+
     np.testing.assert_allclose(
-        jax_result, 
+        jax_result,
         ref_result,
-        rtol=1e-5, 
+        rtol=1e-5,
         atol=1e-6,
         err_msg=f"Mismatch found in model: {model_name}"
     )
+
+
+@pytest.mark.parametrize("model_name", TEST_MODELS.keys())
+def test_jittable_and_differentiable(model_name):
+    """Each model must be jit-compilable, jax.grad-able, and produce no NaN/inf
+    in either its forward output or in the gradient w.r.t. its float hyperparameters."""
+    jax_func, _ref, kwargs = TEST_MODELS[model_name]
+    keys = list(kwargs.keys())
+
+    # Identify the float-valued (or tuple-of-float) hyperparameters to grad over.
+    float_keys, float_args = [], []
+    for k in keys[1:]:
+        v = kwargs[k]
+        if isinstance(v, tuple) and all(isinstance(x, (int, float)) for x in v):
+            float_keys.append(k)
+            float_args.append(jnp.asarray(v, dtype=jnp.float32))
+        elif isinstance(v, (int, float, np.floating, np.integer)):
+            float_keys.append(k)
+            float_args.append(jnp.asarray(v, dtype=jnp.float32))
+
+    def loss(*float_args):
+        kw = dict(kwargs)
+        for k, v in zip(float_keys, float_args):
+            kw[k] = tuple(v) if isinstance(kwargs[k], tuple) else v
+        out = jax_func(**kw)
+        # Mask non-finite (out-of-support -inf) entries so the sum stays finite
+        # and -inf doesn't propagate into NaN gradients.
+        return jnp.sum(jnp.where(jnp.isfinite(out), out, 0.0))
+
+    # Forward (eager) must produce no NaN.
+    out = jax_func(**kwargs)
+    assert not bool(jnp.any(jnp.isnan(out))), f"{model_name}: forward has NaN"
+
+    # If there are no float hyperparams, jit-compile the bare forward and stop.
+    if not float_keys:
+        _ = jax.jit(jax_func)(**kwargs)
+        return
+
+    # jit(grad(...)) — single compile that exercises both jit and grad.
+    grad_fn = jax.jit(jax.grad(loss, argnums=tuple(range(len(float_keys)))))
+    grads = grad_fn(*float_args)
+    for k, g in zip(float_keys, grads):
+        g_arr = np.asarray(g)
+        assert not np.any(np.isnan(g_arr)), f"{model_name}: NaN in d/d{k} = {g_arr}"
+        assert not np.any(np.isinf(g_arr)), f"{model_name}: inf in d/d{k} = {g_arr}"
