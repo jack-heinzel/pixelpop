@@ -2,7 +2,7 @@ import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import * 
 from ..models.car import lower_triangular_map, mult_outer, add_outer
-from .car import (DiagonalizedICARTransform, initialize_ICAR_normalized, initialize_sigma_marginalized_ICAR)
+from .car import (DiagonalizedICARTransform, initialize_ICAR_normalized, initialize_sigma_marginalized_ICAR, initialize_ICAR_normalized_lower_triangular)
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
@@ -26,7 +26,7 @@ def init_interpolant_from_counts(pixelpop_data, alpha=1.0):
 
     # Convert multi-index -> linear index, then FLATTEN to 1D
     lin = jnp.ravel_multi_index(event_bins, dims=bins)
-    lin = jnp.asarray(lin).reshape(-1)         
+    lin = jnp.asarray(lin).reshape(-1)
     lin = lin.astype(jnp.int32)
 
     # bincount needs 1D
@@ -36,6 +36,39 @@ def init_interpolant_from_counts(pixelpop_data, alpha=1.0):
     logp = jnp.log(counts + alpha)
 
     # Normalize to a log-DENSITY: enforce LSE(logp) = -log_dx
+    init = logp - LSE(logp) - log_dx
+    return init
+
+
+def init_interpolant_from_counts_lt(pixelpop_data, alpha=1.0):
+    """
+    Build a data-informed init for the lower-triangular normalized PixelPop.
+
+    Counts are accumulated on the full bins-by-bins grid, folded across the
+    diagonal of the first two dimensions (so a pair contributes to the same
+    LT cell regardless of ordering), then the unique LT entries are
+    extracted and renormalized so LSE(init_lt) + sum(logdV) = 0.
+    """
+    bins = tuple(int(b) for b in pixelpop_data.bins)
+    bins_first = bins[0]
+    n_total = int(np.prod(bins))
+    log_dx = jnp.sum(pixelpop_data.logdV)
+
+    event_bins = pixelpop_data.event_bins
+    lin = jnp.ravel_multi_index(event_bins, dims=bins)
+    lin = jnp.asarray(lin).reshape(-1).astype(jnp.int32)
+    counts = jnp.bincount(lin, length=n_total).reshape(bins)
+
+    # Fold counts across the (0,1)-diagonal so both orderings hit the same LT cell.
+    counts_sym = counts + jnp.swapaxes(counts, 0, 1)
+    diag_idx = jnp.arange(bins_first)
+    counts_sym = counts_sym.at[diag_idx, diag_idx].set(counts[diag_idx, diag_idx])
+
+    # triu_indices ordering matches lower_triangular_map storage convention.
+    iu_a, iu_b = jnp.triu_indices(bins_first)
+    counts_lt = counts_sym[iu_a, iu_b]  # shape (tri_size, *bins[2:])
+
+    logp = jnp.log(counts_lt + alpha)
     init = logp - LSE(logp) - log_dx
     return init
 
@@ -50,13 +83,25 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
     initial_value : dict
     """
 
+    bins = tuple(int(b) for b in pixelpop_data.bins)
     if pixelpop_data.lower_triangular:
-        raise NotImplementedError(
-            "Lower triangular not yet supported in mixture model."
+        bins_first = bins[0]
+        assert bins[1] == bins_first, (
+            "lower_triangular requires the first two dimensions to share size; "
+            f"got bins[0]={bins_first}, bins[1]={bins[1]}"
         )
-
-    normalization_dof = int(np.prod(pixelpop_data.bins))
-    ICAR_model = initialize_ICAR_normalized(pixelpop_data.dimension) #here
+        tri_size = bins_first * (bins_first + 1) // 2
+        unique_sample_shape = (tri_size,) + tuple(bins[2:])
+        normalization_dof = int(np.prod(unique_sample_shape))
+        lt_map_fn = lower_triangular_map(bins_first)
+        ICAR_model = initialize_ICAR_normalized_lower_triangular(
+            pixelpop_data.dimension, bins_first
+        )
+    else:
+        unique_sample_shape = bins
+        normalization_dof = int(np.prod(bins))
+        lt_map_fn = None
+        ICAR_model = initialize_ICAR_normalized(pixelpop_data.dimension)
 
     # ----------------------------------------------------------------
     # Initial values
@@ -66,20 +111,13 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
             "log_rate": jnp.log(50.),
         }
     else:
-        #  Attempt from toy model
-        # jaxprint("Using same init as toy model")
-        # n_total = int(np.prod(pixelpop_data.bins))
-        # dV= jnp.exp(jnp.sum(pixelpop_data.logdV))
-        # init = jnp.array(np.random.normal(loc=0, scale=1, size=pixelpop_data.bins))
-        # init = -jnp.log(jnp.prod(np.array(pixelpop_data.bins))*dV) + init - LSE(init)
-        # Attempt from chatgpt
-        # noise = 1e-2 * jnp.array(np.random.normal(size=pixelpop_data.bins))
-        # init = noise - LSE(noise) - jnp.sum(pixelpop_data.logdV)
-        
+        if pixelpop_data.lower_triangular:
+            init_interpolant = init_interpolant_from_counts_lt(pixelpop_data)
+        else:
+            init_interpolant = init_interpolant_from_counts(pixelpop_data)
+
         initial_value = {
-            #"interpolant": init, #jnp.array(np.random.normal(loc=0, scale=0.1, size=(n_total-1,))),
-            #"interpolant": jnp.array(np.random.normal(loc=0, scale=0.1, size=(n_total-1,))), # here
-            "interpolant": init_interpolant_from_counts(pixelpop_data), #init
+            "interpolant": init_interpolant,
             "log_rate": jnp.log(50.),
         }
 
@@ -196,21 +234,32 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
             LSE(interpolant) + jnp.sum(pixelpop_data.logdV),
         )
 
-        # Log marginals
-        for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
-            sum_axes = tuple(
-                np.arange(pixelpop_data.dimension)[
-                    np.r_[0:ii, ii + 1 : pixelpop_data.dimension]
-                ]
+        if pixelpop_data.lower_triangular:
+            # Map LT vector to full mirrored bins-by-bins grid for indexing.
+            interpolant_full = numpyro.deterministic(
+                "interpolant_full", lt_map_fn(interpolant)
             )
-            numpyro.deterministic(
-                f"log_marginal_{p}",
-                LSE(interpolant, axis=sum_axes)
-                + jnp.sum(pixelpop_data.logdV[:ii])
-                + jnp.sum(pixelpop_data.logdV[ii + 1 :]),
-            )
+            # Per-axis log marginals are skipped here because the mirrored
+            # grid double-counts off-diagonal LT entries; compute post-hoc
+            # if needed.
+            interpolant_for_lookup = interpolant_full
+        else:
+            for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
+                sum_axes = tuple(
+                    np.arange(pixelpop_data.dimension)[
+                        np.r_[0:ii, ii + 1 : pixelpop_data.dimension]
+                    ]
+                )
+                numpyro.deterministic(
+                    f"log_marginal_{p}",
+                    LSE(interpolant, axis=sum_axes)
+                    + jnp.sum(pixelpop_data.logdV[:ii])
+                    + jnp.sum(pixelpop_data.logdV[ii + 1 :]),
+                )
+            interpolant_for_lookup = interpolant
 
-        # Recover sigma here
+        # Recover sigma here. icar.quad_form handles lt_map internally for
+        # the LT class, so we always pass the sampled `interpolant` directly.
         quad = icar.quad_form(interpolant)
         unscaled_gamma = numpyro.sample(
             "unscaled_gamma",
@@ -218,12 +267,12 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                 concentration=((normalization_dof - 1) / 2)
             ),
         )
-        precision = 2 * quad / unscaled_gamma
+        precision = unscaled_gamma * quad / 2
         numpyro.deterministic("lnsigma", -0.5 * jnp.log(precision))
 
         # Return log p_PP at event/injection bin locations
-        event_weights_PP = interpolant[event_bins]
-        inj_weights_PP = interpolant[inj_bins]
+        event_weights_PP = interpolant_for_lookup[event_bins]
+        inj_weights_PP = interpolant_for_lookup[inj_bins]
 
         if log == "debug":
             jaxprint(

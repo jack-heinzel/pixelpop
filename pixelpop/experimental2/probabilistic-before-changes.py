@@ -218,7 +218,7 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                 concentration=((normalization_dof - 1) / 2)
             ),
         )
-        precision = 2 * quad / unscaled_gamma
+        precision = unscaled_gamma * quad / 2
         numpyro.deterministic("lnsigma", -0.5 * jnp.log(precision))
 
         # Return log p_PP at event/injection bin locations
