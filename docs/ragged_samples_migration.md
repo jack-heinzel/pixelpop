@@ -112,7 +112,8 @@ The representation change is:
   out-of-range indices from raising; their prior is `inf` regardless.
 - Injections are intentionally **not** ragged — there is a single injection set shared by
   all events, so all VT-side code stays rectangular.
-- **`pixelpop/experimental/probabilistic.py` was NOT migrated.** Its `probabilistic_model`
-  still does `posteriors['ln_dVTc'] - posteriors['log_prior']` (rectangular dict). Running
-  the experimental model with the new list-of-dicts format will fail; mirror the B2 changes
-  there if/when that path is needed.
+- **`pixelpop/experimental/probabilistic.py` migrated** too: `prior_probabilistic_model`
+  now uses the same split (`sample_pixelpop_field` / `pixelpop_log_weight` /
+  `sample_parametric_hyperparameters` / `parametric_log_weight`) and loops over the event
+  list. The SVI / NeuTra inference helpers were untouched — they pass the `posteriors` list
+  through `model_kwargs` as a pytree. Verified by tracing with a finite log-likelihood.
