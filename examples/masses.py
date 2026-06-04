@@ -28,32 +28,36 @@ maxima = {'mass_1': 200.}
 with h5py.File('data/GWTC3_injections.h5') as f:
     injections = {k: f[k][()] for k in f.keys()}
     
-# dictionary of gw samples, containing 2D arrays of shape (Nobs, NPE). Must contain 'prior' key 
-# in addition to GW parameters
+# GW samples are now a *pytree*: a list with one dict per event. Each dict maps a
+# parameter name to a 1-D array of that event's samples, and different events may have
+# different numbers of samples. Must contain a 'prior' key in addition to GW parameters.
 # adapted from publicly available GW posteriors at https://zenodo.org/records/6513631 and https://zenodo.org/records/8177023
 with h5py.File('data/GWTC3_posteriors.h5') as f:
-    _posteriors = {k: f[k][()] for k in f.keys()}
+    _posteriors = {event: f[event][()] for event in f.keys()}
 
 keys = ['mass_1', 'mass_2', 'a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2', 'redshift', 'prior']
-posteriors = {k: jnp.array([p[k] for p in _posteriors]) for k in keys}
+posteriors = [
+    {k: jnp.asarray(_posteriors[event][k]) for k in keys} for event in _posteriors
+]
 
 
 with open('../../data/all_cbc/data/injections.pkl', 'rb') as ff:
     injections = pkl.load(ff)
 
-print(f"I have {posteriors['mass_1'].shape[0]} events")
+print(f"I have {len(posteriors)} events")
 
 def clean_data(data, min_m=mmin, max_m=200, max_z=2.3, remove=False):
     pixelpop.utils.data.clean_par(data, 'log_mass_1', jnp.log(min_m), jnp.log(max_m), remove=remove)
     pixelpop.utils.data.clean_par(data, 'log_mass_2', jnp.log(min_m), jnp.log(max_m), remove=remove)
     pixelpop.utils.data.clean_par(data, 'redshift', 0., max_z, remove=remove)
-    
-# convert to log m1, log m2 space
 
-posteriors = pixelpop.utils.data.convert_m1m2_to_lm1lm2(posteriors)
+# convert to log m1, log m2 space, per event
+
+posteriors = [pixelpop.utils.data.convert_m1m2_to_lm1lm2(event) for event in posteriors]
 injections = pixelpop.utils.data.convert_m1m2_to_lm1lm2(injections)
 
-clean_data(posteriors)
+for event in posteriors:
+    clean_data(event)
 clean_data(injections, remove=True)
 
 parameters = ['log_mass_1', 'log_mass_2']

@@ -52,18 +52,47 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         print('Computing error statistics')
         print('='*50 + '\n')
     
-    posteriors = pixelpop_data.posteriors
+    # The external population_error.error_statistics API expects a rectangular
+    # event-posterior dict (it reads `event_posteriors['prior'].shape[0]` and calls
+    # `model(dataset, params)` without per-event bins). PixelPopData now stores a
+    # ragged list of per-event dicts, so stack it back into a rectangular dict here;
+    # this is only possible when every event has the same number of samples.
+    posteriors_list = pixelpop_data.posteriors
+    sample_counts = [len(event['log_prior']) for event in posteriors_list]
+    if len(set(sample_counts)) > 1:
+        raise NotImplementedError(
+            "compute_error_statistics relies on population_error.error_statistics, "
+            "which currently requires every event to have the same number of posterior "
+            "samples. This PixelPopData has ragged per-event sample counts "
+            f"({sorted(set(sample_counts))}). Downsample events to a common count for "
+            "validation, or extend population_error to accept per-event arrays."
+        )
+
+    keys = list(posteriors_list[0].keys())
+    posteriors = {k: jnp.stack([event[k] for event in posteriors_list]) for k in keys}
     injections = pixelpop_data.injections
 
-    posteriors['prior'] = jnp.exp(posteriors.get('log_prior'))
+    posteriors['prior'] = jnp.exp(posteriors['log_prior'])
     injections['prior'] = jnp.exp(injections.get('log_prior'))
-    
+
     # add delta parameters
     hyperposterior, Nsamples = pixelpop_data.fill_out_hyperposterior(hyperposterior)
 
     event_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='posteriors'
     )
+
+    # Replace the ragged per-event bin lists with stacked rectangular bins so the
+    # rate function matches the stacked `posteriors` above.
+    def _stack_bins(bin_list):
+        ndim = len(bin_list[0])
+        return tuple(jnp.stack([b[d] for b in bin_list]) for d in range(ndim))
+
+    if pixelpop_data.IID:
+        event_pixelpop_model.dataset_bins_1 = _stack_bins(pixelpop_data.event_bins_1)
+        event_pixelpop_model.dataset_bins_2 = _stack_bins(pixelpop_data.event_bins_2)
+    else:
+        event_pixelpop_model.dataset_bins = _stack_bins(pixelpop_data.event_bins)
 
     injection_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='injections'

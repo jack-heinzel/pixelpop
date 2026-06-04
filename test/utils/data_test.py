@@ -1,4 +1,5 @@
 import unittest
+import numpy as np
 import jax.numpy as jnp
 import pixelpop
 from pixelpop.utils.data import (
@@ -7,6 +8,7 @@ from pixelpop.utils.data import (
     convert_m1m2_to_lm1lm2,
     clean_par,
     check_bins,
+    PixelPopData,
 )
 
 class TestConvertMasses(unittest.TestCase):
@@ -118,3 +120,53 @@ class TestCheckBins(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertTrue(jnp.isinf(e_bad[0,2]))
+
+
+class TestRaggedPixelPopData(unittest.TestCase):
+    """PixelPopData should accept a list of per-event dicts with different sample counts."""
+
+    def _build(self, counts=(50, 120, 300)):
+        rng = np.random.default_rng(0)
+
+        def event(n):
+            return {
+                'log_mass_1': jnp.asarray(rng.uniform(np.log(6), np.log(40), n)),
+                'redshift': jnp.asarray(rng.uniform(0.05, 1.2, n)),
+                'log_prior': jnp.zeros(n),
+            }
+
+        posteriors = [event(n) for n in counts]
+        n_inj = 4000
+        injections = {
+            'log_mass_1': jnp.asarray(rng.uniform(np.log(6), np.log(40), n_inj)),
+            'redshift': jnp.asarray(rng.uniform(0.05, 1.2, n_inj)),
+            'log_prior': jnp.zeros(n_inj),
+            'total_generated': 1e6,
+            'analysis_time': 1.0,
+        }
+        return PixelPopData(
+            name='ragged_test',
+            posteriors=posteriors,
+            injections=injections,
+            pixelpop_parameters=['log_mass_1', 'redshift'],
+            other_parameters=[],
+            bins=10,
+            minima={'log_mass_1': float(np.log(3)), 'redshift': 0.0},
+            maxima={'log_mass_1': float(np.log(100)), 'redshift': 2.0},
+        )
+
+    def test_ragged_construction(self):
+        counts = (50, 120, 300)
+        pp = self._build(counts)
+
+        self.assertEqual(pp.Nobs, len(counts))
+        self.assertEqual(len(pp.event_bins), len(counts))
+
+        for ii, n in enumerate(counts):
+            event = pp.posteriors[ii]
+            self.assertIn('ln_dVTc', event)
+            self.assertEqual(event['ln_dVTc'].shape, (n,))
+            self.assertEqual(event['log_prior'].shape, (n,))
+            # one bin-index array per pixelpop dimension, each with this event's count
+            self.assertEqual(pp.event_bins[ii][0].shape, (n,))
+            self.assertEqual(len(pp.event_bins[ii]), pp.dimension)

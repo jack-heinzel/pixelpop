@@ -117,30 +117,17 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             random_initialization=pixelpop_data.random_initialization
             )
 
-    def parametric_model(data, injections, event_weights, inj_weights):
+    def sample_parametric_hyperparameters():
         """
-        Evaluate the parametric population model contribution.
+        Draw all parametric hyperparameters from their priors (once per model call).
 
-        Draws hyperparameters from their priors and adds the corresponding
-        parametric model values to the event and injection weights.
-
-        Parameters
-        ----------
-        data : dict
-            Event data, keyed by parameter name.
-        injections : dict
-            Injection data, keyed by parameter name.
-        event_weights : ndarray
-            Current accumulated event log-weights.
-        inj_weights : ndarray
-            Current accumulated injection log-weights.
+        Also applies any constraint factors. The returned dict is reused to evaluate
+        the parametric log-weight for every event and for the injection set.
 
         Returns
         -------
-        event_weights : ndarray
-            Updated event log-weights including parametric contributions.
-        inj_weights : ndarray
-            Updated injection log-weights including parametric contributions.
+        sample : dict
+            Mapping of hyperparameter name to its sampled (or Delta-pinned) value.
         """
         sample = {}
         for key in pixelpop_data.priors:
@@ -148,42 +135,52 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             if distribution.__name__ == 'Delta':
                 sample[key] = args[0]
             else:
-                sample[key] = numpyro.sample(key, distribution(*args))        
-        
+                sample[key] = numpyro.sample(key, distribution(*args))
+
         if log == 'debug':
             for p in pixelpop_data.other_parameters:
                 jaxprint('[DEBUG] =================================')
                 jaxprint('[DEBUG] parametric parameters: {p}', p=p)
-                jaxprint('[DEBUG] =================================')       
+                jaxprint('[DEBUG] =================================')
                 for k in pixelpop_data.parameter_to_hyperparameters[p]:
                     jaxprint('[DEBUG] \t {k} sample: {s}', k=k, s=sample[k])
         for constraint_func in pixelpop_data.constraint_funcs:
             numpyro.factor(constraint_func.__name__, constraint_func(sample))
             if log == 'debug':
                 jaxprint('[DEBUG] constraint functions:', constraint_func.__name__, constraint_func(sample))
+        return sample
+
+    def parametric_log_weight(data, sample):
+        """
+        Additive parametric population log-weight for a single dataset.
+
+        Parameters
+        ----------
+        data : dict
+            One dataset, keyed by parameter name (a single event's posterior dict or
+            the injection set).
+        sample : dict
+            Hyperparameter values from :func:`sample_parametric_hyperparameters`.
+
+        Returns
+        -------
+        weight : ndarray or float
+            Sum over the parametric models of their log contributions, shaped like
+            this dataset's sample arrays.
+        """
+        weight = 0.
         for p in pixelpop_data.other_parameters:
-            event_weights += pixelpop_data.parametric_models[p](
+            weight = weight + pixelpop_data.parametric_models[p](
                 data, *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]]
                 )
-            inj_weights += pixelpop_data.parametric_models[p](
-                injections, *[sample[h] for h in pixelpop_data.parameter_to_hyperparameters[p]]
-                )
-            if log == 'debug':
-                jaxprint('[DEBUG] parametric {p} LSE(event_weights)={ew}, LSE(injection_weights)={iw}', p=p, ew=LSE(event_weights), iw=LSE(inj_weights))
-                if not jnp.isfinite(LSE(event_weights)):
-                    for parameter in pixelpop_data.parameter_to_hyperparameters[p]:
-                        jaxprint('[DEBUG] inf event weights at {pp}={d}', pp=parameter, d=data[parameter][jnp.where(event_weights == jnp.inf)])
-                if not jnp.isfinite(LSE(inj_weights)):
-                    for parameter in pixelpop_data.parameter_to_hyperparameters[p]:
-                        jaxprint('[DEBUG] inf injection weights at {pp}={d}', pp=parameter, d=injections[parameter][jnp.where(inj_weights == jnp.inf)])
-        return event_weights, inj_weights
+        return weight
 
     if pixelpop_data.cauchy_icar:
         ICAR_model = StudentICAR
     elif pixelpop_data.marginalize_sigma and pixelpop_data.length_scales:
         print("[experimental] Using grid-marginalized ICAR with per-dimension length scales")
         lnsigma_range = tuple(pixelpop_data.coupling_prior[0])
-        ICAR_model = None  # constructed directly in nonparametric_model
+        ICAR_model = None  # constructed directly in sample_pixelpop_field
         grid_icar = grid_marginalized_ICAR_length_scales(
             single_dimension_adj_matrices=pixelpop_data.adj_matrices,
             lnsigma_ranges=lnsigma_range,
@@ -195,39 +192,28 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
     else:
         ICAR_model = ICAR_length_scales
 
-    def nonparametric_model(event_bins, inj_bins, event_weights, inj_weights, skip=False):
+    def sample_pixelpop_field():
         """
-        Evaluate the nonparametric (ICAR/CAR) pixelized model contribution.
+        Sample the pixelized (ICAR/CAR) log merger-rate-density field once.
 
-        Either samples the log merger rate density from an intrinsic CAR prior
-        (with optional length scales) or falls back to a log-rate-only model if
-        skipped.
-
-        Parameters
-        ----------
-        event_bins : ndarray
-            Indices mapping events into multidimensional bins.
-        inj_bins : ndarray
-            Indices mapping injections into multidimensional bins.
-        event_weights : ndarray
-            Current accumulated event log-weights.
-        inj_weights : ndarray
-            Current accumulated injection log-weights.
-        skip : bool, optional
-            If True, skip the ICAR model and use only a single log-rate parameter.
+        Performs all NumPyro ``sample``/``factor``/``deterministic`` calls for the
+        nonparametric component, including coupling strengths, prior factors, and the
+        ``log_rate`` normalization and per-axis marginals. The returned field is then
+        evaluated for each event and for the injection set via
+        :func:`pixelpop_log_weight`.
 
         Returns
         -------
-        event_weights : ndarray
-            Updated event log-weights including nonparametric contributions.
-        inj_weights : ndarray
-            Updated injection log-weights including nonparametric contributions.
+        field : dict
+            ``{'skip': True, 'R': <log rate>}`` when the nonparametric component is
+            skipped, otherwise ``{'skip': False, 'mrd': merger_rate_density,
+            'normalization': <log_rate or None>}``.
         """
 
-        if skip:
+        if pixelpop_data.skip_nonparametric:
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
-            return event_weights + R[None,None], inj_weights + R[None]
-        
+            return {'skip': True, 'R': R}
+
         if not pixelpop_data.marginalize_sigma:
             coupling_prior = pixelpop_data.coupling_prior
             if pixelpop_data.length_scales:
@@ -308,6 +294,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                     ),
                 )
 
+        normalization = None
         if not pixelpop_data.lower_triangular:
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(pixelpop_data.pixelpop_parameters):
@@ -336,20 +323,36 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             precision = 2 * unscaled_gamma / quad
             numpyro.deterministic('lnsigma', -0.5*jnp.log(precision))
 
-        # Use the raw ICAR field for event and injection weights; any
-        # parametric windows are applied in parametric_model.
-        if pixelpop_data.IID:
-            event_weights += merger_rate_density[event_bins[0]]
-            inj_weights += merger_rate_density[inj_bins[0]]
+        return {'skip': False, 'mrd': merger_rate_density, 'normalization': normalization}
 
-            event_weights += merger_rate_density[event_bins[1]] - normalization
-            inj_weights += merger_rate_density[inj_bins[1]] - normalization
-        else:
-            event_weights += merger_rate_density[event_bins]
-            inj_weights += merger_rate_density[inj_bins]
-        if log == 'debug':
-            jaxprint('[DEBUG] pixelpop LSE(event_weights)={ew}, LSE(injection_weights)={iw}', ew=LSE(event_weights), iw=LSE(inj_weights))
-        return event_weights, inj_weights
+    def pixelpop_log_weight(bins, field):
+        """
+        Additive pixelized log-weight for a single dataset's bin indices.
+
+        Parameters
+        ----------
+        bins : tuple of ndarray or list of tuple
+            Bin indices for one dataset. In IID mode this is ``[bins_1, bins_2]``;
+            otherwise a single bin-index tuple.
+        field : dict
+            Sampled field from :func:`sample_pixelpop_field`.
+
+        Returns
+        -------
+        weight : ndarray or float
+            Log merger-rate contribution, shaped like this dataset's sample arrays
+            (or a scalar when the nonparametric component is skipped).
+        """
+        if field['skip']:
+            return field['R']
+        merger_rate_density = field['mrd']
+        if pixelpop_data.IID:
+            return (
+                merger_rate_density[bins[0]]
+                + merger_rate_density[bins[1]]
+                - field['normalization']
+            )
+        return merger_rate_density[bins]
 
     def probabilistic_model(posteriors, injections):
         """
@@ -360,8 +363,9 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
         Parameters
         ----------
-        posteriors : dict
-            Posterior samples from detected events.
+        posteriors : list of dict
+            Per-event posterior samples (one dict per event; events may have
+            different numbers of samples).
         injections : dict
             Injection data including selection effects.
 
@@ -380,23 +384,28 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             (Factors likelihood into NumPyro’s computation graph.)
         """
         if pixelpop_data.IID:
-            eb = [pixelpop_data.event_bins_1, pixelpop_data.event_bins_2]
-            ib = [pixelpop_data.inj_bins_1, pixelpop_data.inj_bins_2]
+            inj_bins = [pixelpop_data.inj_bins_1, pixelpop_data.inj_bins_2]
+            event_bin_list = list(zip(pixelpop_data.event_bins_1, pixelpop_data.event_bins_2))
         else:
-            eb, ib = pixelpop_data.event_bins, pixelpop_data.inj_bins
+            inj_bins = pixelpop_data.inj_bins
+            event_bin_list = pixelpop_data.event_bins
 
-        event_weights, inj_weights = nonparametric_model(
-            eb, ib,
-            posteriors['ln_dVTc']-posteriors['log_prior'],
-            injections['ln_dVTc']-injections['log_prior'],
-            skip=pixelpop_data.skip_nonparametric
-            )
-        event_weights, inj_weights = parametric_model(
-            posteriors, 
-            injections, 
-            event_weights, 
-            inj_weights
-            )
+        # Sample the shared field and hyperparameters once.
+        field = sample_pixelpop_field()
+        sample = sample_parametric_hyperparameters()
+
+        # Injections: a single rectangular set, evaluated once.
+        inj_weights = injections['ln_dVTc'] - injections['log_prior']
+        inj_weights = inj_weights + pixelpop_log_weight(inj_bins, field)
+        inj_weights = inj_weights + parametric_log_weight(injections, sample)
+
+        # Events: ragged, looped over the list of per-event dicts.
+        event_weights = []
+        for event, ebins in zip(posteriors, event_bin_list):
+            w = event['ln_dVTc'] - event['log_prior']
+            w = w + pixelpop_log_weight(ebins, field)
+            w = w + parametric_log_weight(event, sample)
+            event_weights.append(w)
 
         likelihood_dict = \
             rate_likelihood(

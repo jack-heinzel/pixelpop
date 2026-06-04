@@ -81,121 +81,148 @@ class PixelPopRateFunction(object):
     def __init__(self, pixelpop_data, dataset_type='posteriors'):
 
         attrs_to_copy = [
-            'other_parameters', 
-            'parameter_to_hyperparameters', 
-            'parametric_models', 
+            'other_parameters',
+            'parameter_to_hyperparameters',
+            'parametric_models',
             'IID',
             ]
-        
+
         for attr in attrs_to_copy:
             value = getattr(pixelpop_data, attr)
             setattr(self, attr, value)
+
+        if dataset_type not in ('posteriors', 'injections'):
+            raise ValueError(
+                f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
+            )
+        # posteriors are a ragged list of per-event bin tuples; injections are a
+        # single (rectangular) bin tuple. Per-event bins are passed to __call__ via
+        # the `bins` argument; injection bins are stored here as the default.
+        self.dataset_type = dataset_type
+        self.ragged = dataset_type == 'posteriors'
 
         if self.IID:
             if dataset_type == 'posteriors':
                 self.dataset_bins_1 = pixelpop_data.event_bins_1
                 self.dataset_bins_2 = pixelpop_data.event_bins_2
-            elif dataset_type == 'injections':
+            else:
                 self.dataset_bins_1 = pixelpop_data.inj_bins_1
                 self.dataset_bins_2 = pixelpop_data.inj_bins_2
-            else:
-                raise ValueError(
-                    f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
-                )
-            self.shape = self.dataset_bins_1[0].shape
+                self.shape = self.dataset_bins_1[0].shape
         else:
             if dataset_type == 'posteriors':
                 self.dataset_bins = pixelpop_data.event_bins
-            elif dataset_type == 'injections':
-                self.dataset_bins = pixelpop_data.inj_bins
             else:
-                raise ValueError(
-                    f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
-                )
-            self.shape = self.dataset_bins[0].shape
+                self.dataset_bins = pixelpop_data.inj_bins
+                self.shape = self.dataset_bins[0].shape
 
-    def __call__(self, dataset, hyperparameters):
+    def _default_bins(self):
+        """Bins for the (rectangular) injection set; used when none are passed."""
+        if self.IID:
+            return (self.dataset_bins_1, self.dataset_bins_2)
+        return self.dataset_bins
+
+    def __call__(self, dataset, hyperparameters, bins=None):
         """
         Evaluate the merger rate density at the dataset points.
 
         Parameters
         ----------
         dataset : dict
-            Dictionary containing the data samples (e.g., 'ln_dVTc'). 
-            Note: The actual bin locations are pre-stored in `self.dataset_bins` 
-            and are not extracted from this dictionary during the call.
+            Dictionary containing the data samples (e.g., 'ln_dVTc').
         hyperparameters : dict
             Dictionary of population hyperparameters, including 'merger_rate_density'
             (the pixel heights) and parameters for any parametric sub-models.
+        bins : tuple or pair of tuples, optional
+            Bin indices to evaluate against. In IID mode this is ``(bins_1, bins_2)``;
+            otherwise a single bin-index tuple. If ``None`` (the default), the stored
+            injection bins are used. For ragged posteriors the caller supplies the
+            per-event bins here.
 
         Returns
         -------
         jax.numpy.ndarray
-            The expected rate density (in units of probability * total rate) 
+            The expected rate density (in units of probability * total rate)
             for each sample in the dataset.
         """
-        lp_parametric = self.log_prob_parametric_model(dataset, hyperparameters)
-        lp_pixelpop = self.log_rate_pixelpop(dataset, hyperparameters)
+        if bins is None:
+            bins = self._default_bins()
+        shape = (bins[0][0].shape if self.IID else bins[0].shape)
+        lp_parametric = self.log_prob_parametric_model(dataset, hyperparameters, shape)
+        lp_pixelpop = self.log_rate_pixelpop(dataset, hyperparameters, bins)
 
         return jnp.exp(lp_parametric + lp_pixelpop)
-    
-    def log_prob_parametric_model(self, dataset, hyperparameters):
-        
-        log_probs = jnp.zeros(self.shape)
-              
+
+    def log_prob_parametric_model(self, dataset, hyperparameters, shape):
+
+        log_probs = jnp.zeros(shape)
+
         for p in self.other_parameters:
             hs = self.parameter_to_hyperparameters[p] # hyperparameters appropriate for this model
             log_probs += self.parametric_models[p](dataset, *[hyperparameters[h] for h in hs])
-            
+
         return log_probs
-    
-    def log_rate_pixelpop(self, dataset, hyperparameters):
+
+    def log_rate_pixelpop(self, dataset, hyperparameters, bins):
 
         ln_dVTc = dataset['ln_dVTc']
         pp_rates = hyperparameters['merger_rate_density']
         if self.IID:
             norm = hyperparameters['log_rate']
-            return pp_rates[self.dataset_bins_1] + pp_rates[self.dataset_bins_2] + ln_dVTc - norm
+            return pp_rates[bins[0]] + pp_rates[bins[1]] + ln_dVTc - norm
         else:
-            return pp_rates[self.dataset_bins] + ln_dVTc
+            return pp_rates[bins] + ln_dVTc
 
 def resample_posteriors(hyperposterior, nsamples, pixelpop_data, samples_per_event=1, verbose=True):
     '''
-    
+    Reweight each event's (ragged) posterior samples under every hyperposterior
+    sample and draw one resampled index per event per hypersample.
+
+    Returns
+    -------
+    reweight_iloc : np.ndarray, shape (nsamples, Nobs)
+        Column ``ii`` indexes into event ``ii``'s own posterior sample array.
+    neffs : np.ndarray, shape (Nobs,)
+        Per-event population-reweighted effective sample size.
     '''
     ratefunc = PixelPopRateFunction(pixelpop_data, dataset_type='posteriors')
-    @jax.jit
-    def f(s):
-        return ratefunc(pixelpop_data.posteriors, s)
+    posteriors = pixelpop_data.posteriors
+    Nobs = len(posteriors)
 
     ss = [{k: hyperposterior[k][ii] for k in hyperposterior.keys()} for ii in range(nsamples)]
-    averaged_weights = np.zeros_like(pixelpop_data.posteriors['log_prior'])
-    reweight_iloc = []
-    loop = range(nsamples)
+
+    reweight_iloc = np.zeros((nsamples, Nobs), dtype=int)
+    neffs = np.zeros(Nobs)
+
+    loop = range(Nobs)
     if verbose:
         loop = tqdm(loop)
         loop.set_description('Resampling GW posteriors')
-    for ii in loop:
-        rates = np.array(f(ss[ii]))
-        with np.errstate(divide='ignore'): # ignore np.log(0) 
-            lweights = np.log(rates) - np.array(pixelpop_data.posteriors['log_prior'])
-        lnorms = LSE(lweights, axis=-1)
-        normed_weights = lweights - lnorms[...,None]
-        normed_weights = np.exp(normed_weights)
-        averaged_weights += normed_weights
-        
-        sel = []
-        for jj in range(normed_weights.shape[0]):
-            down_selected = np.random.choice(normed_weights.shape[1], p=normed_weights[jj])
-            sel.append(down_selected)
 
-        reweight_iloc.append(sel)
-    reweight_iloc = np.array(reweight_iloc)
-    
-    averaged_weights = averaged_weights / np.mean(averaged_weights, axis=-1)[...,None]
-    design_effect = np.mean(averaged_weights**2, axis=-1)
-    neffs = averaged_weights.shape[-1] / design_effect
-    
+    for jj in loop:
+        event = posteriors[jj]
+        if pixelpop_data.IID:
+            bins = (pixelpop_data.event_bins_1[jj], pixelpop_data.event_bins_2[jj])
+        else:
+            bins = pixelpop_data.event_bins[jj]
+
+        @jax.jit
+        def f(s, event=event, bins=bins):
+            return ratefunc(event, s, bins=bins)
+
+        log_prior = np.array(event['log_prior'])
+        averaged_weights = np.zeros_like(log_prior)
+        for ii in range(nsamples):
+            rates = np.array(f(ss[ii]))
+            with np.errstate(divide='ignore'): # ignore np.log(0)
+                lweights = np.log(rates) - log_prior
+            normed_weights = np.exp(lweights - LSE(lweights))
+            averaged_weights += normed_weights
+            reweight_iloc[ii, jj] = np.random.choice(normed_weights.shape[0], p=normed_weights)
+
+        averaged_weights = averaged_weights / np.mean(averaged_weights)
+        neffs[jj] = averaged_weights.size / np.mean(averaged_weights**2)
+
     return reweight_iloc, neffs
 
 def resample_injections(hyperposterior, nsamples, nevents, pixelpop_data, verbose=True):
@@ -285,7 +312,7 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
             warnings.warn(f"{event} population reweighted effective sample size is {neff}")
 
         reweighted_event = np.array([
-            pixelpop_data.posteriors[gw_parameter][ii,event_iloc[:,ii]] for gw_parameter in pixelpop_data.posteriors.keys()
+            pixelpop_data.posteriors[ii][gw_parameter][event_iloc[:,ii]] for gw_parameter in pixelpop_data.posteriors[ii].keys()
         ]).T
         reweighted_events.append(reweighted_event[None,...]) # 1 sample per hypersample to avoid bloat
     
@@ -303,7 +330,7 @@ def reweight_events_and_injections(popsummary_result, hyperposterior, pixelpop_d
         print(f"injection set population reweighted effective sample size is {inj_neff}")
     
     reweighted_injections = np.array([
-        pixelpop_data.injections[gw_parameter][inj_iloc] for gw_parameter in pixelpop_data.posteriors.keys()
+        pixelpop_data.injections[gw_parameter][inj_iloc] for gw_parameter in pixelpop_data.posteriors[0].keys()
     ]).swapaxes(0,-1)
     
     popsummary_result.set_reweighted_injections(

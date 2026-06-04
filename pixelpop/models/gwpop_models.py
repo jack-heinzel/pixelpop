@@ -1254,6 +1254,30 @@ def gwtc3_spin_default(data, mu, var, sig_tilt, zeta):
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
+def _per_event_moments(event_weights):
+    """
+    Per-event log-mean and log-mean-square of ``exp(weights)``.
+
+    Accepts either a ragged ``list``/``tuple`` of 1-D per-event weight arrays
+    (different sample counts allowed) or a rectangular ``(n_events, n_samples)``
+    array. Returns ``(n_events, counts, numerators, square_sums)`` where ``counts``
+    is the per-event sample count (a scalar in the rectangular case, a length-``n_events``
+    array in the ragged case), ``numerators[i] = logsumexp(w_i) - log(N_i)`` and
+    ``square_sums[i] = logsumexp(2 w_i) - 2 log(N_i)``.
+    """
+    if isinstance(event_weights, (list, tuple)):
+        n_events = len(event_weights)
+        counts = jnp.array([w.shape[0] for w in event_weights])
+        numerators = jnp.stack([scs.logsumexp(w) for w in event_weights]) - jnp.log(counts)
+        square_sums = jnp.stack([scs.logsumexp(2 * w) for w in event_weights]) - 2 * jnp.log(counts)
+    else:
+        n_events, minimum_length = event_weights.shape
+        counts = minimum_length
+        numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length)
+        square_sums = scs.logsumexp(2 * event_weights, axis=1) - 2 * jnp.log(minimum_length)
+    return n_events, counts, numerators, square_sums
+
+
 @partial(jit, static_argnames=['rate_likelihood','return_likelihood_info'])
 def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
     """
@@ -1318,8 +1342,10 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
 
     Parameters
     ----------
-    event_weights : jnp.ndarray
-        Array (n_events, n_samples) of log[p(θ|pop)/pi(θ|PE)] for each event posterior sample.
+    event_weights : list of jnp.ndarray or jnp.ndarray
+        Per-event log[p(θ|pop)/pi(θ|PE)] weights. Either a list with one 1-D array
+        per event (allowing a different number of samples per event, "ragged"), or a
+        rectangular (n_events, n_samples) array (all events with the same count).
     denominator_weights : jnp.ndarray
         Array of log[p(θ|pop)/pi(θ|draw)] for injections.
     total_injections : int
@@ -1332,8 +1358,7 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     tuple
         (lnL, expected_events, pe_var, vt_var, total_var)
     """
-    n_events, minimum_length = event_weights.shape
-    numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
+    n_events, counts, numerators, square_sums = _per_event_moments(event_weights)
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
 
     pe_ln_likelihood = jnp.sum(numerators)
@@ -1341,11 +1366,10 @@ def rate_likelihood(event_weights, denominator_weights, total_injections, live_t
     nexp = live_time*jnp.exp(denominator)
     vt_ln_likelihood = n_events*jnp.log(live_time) - nexp
     ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
-    
-    square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
+
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
-    
-    pe_neffs = 1 / (jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
+
+    pe_neffs = 1 / (jnp.exp(square_sums - 2*numerators) - 1/counts)
     pe_ln_likelihood_variance = jnp.sum(1 / pe_neffs)
     
     vt_neff = jnp.exp(2*denominator - square_sum)
