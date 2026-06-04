@@ -52,27 +52,21 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         print('Computing error statistics')
         print('='*50 + '\n')
     
-    # The external population_error.error_statistics API expects a rectangular
-    # event-posterior dict (it reads `event_posteriors['prior'].shape[0]` and calls
-    # `model(dataset, params)` without per-event bins). PixelPopData now stores a
-    # ragged list of per-event dicts, so stack it back into a rectangular dict here;
-    # this is only possible when every event has the same number of samples.
-    posteriors_list = pixelpop_data.posteriors
-    sample_counts = [len(event['log_prior']) for event in posteriors_list]
-    if len(set(sample_counts)) > 1:
-        raise NotImplementedError(
-            "compute_error_statistics relies on population_error.error_statistics, "
-            "which currently requires every event to have the same number of posterior "
-            "samples. This PixelPopData has ragged per-event sample counts "
-            f"({sorted(set(sample_counts))}). Downsample events to a common count for "
-            "validation, or extend population_error to accept per-event arrays."
-        )
+    # PixelPopData stores a ragged list of per-event dicts (events may have different
+    # sample counts). population_error.pad_ragged_posteriors stacks them into a
+    # rectangular dict, padding each event up to NPE_max with prior=+inf so the padded
+    # samples carry zero weight, and returns the real per-event `event_counts` to use
+    # as the single-event Monte-Carlo integral size.
+    posteriors_list = []
+    for event in pixelpop_data.posteriors:
+        event = dict(event)
+        event['prior'] = jnp.exp(event['log_prior'])
+        posteriors_list.append(event)
 
-    keys = list(posteriors_list[0].keys())
-    posteriors = {k: jnp.stack([event[k] for event in posteriors_list]) for k in keys}
+    posteriors, event_counts = population_error.pad_ragged_posteriors(posteriors_list)
+    npe_max = posteriors['prior'].shape[1]
+
     injections = pixelpop_data.injections
-
-    posteriors['prior'] = jnp.exp(posteriors['log_prior'])
     injections['prior'] = jnp.exp(injections.get('log_prior'))
 
     # add delta parameters
@@ -82,17 +76,29 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         pixelpop_data, dataset_type='posteriors'
     )
 
-    # Replace the ragged per-event bin lists with stacked rectangular bins so the
-    # rate function matches the stacked `posteriors` above.
-    def _stack_bins(bin_list):
+    # The rate function uses precomputed per-event bins, not the coordinate arrays, so
+    # pad those bins to the same NPE_max as `posteriors`. Padded entries repeat the
+    # event's first bin index (a valid in-range bin); their weight is zero anyway
+    # because the padded prior is +inf.
+    def _pad_bins(bin_list):
         ndim = len(bin_list[0])
-        return tuple(jnp.stack([b[d] for b in bin_list]) for d in range(ndim))
+        padded_axes = []
+        for d in range(ndim):
+            rows = []
+            for b in bin_list:
+                arr = b[d]
+                pad_len = npe_max - arr.shape[0]
+                if pad_len > 0:
+                    arr = jnp.concatenate([arr, jnp.full(pad_len, arr[0])])
+                rows.append(arr)
+            padded_axes.append(jnp.stack(rows))
+        return tuple(padded_axes)
 
     if pixelpop_data.IID:
-        event_pixelpop_model.dataset_bins_1 = _stack_bins(pixelpop_data.event_bins_1)
-        event_pixelpop_model.dataset_bins_2 = _stack_bins(pixelpop_data.event_bins_2)
+        event_pixelpop_model.dataset_bins_1 = _pad_bins(pixelpop_data.event_bins_1)
+        event_pixelpop_model.dataset_bins_2 = _pad_bins(pixelpop_data.event_bins_2)
     else:
-        event_pixelpop_model.dataset_bins = _stack_bins(pixelpop_data.event_bins)
+        event_pixelpop_model.dataset_bins = _pad_bins(pixelpop_data.event_bins)
 
     injection_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='injections'
@@ -105,16 +111,17 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     _ = injection_pixelpop_model(injections, first_hypersample)
     
     error_dict = population_error.error_statistics(
-        event_pixelpop_model, 
-        injections, 
-        posteriors, 
-        hyperposterior, 
+        event_pixelpop_model,
+        injections,
+        posteriors,
+        hyperposterior,
         vt_model_function=injection_pixelpop_model,
         include_likelihood_correction=True,
         rate=True,
         verbose=verbose,
+        event_counts=event_counts,
         )
-    
+
     return error_dict
 
 def rank_normalized_rhat(

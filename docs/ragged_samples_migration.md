@@ -77,14 +77,20 @@ The representation change is:
 - `reweight_events_and_injections`: indexing updated to
   `posteriors[ii][gw][event_iloc[:,ii]]` and `posteriors[0].keys()`.
 
-### B4. Validation — `pixelpop/result/validate.py` ✅ (with caveat)
-- Stacks the ragged event list into a rectangular dict for the external
-  `population_error.error_statistics` API, and stacks the per-event bins onto the rate
-  function. **Caveat:** `population_error.error_statistics` reads
-  `event_posteriors['prior'].shape[0]` and calls `model(dataset, params)` without per-event
-  bins, so it only supports **equal per-event sample counts**. `compute_error_statistics`
-  now raises a clear `NotImplementedError` for genuinely ragged counts; full ragged support
-  would require changing the external `population_error` package.
+### B4. Validation — `pixelpop/result/validate.py` ✅ (fully ragged)
+- `population_error` was extended (branch `ragged-posteriors`) to accept ragged event
+  posteriors: `pad_ragged_posteriors` pads a list of per-event dicts to `(Nobs, NPE_max)`
+  with `prior=+inf` on padded rows (padded weights → 0) and returns the real per-event
+  `event_counts`; `error_statistics(..., event_counts=...)` uses those counts as the
+  single-event Monte-Carlo size.
+- `compute_error_statistics` now: adds `'prior'=exp(log_prior)` per event, pads via
+  `population_error.pad_ragged_posteriors`, pads the rate function's precomputed per-event
+  bins to the same `NPE_max` (padded bin entries repeat a valid in-range index; their
+  weight is zero anyway), and passes `event_counts` to `error_statistics`. The old
+  equal-counts restriction / `NotImplementedError` is gone.
+- **Requires** a `population_error` that includes the ragged API (the `ragged-posteriors`
+  branch / a release containing `pad_ragged_posteriors` + the `event_counts` kwarg).
+- Verified end-to-end on CPU: ragged events (40/95/150) → finite error/precision/accuracy.
 
 ### B5. Save — `pixelpop/result/save_popsummary.py` ✅ (no change needed)
 - Derives event names from data-dir globbing and delegates resampling to
