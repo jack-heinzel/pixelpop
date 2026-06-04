@@ -52,53 +52,18 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         print('Computing error statistics')
         print('='*50 + '\n')
     
-    # PixelPopData stores a ragged list of per-event dicts (events may have different
-    # sample counts). population_error.pad_ragged_posteriors stacks them into a
-    # rectangular dict, padding each event up to NPE_max with prior=+inf so the padded
-    # samples carry zero weight, and returns the real per-event `event_counts` to use
-    # as the single-event Monte-Carlo integral size.
-    posteriors_list = []
-    for event in pixelpop_data.posteriors:
-        event = dict(event)
-        event['prior'] = jnp.exp(event['log_prior'])
-        posteriors_list.append(event)
-
-    posteriors, event_counts = population_error.pad_ragged_posteriors(posteriors_list)
-    npe_max = posteriors['prior'].shape[1]
-
+    posteriors = pixelpop_data.posteriors
     injections = pixelpop_data.injections
-    injections['prior'] = jnp.exp(injections.get('log_prior'))
 
+    posteriors['prior'] = jnp.exp(posteriors.get('log_prior'))
+    injections['prior'] = jnp.exp(injections.get('log_prior'))
+    
     # add delta parameters
     hyperposterior, Nsamples = pixelpop_data.fill_out_hyperposterior(hyperposterior)
 
     event_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='posteriors'
     )
-
-    # The rate function uses precomputed per-event bins, not the coordinate arrays, so
-    # pad those bins to the same NPE_max as `posteriors`. Padded entries repeat the
-    # event's first bin index (a valid in-range bin); their weight is zero anyway
-    # because the padded prior is +inf.
-    def _pad_bins(bin_list):
-        ndim = len(bin_list[0])
-        padded_axes = []
-        for d in range(ndim):
-            rows = []
-            for b in bin_list:
-                arr = b[d]
-                pad_len = npe_max - arr.shape[0]
-                if pad_len > 0:
-                    arr = jnp.concatenate([arr, jnp.full(pad_len, arr[0])])
-                rows.append(arr)
-            padded_axes.append(jnp.stack(rows))
-        return tuple(padded_axes)
-
-    if pixelpop_data.IID:
-        event_pixelpop_model.dataset_bins_1 = _pad_bins(pixelpop_data.event_bins_1)
-        event_pixelpop_model.dataset_bins_2 = _pad_bins(pixelpop_data.event_bins_2)
-    else:
-        event_pixelpop_model.dataset_bins = _pad_bins(pixelpop_data.event_bins)
 
     injection_pixelpop_model = PixelPopRateFunction(
         pixelpop_data, dataset_type='injections'
@@ -110,6 +75,9 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     _ = event_pixelpop_model(posteriors, first_hypersample)
     _ = injection_pixelpop_model(injections, first_hypersample)
     
+    # Posteriors are a rectangular (Nobs, NPE) dict; events with fewer real samples are
+    # padded with prior=+inf rows (zero weight). event_counts gives each event's real
+    # sample count so the single-event Monte-Carlo integral size is correct.
     error_dict = population_error.error_statistics(
         event_pixelpop_model,
         injections,
@@ -119,9 +87,9 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         include_likelihood_correction=True,
         rate=True,
         verbose=verbose,
-        event_counts=event_counts,
+        event_counts=pixelpop_data.event_counts,
         )
-
+    
     return error_dict
 
 def rank_normalized_rhat(

@@ -1254,16 +1254,22 @@ def gwtc3_spin_default(data, mu, var, sig_tilt, zeta):
 def spin_default(data, mu, var, sig_tilt, zeta):
     return iid_beta_spin(data, mu, var) + tilt_default(data, sig_tilt, zeta)
 
-def _per_event_moments(event_weights):
+def _per_event_moments(event_weights, event_counts=None):
     """
     Per-event log-mean and log-mean-square of ``exp(weights)``.
 
-    Accepts either a ragged ``list``/``tuple`` of 1-D per-event weight arrays
-    (different sample counts allowed) or a rectangular ``(n_events, n_samples)``
-    array. Returns ``(n_events, counts, numerators, square_sums)`` where ``counts``
-    is the per-event sample count (a scalar in the rectangular case, a length-``n_events``
-    array in the ragged case), ``numerators[i] = logsumexp(w_i) - log(N_i)`` and
-    ``square_sums[i] = logsumexp(2 w_i) - 2 log(N_i)``.
+    Accepts a rectangular ``(n_events, n_samples)`` array (the usual case) or, as a
+    harmless fallback, a ragged ``list``/``tuple`` of 1-D per-event weight arrays.
+
+    When events are padded up to a common ``n_samples`` with ``prior = +inf`` (so the
+    padded samples carry zero weight), pass ``event_counts`` -- a length-``n_events``
+    array of each event's *real* sample count -- so the Monte-Carlo mean and variance
+    divide by the real count rather than the padded width. ``event_counts=None``
+    reproduces the equal-count behaviour (divide by ``n_samples``).
+
+    Returns ``(n_events, counts, numerators, square_sums)`` where
+    ``numerators[i] = logsumexp(w_i) - log(c_i)`` and
+    ``square_sums[i] = logsumexp(2 w_i) - 2 log(c_i)``.
     """
     if isinstance(event_weights, (list, tuple)):
         n_events = len(event_weights)
@@ -1272,14 +1278,14 @@ def _per_event_moments(event_weights):
         square_sums = jnp.stack([scs.logsumexp(2 * w) for w in event_weights]) - 2 * jnp.log(counts)
     else:
         n_events, minimum_length = event_weights.shape
-        counts = minimum_length
-        numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length)
-        square_sums = scs.logsumexp(2 * event_weights, axis=1) - 2 * jnp.log(minimum_length)
+        counts = minimum_length if event_counts is None else event_counts
+        numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(counts)
+        square_sums = scs.logsumexp(2 * event_weights, axis=1) - 2 * jnp.log(counts)
     return n_events, counts, numerators, square_sums
 
 
 @partial(jit, static_argnames=['rate_likelihood','return_likelihood_info'])
-def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True):
+def hierarchical_likelihood(event_weights, denominator_weights, total_injections, live_time=1, rate_likelihood=False, return_likelihood_info=True, event_counts=None):
     """
     Hierarchical Bayesian likelihood for population inference.
 
@@ -1297,6 +1303,9 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
         If True, include rate likelihood (default False).
     return_likelihood_info : bool, optional
         If True, return decomposition of likelihood and variances.
+    event_counts : jnp.ndarray, optional
+        Length-(n_events) array of each event's real (un-padded) sample count. If
+        None, divides by n_samples (equal-count behaviour).
 
     Returns
     -------
@@ -1307,7 +1316,8 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
             (lnL, var)
     """
     n_events, minimum_length = event_weights.shape
-    numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(minimum_length) # means
+    counts = minimum_length if event_counts is None else event_counts
+    numerators = scs.logsumexp(event_weights, axis=1) - jnp.log(counts) # means
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
 
     pe_ln_likelihood = jnp.sum(numerators)
@@ -1317,11 +1327,11 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
         vt_ln_likelihood = -n_events*denominator
 
     ln_likelihood = pe_ln_likelihood + vt_ln_likelihood
-    
-    square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(minimum_length) # square_sums
+
+    square_sums = scs.logsumexp(2*event_weights, axis=1) - 2*jnp.log(counts) # square_sums
     square_sum = scs.logsumexp(2*denominator_weights) - 2*jnp.log(total_injections)
-    
-    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/minimum_length)
+
+    pe_ln_likelihood_variance = jnp.sum(jnp.exp(square_sums - 2*numerators) - 1/counts)
     if rate_likelihood:
         vt_ln_likelihood_variance = live_time**2 * (jnp.exp(square_sum) - jnp.exp(2*denominator)/total_injections)
     else:
@@ -1336,29 +1346,33 @@ def hierarchical_likelihood(event_weights, denominator_weights, total_injections
     else:
         return ln_likelihood, ln_likelihood_variance
 
-def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1):
+def rate_likelihood(event_weights, denominator_weights, total_injections, live_time=1, event_counts=None):
     """
     Poisson rate likelihood for hierarchical inference.
 
     Parameters
     ----------
-    event_weights : list of jnp.ndarray or jnp.ndarray
-        Per-event log[p(θ|pop)/pi(θ|PE)] weights. Either a list with one 1-D array
-        per event (allowing a different number of samples per event, "ragged"), or a
-        rectangular (n_events, n_samples) array (all events with the same count).
+    event_weights : jnp.ndarray
+        Rectangular (n_events, n_samples) array of log[p(θ|pop)/pi(θ|PE)] weights.
+        Events with fewer than n_samples real PE samples are padded with prior=+inf
+        rows (zero weight); pass ``event_counts`` so the per-event Monte-Carlo mean
+        and variance divide by the real count.
     denominator_weights : jnp.ndarray
         Array of log[p(θ|pop)/pi(θ|draw)] for injections.
     total_injections : int
         Number of injection samples.
     live_time : float, optional
         Observing time in years (default 1).
+    event_counts : jnp.ndarray, optional
+        Length-(n_events) array of each event's real (un-padded) sample count. If
+        None, divides by n_samples (equal-count behaviour).
 
     Returns
     -------
     tuple
         (lnL, expected_events, pe_var, vt_var, total_var)
     """
-    n_events, counts, numerators, square_sums = _per_event_moments(event_weights)
+    n_events, counts, numerators, square_sums = _per_event_moments(event_weights, event_counts)
     denominator = scs.logsumexp(denominator_weights) - jnp.log(total_injections)
 
     pe_ln_likelihood = jnp.sum(numerators)

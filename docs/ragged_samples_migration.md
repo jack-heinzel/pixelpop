@@ -1,125 +1,100 @@
-# Migration chronicle: per-event variable PE sample counts (ragged posteriors)
+# Per-event variable PE sample counts via padding
 
 ## Why
 
 PixelPop historically loaded events with `gwpopulation_pipe.data_collection.load_all_events`,
 which **downsamples every event to the smallest event's sample count**
-(`data_collection.py:616-625`: `n_samples = min(len(post) ...)` then `DataFrame.sample`).
-That discards samples from well-measured events.
+(`data_collection.py:616-625`). That discards samples from well-measured events.
 
-This branch (`ragged-pe-samples`) lets each event keep its natural number of PE samples.
-The representation change is:
+We want each event to keep (up to a cap of) its natural number of PE samples, **without**
+giving up the rectangular `(Nobs, NPE)` array that lets the whole likelihood vectorize over
+events. (An earlier attempt made `posteriors` a *list of per-event dicts* and looped over
+events in Python; that defeats JAX vectorization and is slow. It was reverted.)
 
-| | before | after |
-|---|---|---|
-| public `PixelPopData.posteriors` | `dict[str, (Nobs, Nsample)]` | **`list[dict[str, (Nsample_i,)]]`** (one dict per event) |
-| internal event handling | one rectangular array, `logsumexp(..., axis=1)` | **loop over the list of event dicts**, per-event `logsumexp` |
-| injections | single rectangular set | **unchanged** (single rectangular set) |
+## Approach: pad to rectangular, track real counts
 
-## Done in this branch (Part A)
+`posteriors` stays a **rectangular dict** `dict[str, (Nobs, NPE)]`. Events with more than
+`NPE` samples are downsampled to `NPE`; events with **fewer** are **padded** up to `NPE`
+by repeating randomly drawn rows, with the padded rows' `prior` set to `+inf`. A padded
+sample's PixelPop importance weight is `exp(model − log_prior) = exp(finite − inf) = 0`, so
+it drops out of every Monte-Carlo sum (this reuses the exact `prior = inf` mechanism
+already used for out-of-range / injection-free samples, so gradients stay finite).
 
-- **`pixelpop/utils/collection.py`** (new):
-  - `load_all_events_no_downsample(args, ...)` — copy of upstream `load_all_events` with
-    the downsampling block removed; returns `dict[event_name -> DataFrame]` of full length.
-  - `posteriors_to_pytree(posteriors, parameters)` — converts that dict to
-    `(event_dicts, event_names)`, the list-of-dicts pytree.
-- **`pixelpop/utils/data.py`**:
-  - `PixelPopData.posteriors` typed/documented as a list of per-event dicts.
-  - New helpers `build_bin_axes`, `bin_dataset`, `flag_out_of_range`, `flag_injection_free`
-    (the old `place_in_bins`/`check_bins` are kept intact for backward compatibility).
-  - `preprocess_cosmology` and `__post_init__` loop over events; `event_bins`
-    (and IID `event_bins_1`/`event_bins_2`) are now **lists** of per-event bin tuples;
-    `Nobs = len(posteriors)`.
-- **`pixelpop/utils/__init__.py`**: guarded re-export of `collection` (optional dep).
+The **only** thing that must change versus equal-count behaviour: the per-event Monte-Carlo
+mean and its variance / effective-sample (Neff) estimates must divide by each event's
+**real** sample count `c_i`, not the padded width `NPE`. Padding adds zero-weight samples;
+counting them would falsely inflate the apparent precision.
 
-## Part B — implemented
+| | representation |
+|---|---|
+| `PixelPopData.posteriors` | `dict[str, (Nobs, NPE)]` (rectangular, padded) |
+| `PixelPopData.event_counts` | `(Nobs,)` real per-event counts (defaults to `NPE`) |
+| event handling | one rectangular array, `logsumexp(..., axis=1)` (unchanged) |
+| injections | single rectangular set (unchanged) |
 
-> Status: **implemented.** Each entry names the file and the change made. Two caveats
-> (B4 validation, and the experimental model) are documented at the end.
+### Why `event_counts` is an explicit field, not derived from the prior
 
-### B1. Likelihood — `pixelpop/models/gwpop_models.py` ✅
-- Added `_per_event_moments(event_weights)` which accepts either a ragged `list`/`tuple`
-  of 1-D per-event weight arrays or a rectangular `(n_events, n_samples)` array, and
-  returns `(n_events, counts, numerators, square_sums)`. `rate_likelihood` now uses it
-  (per-event `counts` replaces the scalar `minimum_length`). The **VT / injection** branch
-  (`denominator_weights`, `square_sum`, `vt_neff`, `nexp`, `vt_ln_likelihood*`) is
-  unchanged. Both list and 2-D inputs are supported (back-compatible).
-- `hierarchical_likelihood` (the jitted, currently-unused function previously called
-  "ess_rate_likelihood" in the plan) was left rectangular-only — nothing calls it.
+`clean_par` and the binning in `__post_init__` also set `log_prior = inf` for out-of-range
+/ injection-free **real** samples. Those are genuine draws (zero weight) that must remain
+in `c_i` — the MC denominator is the number of samples *drawn*. So `c_i` cannot be
+re-derived from `isfinite(log_prior)` after cleaning/binning; it is captured at **pad time**
+(by `posteriors_to_rectangular`) and passed through.
 
-### B2. Model assembly — `pixelpop/models/probabilistic.py` ✅
-- Split sampling from per-dataset weight accumulation:
-  - `sample_pixelpop_field()` performs all ICAR `sample`/`factor`/`deterministic` calls
-    once (incl. the `log_rate` normalization and `log_marginal_*`); returns
-    `{'skip', 'mrd', 'normalization'}` (or `{'skip': True, 'R': ...}` when skipped).
-  - `pixelpop_log_weight(bins, field)` returns the additive pixelized log-weight for one
-    dataset's bins (IID-aware).
-  - `sample_parametric_hyperparameters()` draws the hyperparameters + constraint factors
-    once; `parametric_log_weight(data, sample)` evaluates the parametric contribution for
-    one dataset.
-- `probabilistic_model` samples the shared field/hyperparameters once, evaluates the
-  injection weights once (rectangular), then **loops over the list of event dicts** to
-  build a per-event 1-D weight array, and passes the list to `rate_likelihood`. All
-  NumPyro site names are preserved (`merger_rate_density`, `log_rate`, `lnsigma`,
-  `log_marginal_*`, parametric hyperparameters, deterministics).
-- `get_initial_value`, `get_table_size`, `inference_loop`: unchanged — the list pytree
-  flows through `model_kwargs` as a pytree arg. Confirmed by tracing + a short NUTS run.
+## Changes
 
-### B3. Post-processing — `pixelpop/result/post_processing.py` ✅
-- `PixelPopRateFunction`: stores the per-event bin **list** for `dataset_type='posteriors'`
-  and rectangular bins for `'injections'`. `__call__(dataset, hyperparameters, bins=None)`
-  now takes explicit `bins` (the caller supplies per-event bins; `None` falls back to the
-  stored injection bins). `log_prob_parametric_model`/`log_rate_pixelpop` take shape/bins
-  explicitly.
-- `resample_posteriors`: loops over events, reweighting each event's ragged sample array
-  independently. Returns `reweight_iloc` shaped `(nsamples, Nobs)` (column `ii` indexes
-  event `ii`'s own samples) and per-event `neffs` shaped `(Nobs,)`.
-- `reweight_events_and_injections`: indexing updated to
-  `posteriors[ii][gw][event_iloc[:,ii]]` and `posteriors[0].keys()`.
+### Data
+- **`pixelpop/utils/data.py`**
+  - New `posteriors_to_rectangular(posteriors, parameters, n_samples, seed=None)` →
+    `(rect_dict, event_counts, event_names)`. Truncates/pads each event to `n_samples`;
+    padded `prior = +inf`; returns the real per-event counts.
+  - `PixelPopData` gains an optional `event_counts` field. In `__post_init__` it defaults
+    to `jnp.full(Nobs, NPE)` (captured **before** `place_in_bins` adds inf priors).
+  - Everything else (`place_in_bins`, `convert_*`, `clean_par`, the rectangular binning in
+    `__post_init__`) is the pre-existing rectangular code.
+- **`pixelpop/utils/collection.py`** (optional, needs `gwpopulation_pipe`)
+  - `load_all_events_no_downsample` downsamples each event to
+    `min(len, args.samples_per_posterior)` (no global min-downsample).
+  - `gather_posteriors` / `main` build a rectangular set via
+    `data.posteriors_to_rectangular` and pickle
+    `{'posteriors', 'event_counts', 'event_names'}`.
+  - `posteriors_to_pytree` (list-of-dicts) is retained for callers wanting the ragged form.
 
-### B4. Validation — `pixelpop/result/validate.py` ✅ (fully ragged)
-- `population_error` was extended (branch `ragged-posteriors`) to accept ragged event
-  posteriors: `pad_ragged_posteriors` pads a list of per-event dicts to `(Nobs, NPE_max)`
-  with `prior=+inf` on padded rows (padded weights → 0) and returns the real per-event
-  `event_counts`; `error_statistics(..., event_counts=...)` uses those counts as the
-  single-event Monte-Carlo size.
-- `compute_error_statistics` now: adds `'prior'=exp(log_prior)` per event, pads via
-  `population_error.pad_ragged_posteriors`, pads the rate function's precomputed per-event
-  bins to the same `NPE_max` (padded bin entries repeat a valid in-range index; their
-  weight is zero anyway), and passes `event_counts` to `error_statistics`. The old
-  equal-counts restriction / `NotImplementedError` is gone.
-- **Requires** a `population_error` that includes the ragged API (the `ragged-posteriors`
-  branch / a release containing `pad_ragged_posteriors` + the `event_counts` kwarg).
-- Verified end-to-end on CPU: ragged events (40/95/150) → finite error/precision/accuracy.
+### Likelihood — `pixelpop/models/gwpop_models.py`
+- `_per_event_moments(event_weights, event_counts=None)`: rectangular branch divides by
+  `event_counts` when given (a length-`Nobs` array broadcasting over `axis=1`), else by
+  `NPE`. `rate_likelihood(..., event_counts=None)` forwards it; `single_event_neffs`
+  becomes per-event-correct automatically. `hierarchical_likelihood` gained the same
+  optional kwarg.
 
-### B5. Save — `pixelpop/result/save_popsummary.py` ✅ (no change needed)
-- Derives event names from data-dir globbing and delegates resampling to
-  `reweight_events_and_injections` (B3). It does not index `pixelpop_data.posteriors`
-  arrays directly, so no change was required.
+### Model — `pixelpop/models/probabilistic.py`, `pixelpop/experimental/probabilistic.py`
+- Reverted to the rectangular accumulation (`nonparametric_model` / `parametric_model`
+  building a single `(Nobs, NPE)` `event_weights`). The only edit is passing
+  `event_counts=pixelpop_data.event_counts` to `rate_likelihood`.
 
-### B6. Examples — `examples/mass1_redshift.py`, `examples/masses.py` ✅
-- Now build a **list of per-event dicts** and apply `convert_*` / `clean_par` per event
-  (the helpers are unchanged; only the call sites). A comment points at
-  `pixelpop.utils.collection.posteriors_to_pytree` as an alternative.
+### Post-processing — `pixelpop/result/post_processing.py`
+- Reverted to rectangular, **no count threading needed**: reweighting / Neff there are
+  self-normalizing over the `NPE` columns, and padded rows have weight 0 (never resampled,
+  contribute 0 to `Σw` and `Σw²`).
 
-### B7. Tests — `test/utils/data_test.py` ✅
-- Added `TestRaggedPixelPopData.test_ragged_construction`: builds a `PixelPopData` with
-  unequal per-event counts (50 / 120 / 300) and asserts `Nobs`, `len(event_bins)`, and
-  per-event `ln_dVTc` / `log_prior` / bin shapes. Suite: **8 passed**.
-- End-to-end (CPU env, not a committed test): a short NUTS run on ragged data yields a
-  finite `log_likelihood`, and `resample_posteriors` returns `(nsamples, Nobs)` /
-  `(Nobs,)` shapes.
+### Validation — `pixelpop/result/validate.py`
+- Reverted to the rectangular body and passes `event_counts=pixelpop_data.event_counts` to
+  `population_error.error_statistics` (the `event_counts` kwarg already exists upstream).
+  No `pad_ragged_posteriors` / bin-padding needed — the posteriors are already rectangular.
 
-## Notes / gotchas
-- `place_in_bins` and `check_bins` are retained but no longer used by `PixelPopData`;
-  `models/probabilistic.py:15` and `experimental/probabilistic.py:8` import `place_in_bins`
-  but never call it (pre-existing dead imports).
-- `jnp.ravel_multi_index(..., mode='clip')` in `flag_injection_free` keeps already-flagged
-  out-of-range indices from raising; their prior is `inf` regardless.
-- Injections are intentionally **not** ragged — there is a single injection set shared by
-  all events, so all VT-side code stays rectangular.
-- **`pixelpop/experimental/probabilistic.py` migrated** too: `prior_probabilistic_model`
-  now uses the same split (`sample_pixelpop_field` / `pixelpop_log_weight` /
-  `sample_parametric_hyperparameters` / `parametric_log_weight`) and loops over the event
-  list. The SVI / NeuTra inference helpers were untouched — they pass the `posteriors` list
-  through `model_kwargs` as a pytree. Verified by tracing with a finite log-likelihood.
+### Examples / tests
+- `examples/masses.py`, `examples/mass1_redshift.py`: load per-event arrays, call
+  `posteriors_to_rectangular` (padding up to the largest event so no samples are
+  discarded), and pass `event_counts` to `PixelPopData`.
+- `test/utils/data_test.py`: `TestPosteriorsToRectangular` (padding shapes / counts /
+  `prior=inf` tail / truncation) and `TestPaddedPixelPopData` (rectangular bins, preserved
+  `event_counts`, and `event_counts=None` defaulting to `NPE`).
+
+## Verification (CPU, against the working tree)
+`JAX_PLATFORMS=cpu PYTHONPATH=<repo-root> <gwjax311-python> ...`
+- `pytest test/utils/data_test.py` → 11 passed.
+- Likelihood equivalence: `rate_likelihood` with `event_counts=None` == explicit all-`NPE`
+  counts; padding an event with `prior=inf` (weight `−inf`) rows + correct `event_counts`
+  reproduces the un-padded `log_likelihood`, `single_event_neffs`, and variance exactly;
+  genuinely ragged counts give finite, manually-verified per-event numerators.
+- End-to-end on padded data (counts 40/95/150): model trace → finite `log_likelihood` /
+  `log_likelihood_variance`; `compute_error_statistics` → finite error/precision/accuracy.

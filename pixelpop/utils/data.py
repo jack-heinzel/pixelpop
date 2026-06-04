@@ -48,10 +48,83 @@ def clean_par(data, par, minimum, maximum, remove=False):
                 except (TypeError, IndexError):
                     continue
         else:
-            mean = 0.5*(minimum + maximum) # arithmetic mean    
+            mean = 0.5*(minimum + maximum) # arithmetic mean
             data[par] = jnp.where(bad, mean*jnp.ones_like(m), data[par])
             data['log_prior'] = jnp.where(bad, jnp.inf, data['log_prior'])
     return data
+
+def posteriors_to_rectangular(posteriors, parameters, n_samples, seed=None):
+    """
+    Stack per-event posteriors into a single rectangular dict, padding short events.
+
+    PixelPop runs on a rectangular ``(Nobs, NPE)`` set of posterior samples. Real GW
+    events have different numbers of PE samples, so this helper truncates events with
+    more than ``n_samples`` samples and **pads** events with fewer up to ``n_samples``
+    by repeating randomly drawn existing rows. The padded rows' ``"prior"`` is set to
+    ``+inf`` so their PixelPop importance weight ``exp(model - log_prior)`` is exactly
+    zero and they drop out of every Monte-Carlo sum. The real (un-padded) per-event
+    sample count is returned separately and should be passed to ``PixelPopData`` as
+    ``event_counts`` so the variance / effective-sample calculations divide by the right
+    N rather than the padded width.
+
+    Parameters
+    ----------
+    posteriors : dict
+        Mapping of event name -> dict-like (``pd.DataFrame``, structured array, ...) of
+        posterior samples. Each entry must contain every name in ``parameters`` plus
+        ``"prior"``.
+    parameters : list of str
+        Parameter names to extract for each event. ``"prior"`` is always included.
+    n_samples : int
+        Common per-event sample count (the padded width).
+    seed : int, optional
+        Seed for the random padding / downsampling draws.
+
+    Returns
+    -------
+    rect : dict
+        Mapping of each parameter (and ``"prior"``) to a ``(Nobs, n_samples)`` array.
+        Padded entries have ``prior = +inf``.
+    event_counts : jax.numpy.ndarray
+        Length-``Nobs`` array of each event's real (un-padded) sample count.
+    event_names : list of str
+        Event names, in row order.
+    """
+    keys = list(parameters)
+    if "prior" not in keys:
+        keys = keys + ["prior"]
+
+    rng = np.random.default_rng(seed)
+    event_names = list(posteriors)
+    columns = {key: [] for key in keys}
+    counts = []
+    for name in event_names:
+        frame = posteriors[name]
+        event = {key: np.asarray(frame[key]) for key in keys}
+        count = event[keys[0]].shape[0]
+        if count > n_samples:
+            # keep a random subset of n_samples real rows
+            idx = rng.choice(count, size=n_samples, replace=False)
+            event = {key: event[key][idx] for key in keys}
+            count = n_samples
+        elif count < n_samples:
+            # pad up to n_samples by repeating randomly drawn real rows; padded rows get
+            # prior=+inf so they carry zero weight.
+            pad = rng.choice(count, size=n_samples - count, replace=True)
+            for key in keys:
+                if key == "prior":
+                    event[key] = np.concatenate(
+                        [event[key], np.full(n_samples - count, np.inf)]
+                    )
+                else:
+                    event[key] = np.concatenate([event[key], event[key][pad]])
+        counts.append(count)
+        for key in keys:
+            columns[key].append(event[key])
+
+    rect = {key: jnp.asarray(np.stack(columns[key])) for key in keys}
+    event_counts = jnp.asarray(counts)
+    return rect, event_counts, event_names
 
 def check_bins(event_bins, injection_bins, bins=100):
     """
@@ -193,7 +266,7 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     """
 
     
-    if np.ndim(bins) == 0:
+    if jnp.ndim(bins) == 0:
         bins = [bins] * len(parameters)
 
     bin_axes = [jnp.linspace(minima[par], maxima[par], bins[ii]+1) for ii, par in enumerate(parameters)]
@@ -220,124 +293,8 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     return event_bins, inj_bins, bin_axes, logdV, e_prior_mod, i_prior_mod
 
 
-def build_bin_axes(parameters, bins, minima, maxima):
-    """
-    Construct the bin edges and log bin volumes for the pixelized grid.
-
-    This depends only on the grid definition (parameters, number of bins, and
-    axis limits), not on any particular dataset, so it is computed once and reused
-    for both injections and every event.
-
-    Parameters
-    ----------
-    parameters : sequence of str
-        Names of the binned parameters. The order defines the bin axes.
-    bins : int or sequence of int
-        Number of bins per parameter. A scalar is broadcast to all dimensions.
-    minima, maxima : dict
-        Parameter -> lower/upper bound of the grid.
-
-    Returns
-    -------
-    bin_axes : list of jax.numpy.ndarray
-        Bin edge arrays, one per parameter.
-    logdV : jax.numpy.ndarray
-        Logarithm of the bin width along each dimension.
-    """
-    if np.ndim(bins) == 0:
-        bins = [bins] * len(parameters)
-    bin_axes = [jnp.linspace(minima[par], maxima[par], bins[ii] + 1) for ii, par in enumerate(parameters)]
-    logdV = jnp.log(jnp.array([b[1] - b[0] for b in bin_axes]))
-    return bin_axes, logdV
-
-
-def bin_dataset(parameters, dataset, bin_axes):
-    """
-    Place a single dataset's samples into the pixelized grid.
-
-    Parameters
-    ----------
-    parameters : sequence of str
-        Names of the binned parameters, matching ``bin_axes``.
-    dataset : dict-like
-        Mapping from parameter name to a 1-D array of samples.
-    bin_axes : list of jax.numpy.ndarray
-        Bin edge arrays, e.g. from :func:`build_bin_axes`.
-
-    Returns
-    -------
-    bins : tuple of jax.numpy.ndarray
-        Bin indices, one array per parameter.
-    """
-    coordinates = [dataset[par] for par in parameters]
-    return place_samples_in_bins(bin_axes, coordinates)
-
-
-def flag_out_of_range(sample_bins, bins):
-    """
-    Build an additive log-prior modifier flagging samples outside the grid.
-
-    A sample is out of range when any of its bin indices is ``-1`` (below the grid)
-    or equal to the number of bins along that axis (above the grid). Such samples
-    are assigned an infinite log-prior so they drop out of Monte Carlo sums.
-
-    Parameters
-    ----------
-    sample_bins : tuple of jax.numpy.ndarray
-        Bin indices for one dataset, one array per parameter.
-    bins : int or sequence of int
-        Number of bins per parameter.
-
-    Returns
-    -------
-    prior_mod : jax.numpy.ndarray
-        Array shaped like a single bin index array, ``jnp.inf`` at out-of-range
-        samples and ``0`` elsewhere.
-    """
-    if np.ndim(bins) == 0:
-        bins = [bins] * len(sample_bins)
-    prior_mod = jnp.zeros_like(sample_bins[0], dtype='float32')
-    for ii, b in enumerate(sample_bins):
-        bad = jnp.logical_or(b == -1, b == bins[ii])
-        prior_mod = jnp.where(bad, jnp.inf, prior_mod)
-    return prior_mod
-
-
-def flag_injection_free(event_bins, inj_bins, bins):
-    """
-    Build an additive log-prior modifier flagging event samples in empty bins.
-
-    Posterior samples that land in bins containing no injections make the Monte
-    Carlo selection estimate formally divergent, so they are assigned an infinite
-    log-prior. Works on a single event's (1-D) bin indices.
-
-    Parameters
-    ----------
-    event_bins : tuple of jax.numpy.ndarray
-        Bin indices for one event, one array per parameter.
-    inj_bins : tuple of jax.numpy.ndarray
-        Bin indices for the injection set, one array per parameter.
-    bins : int or sequence of int
-        Number of bins per parameter.
-
-    Returns
-    -------
-    prior_mod : jax.numpy.ndarray
-        ``jnp.inf`` at samples falling in injection-free bins, ``0`` elsewhere.
-    """
-    if np.ndim(bins) == 0:
-        bins = [bins] * len(event_bins)
-    bins = tuple(bins)
-    # 'clip' keeps out-of-range indices (already flagged by flag_out_of_range)
-    # from raising; their value is irrelevant since their prior is inf anyway.
-    flat_e = jnp.ravel_multi_index(event_bins, bins, mode='clip')
-    flat_i = jnp.ravel_multi_index(inj_bins, bins, mode='clip')
-    isin = jnp.isin(flat_e, flat_i)
-    return jnp.where(isin, 0.0, jnp.inf)
-
-
 # Assuming you have your COSMO object available globally or pass it in
-# from .cosmology import COSMO
+# from .cosmology import COSMO 
 
 @dataclass
 class PixelPopData:
@@ -366,11 +323,9 @@ class PixelPopData:
     ----------
     name : str
         name for saving result files and chains
-    posteriors : list of dict
-        Per-event posterior samples as a pytree: a list with one dict per event,
-        each dict mapping parameter name to a 1-D array of that event's samples.
-        Different events may have different numbers of samples (ragged). Each event
-        dict must also include 'log_prior'.
+    posteriors : dict
+        Posterior samples keyed by parameter name. Each entry is shaped
+        (Nobs, Nsample). Must also include 'ln_prior'.
     injections : dict
         Injection data keyed by parameter name. Each entry is shaped (Nfound).
         Must include 'ln_prior', 'total_generated' (int/float), and
@@ -417,7 +372,7 @@ class PixelPopData:
     """
     name: str
     # Data
-    posteriors: List[Dict[str, Any]]
+    posteriors: Dict[str, Any]
     injections: Dict[str, Any]
     
     # Gravitational wave parameter space
@@ -449,6 +404,12 @@ class PixelPopData:
     skip_nonparametric: bool = False
     constraint_funcs: List[Callable] = field(default_factory=list)
     coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+    # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
+    # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
+    # event_counts[i] is the number of real samples for event i, used as the
+    # single-event Monte-Carlo integral size in the variance / Neff calculations.
+    # If None, defaults to NPE for every event (all events equal length, no padding).
+    event_counts: Optional[Any] = None
 
     def preprocess_cosmology(self, cosmology):
         """
@@ -458,12 +419,12 @@ class PixelPopData:
         
         print("Preprocessing cosmology data...")
         # from unxt.quantity import Quantity
-
+        
         # Extract data
+        event_z = self.posteriors['redshift']
         inj_z = self.injections['redshift']
-
-        max_event_z = max(float(jnp.max(event['redshift'])) for event in self.posteriors)
-        max_z = np.maximum(np.max(inj_z), max_event_z)
+        
+        max_z = np.maximum(np.max(inj_z), np.max(event_z))
         zs = np.linspace(1e-6, max_z, 10000)
         
         # Calculate dVc/dz / (1+z)
@@ -480,9 +441,8 @@ class PixelPopData:
             
         ln_dVTc = np.log(dVs) - np.log(1 + zs)
 
-        # Interpolate and store, per event, in the dictionaries
-        for event in self.posteriors:
-            event['ln_dVTc'] = jnp.interp(event['redshift'], zs, ln_dVTc)
+        # Interpolate and store in the dictionaries
+        self.posteriors['ln_dVTc'] = jnp.interp(event_z, zs, ln_dVTc)
         self.injections['ln_dVTc'] = jnp.interp(inj_z, zs, ln_dVTc)
         
     def __post_init__(self):
@@ -496,7 +456,17 @@ class PixelPopData:
                 "Grid bounds are taken from coupling_prior.",
                 stacklevel=2,
             )
-        self.Nobs = len(self.posteriors)
+        key0 = list(self.posteriors.keys())[0]
+        self.Nobs = self.posteriors[key0].shape[0]
+        # Real (un-padded) per-event sample count for the Monte-Carlo variance / Neff.
+        # Captured here, before place_in_bins flags out-of-range / injection-free samples
+        # with prior=inf: those flagged samples are genuine draws (zero weight) that must
+        # remain in the count, so the count cannot be re-derived from the prior later.
+        NPE = self.posteriors[key0].shape[1]
+        if self.event_counts is None:
+            self.event_counts = jnp.full(self.Nobs, NPE)
+        else:
+            self.event_counts = jnp.asarray(self.event_counts)
         # standardize bin dimension
         self.dimension = len(self.pixelpop_parameters)
         if jnp.ndim(self.bins) == 0:
@@ -519,62 +489,42 @@ class PixelPopData:
         self.minima = new_minima
         self.maxima = new_maxima
 
-        # bin up events and injections. Bin axes depend only on the grid, so they
-        # are built once; injections are binned once; each (ragged) event is binned
-        # in a loop, accumulating its own log-prior modifiers.
-        any_problematic = False
+        # bin up events and injections
         if self.IID:
-            pp1 = [x + '_1' for x in self.pixelpop_parameters]
-            pp2 = [x + '_2' for x in self.pixelpop_parameters]
-            self.bin_axes, self.logdV = build_bin_axes(pp1, self.bins, self.minima, self.maxima)
-
-            self.inj_bins_1 = bin_dataset(pp1, self.injections, self.bin_axes)
-            self.inj_bins_2 = bin_dataset(pp2, self.injections, self.bin_axes)
-            iprior = flag_out_of_range(self.inj_bins_1, self.bins) + flag_out_of_range(self.inj_bins_2, self.bins)
+            self.event_bins_1, self.inj_bins_1, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                [x + '_1' for x in self.pixelpop_parameters], 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
+            )
+            self.posteriors['log_prior'] += eprior
             self.injections['log_prior'] += iprior
-            any_problematic |= bool(jnp.any(jnp.isinf(iprior)))
 
-            self.event_bins_1, self.event_bins_2 = [], []
-            for event in self.posteriors:
-                eb1 = bin_dataset(pp1, event, self.bin_axes)
-                eb2 = bin_dataset(pp2, event, self.bin_axes)
-                eprior = (
-                    flag_out_of_range(eb1, self.bins)
-                    + flag_injection_free(eb1, self.inj_bins_1, self.bins)
-                    + flag_out_of_range(eb2, self.bins)
-                    + flag_injection_free(eb2, self.inj_bins_2, self.bins)
-                )
-                event['log_prior'] += eprior
-                self.event_bins_1.append(eb1)
-                self.event_bins_2.append(eb2)
-                any_problematic |= bool(jnp.any(jnp.isinf(eprior)))
+            self.event_bins_2, self.inj_bins_2, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                [x + '_2' for x in self.pixelpop_parameters], 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
+            )
+            self.posteriors['log_prior'] += eprior
+            self.injections['log_prior'] += iprior
 
         else:
-            self.bin_axes, self.logdV = build_bin_axes(
-                self.pixelpop_parameters, self.bins, self.minima, self.maxima
+            self.event_bins, self.inj_bins, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
+                self.pixelpop_parameters, 
+                self.posteriors, 
+                self.injections, 
+                bins=self.bins, 
+                minima=self.minima, 
+                maxima=self.maxima
             )
-
-            self.inj_bins = bin_dataset(self.pixelpop_parameters, self.injections, self.bin_axes)
-            iprior = flag_out_of_range(self.inj_bins, self.bins)
+            self.posteriors['log_prior'] += eprior
             self.injections['log_prior'] += iprior
-            any_problematic |= bool(jnp.any(jnp.isinf(iprior)))
-
-            self.event_bins = []
-            for event in self.posteriors:
-                eb = bin_dataset(self.pixelpop_parameters, event, self.bin_axes)
-                eprior = flag_out_of_range(eb, self.bins) + flag_injection_free(eb, self.inj_bins, self.bins)
-                event['log_prior'] += eprior
-                self.event_bins.append(eb)
-                any_problematic |= bool(jnp.any(jnp.isinf(eprior)))
-
-        if any_problematic:
-            warnings.warn(
-                '\n\tSome samples fall outside the PixelPop range or in injection-free '
-                'bins; their prior was set to jnp.inf so they drop out of Monte Carlo sums.\n',
-                RuntimeWarning,
-                stacklevel=2,
-            )
-
+        
         full_hyperparams = gwpop_models.gwparameter_to_hyperparameters.copy()
         full_hyperparams.update(self.parameter_to_hyperparameters)
         self.parameter_to_hyperparameters = full_hyperparams
