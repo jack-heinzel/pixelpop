@@ -400,10 +400,11 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
         likelihood_dict = \
             rate_likelihood(
-                event_weights, 
-                inj_weights, 
-                injections['total_generated'], 
-                live_time=injections['analysis_time']
+                event_weights,
+                inj_weights,
+                injections['total_generated'],
+                live_time=injections['analysis_time'],
+                event_counts=pixelpop_data.event_counts
                 )
         
         ln_likelihood  =likelihood_dict['log_likelihood']

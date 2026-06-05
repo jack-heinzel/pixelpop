@@ -48,10 +48,83 @@ def clean_par(data, par, minimum, maximum, remove=False):
                 except (TypeError, IndexError):
                     continue
         else:
-            mean = 0.5*(minimum + maximum) # arithmetic mean    
+            mean = 0.5*(minimum + maximum) # arithmetic mean
             data[par] = jnp.where(bad, mean*jnp.ones_like(m), data[par])
             data['log_prior'] = jnp.where(bad, jnp.inf, data['log_prior'])
     return data
+
+def posteriors_to_rectangular(posteriors, parameters, n_samples, seed=None):
+    """
+    Stack per-event posteriors into a single rectangular dict, padding short events.
+
+    PixelPop runs on a rectangular ``(Nobs, NPE)`` set of posterior samples. Real GW
+    events have different numbers of PE samples, so this helper truncates events with
+    more than ``n_samples`` samples and **pads** events with fewer up to ``n_samples``
+    by repeating randomly drawn existing rows. The padded rows' ``"prior"`` is set to
+    ``+inf`` so their PixelPop importance weight ``exp(model - log_prior)`` is exactly
+    zero and they drop out of every Monte-Carlo sum. The real (un-padded) per-event
+    sample count is returned separately and should be passed to ``PixelPopData`` as
+    ``event_counts`` so the variance / effective-sample calculations divide by the right
+    N rather than the padded width.
+
+    Parameters
+    ----------
+    posteriors : dict
+        Mapping of event name -> dict-like (``pd.DataFrame``, structured array, ...) of
+        posterior samples. Each entry must contain every name in ``parameters`` plus
+        ``"prior"``.
+    parameters : list of str
+        Parameter names to extract for each event. ``"prior"`` is always included.
+    n_samples : int
+        Common per-event sample count (the padded width).
+    seed : int, optional
+        Seed for the random padding / downsampling draws.
+
+    Returns
+    -------
+    rect : dict
+        Mapping of each parameter (and ``"prior"``) to a ``(Nobs, n_samples)`` array.
+        Padded entries have ``prior = +inf``.
+    event_counts : jax.numpy.ndarray
+        Length-``Nobs`` array of each event's real (un-padded) sample count.
+    event_names : list of str
+        Event names, in row order.
+    """
+    keys = list(parameters)
+    if "prior" not in keys:
+        keys = keys + ["prior"]
+
+    rng = np.random.default_rng(seed)
+    event_names = list(posteriors)
+    columns = {key: [] for key in keys}
+    counts = []
+    for name in event_names:
+        frame = posteriors[name]
+        event = {key: np.asarray(frame[key]) for key in keys}
+        count = event[keys[0]].shape[0]
+        if count > n_samples:
+            # keep a random subset of n_samples real rows
+            idx = rng.choice(count, size=n_samples, replace=False)
+            event = {key: event[key][idx] for key in keys}
+            count = n_samples
+        elif count < n_samples:
+            # pad up to n_samples by repeating randomly drawn real rows; padded rows get
+            # prior=+inf so they carry zero weight.
+            pad = rng.choice(count, size=n_samples - count, replace=True)
+            for key in keys:
+                if key == "prior":
+                    event[key] = np.concatenate(
+                        [event[key], np.full(n_samples - count, np.inf)]
+                    )
+                else:
+                    event[key] = np.concatenate([event[key], event[key][pad]])
+        counts.append(count)
+        for key in keys:
+            columns[key].append(event[key])
+
+    rect = {key: jnp.asarray(np.stack(columns[key])) for key in keys}
+    event_counts = jnp.asarray(counts)
+    return rect, event_counts, event_names
 
 def check_bins(event_bins, injection_bins, bins=100):
     """
@@ -119,10 +192,16 @@ def check_bins(event_bins, injection_bins, bins=100):
     
     # first uniquely flatten bins
     # flatten to single index for each bin to assist checking of uniqueness. Simpler than a multi-dimensional index
-    flattened_ebins = jnp.ravel_multi_index(event_bins, bins)
-    flattened_ibins = jnp.ravel_multi_index(injection_bins, bins)
+    flattened_ebins = jnp.ravel_multi_index(event_bins, bins, mode='clip')
+    flattened_ibins = jnp.ravel_multi_index(injection_bins, bins, mode='clip')
 
-    isin = jnp.isin(flattened_ebins, flattened_ibins)
+    # Membership test via a flat bin-occupancy array rather than jnp.isin, which
+    # broadcasts to an (N_event, N_inj) intermediate. With padded posteriors the
+    # event array is large (Nobs*NPE) and that intermediate overflows GPU kernel
+    # launch limits. Occupancy is O(N_event + N_inj + prod(bins)) and tiny.
+    n_flat_bins = int(np.prod(np.asarray(bins)))
+    inj_occupancy = jnp.zeros(n_flat_bins, dtype=bool).at[flattened_ibins.ravel()].set(True)
+    isin = inj_occupancy[flattened_ebins]
     if jnp.any(~isin):
         warnings.warn(
             f'\n\tSome ({jnp.sum(~isin)}, {int(10_000*jnp.mean(~isin)+0.001)/100}%) posterior samples are in bins with no detectability.\n',
@@ -331,6 +410,12 @@ class PixelPopData:
     skip_nonparametric: bool = False
     constraint_funcs: List[Callable] = field(default_factory=list)
     coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+    # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
+    # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
+    # event_counts[i] is the number of real samples for event i, used as the
+    # single-event Monte-Carlo integral size in the variance / Neff calculations.
+    # If None, defaults to NPE for every event (all events equal length, no padding).
+    event_counts: Optional[Any] = None
 
     def preprocess_cosmology(self, cosmology):
         """
@@ -379,6 +464,15 @@ class PixelPopData:
             )
         key0 = list(self.posteriors.keys())[0]
         self.Nobs = self.posteriors[key0].shape[0]
+        # Real (un-padded) per-event sample count for the Monte-Carlo variance / Neff.
+        # Captured here, before place_in_bins flags out-of-range / injection-free samples
+        # with prior=inf: those flagged samples are genuine draws (zero weight) that must
+        # remain in the count, so the count cannot be re-derived from the prior later.
+        NPE = self.posteriors[key0].shape[1]
+        if self.event_counts is None:
+            self.event_counts = jnp.full(self.Nobs, NPE)
+        else:
+            self.event_counts = jnp.asarray(self.event_counts)
         # standardize bin dimension
         self.dimension = len(self.pixelpop_parameters)
         if jnp.ndim(self.bins) == 0:

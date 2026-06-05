@@ -28,26 +28,33 @@ maxima = {'mass_1': 200.}
 with h5py.File('data/GWTC3_injections.h5') as f:
     injections = {k: f[k][()] for k in f.keys()}
     
-# dictionary of gw samples, containing 2D arrays of shape (Nobs, NPE). Must contain 'prior' key 
-# in addition to GW parameters
+# Different events have different numbers of PE samples, so we stack them into a single
+# rectangular (Nobs, NPE) dict with pixelpop.utils.data.posteriors_to_rectangular: events
+# with fewer than NPE samples are padded with prior=+inf rows (zero weight), and the real
+# per-event sample counts are returned as `event_counts` (passed to PixelPopData so the
+# variance / Neff calculations use the right N). Here we pad up to the largest event so no
+# samples are discarded.
 # adapted from publicly available GW posteriors at https://zenodo.org/records/6513631 and https://zenodo.org/records/8177023
 with h5py.File('data/GWTC3_posteriors.h5') as f:
-    _posteriors = {k: f[k][()] for k in f.keys()}
+    _posteriors = {event: f[event][()] for event in f.keys()}
 
-keys = ['mass_1', 'mass_2', 'a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2', 'redshift', 'prior']
-posteriors = {k: jnp.array([p[k] for p in _posteriors]) for k in keys}
+keys = ['mass_1', 'mass_2', 'a_1', 'a_2', 'cos_tilt_1', 'cos_tilt_2', 'redshift']
+npe = max(_posteriors[event]['prior'].shape[0] for event in _posteriors)
+posteriors, event_counts, event_names = pixelpop.utils.data.posteriors_to_rectangular(
+    _posteriors, keys, npe
+)
 
 
 with open('../../data/all_cbc/data/injections.pkl', 'rb') as ff:
     injections = pkl.load(ff)
 
-print(f"I have {posteriors['mass_1'].shape[0]} events")
+print(f"I have {len(event_names)} events, padded to {npe} samples each")
 
 def clean_data(data, min_m=mmin, max_m=200, max_z=2.3, remove=False):
     pixelpop.utils.data.clean_par(data, 'log_mass_1', jnp.log(min_m), jnp.log(max_m), remove=remove)
     pixelpop.utils.data.clean_par(data, 'log_mass_2', jnp.log(min_m), jnp.log(max_m), remove=remove)
     pixelpop.utils.data.clean_par(data, 'redshift', 0., max_z, remove=remove)
-    
+
 # convert to log m1, log m2 space
 
 posteriors = pixelpop.utils.data.convert_m1m2_to_lm1lm2(posteriors)
@@ -73,6 +80,7 @@ pp_data = pixelpop.utils.PixelPopData(
     priors = priors, # modify prior on max_z
     lower_triangular = True, # Restrict domain to m1 > m2
     marginalize_sigma = True, # use analytic marginalization of sigma coupling strength
+    event_counts = event_counts, # real per-event sample counts (padded rows excluded)
 )
 
 probabilistic_model, initial_value = pixelpop.models.probabilistic.setup_probabilistic_model(

@@ -1,4 +1,5 @@
 import unittest
+import numpy as np
 import jax.numpy as jnp
 import pixelpop
 from pixelpop.utils.data import (
@@ -7,6 +8,8 @@ from pixelpop.utils.data import (
     convert_m1m2_to_lm1lm2,
     clean_par,
     check_bins,
+    posteriors_to_rectangular,
+    PixelPopData,
 )
 
 class TestConvertMasses(unittest.TestCase):
@@ -118,3 +121,132 @@ class TestCheckBins(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertTrue(jnp.isinf(e_bad[0,2]))
+
+
+class TestPosteriorsToRectangular(unittest.TestCase):
+    """posteriors_to_rectangular pads short events to a common width with prior=inf."""
+
+    def _events(self, counts=(50, 120, 300)):
+        rng = np.random.default_rng(0)
+        return {
+            f'event_{ii}': {
+                'log_mass_1': rng.uniform(np.log(6), np.log(40), n),
+                'redshift': rng.uniform(0.05, 1.2, n),
+                'prior': rng.uniform(0.1, 1.0, n),
+            }
+            for ii, n in enumerate(counts)
+        }
+
+    def test_padding_shapes_counts_and_inf(self):
+        counts = (50, 120, 300)
+        npe = max(counts)
+        rect, event_counts, names = posteriors_to_rectangular(
+            self._events(counts), ['log_mass_1', 'redshift'], npe
+        )
+
+        self.assertEqual(len(names), len(counts))
+        # rectangular: every key is (Nobs, npe), 'prior' included
+        for key in ('log_mass_1', 'redshift', 'prior'):
+            self.assertEqual(rect[key].shape, (len(counts), npe))
+        # real (un-padded) counts are recovered
+        np.testing.assert_array_equal(np.asarray(event_counts), np.asarray(counts))
+
+        for ii, n in enumerate(counts):
+            prior_row = np.asarray(rect['prior'][ii])
+            # the first n entries are real (finite); the padded tail is +inf
+            self.assertTrue(np.all(np.isfinite(prior_row[:n])))
+            self.assertTrue(np.all(np.isinf(prior_row[n:])))
+
+    def test_downsampling_truncates(self):
+        counts = (50, 120, 300)
+        npe = 80  # below the largest event -> that event is downsampled
+        rect, event_counts, _ = posteriors_to_rectangular(
+            self._events(counts), ['log_mass_1', 'redshift'], npe
+        )
+        self.assertEqual(rect['prior'].shape, (len(counts), npe))
+        np.testing.assert_array_equal(
+            np.asarray(event_counts), np.minimum(np.asarray(counts), npe)
+        )
+
+
+class TestPaddedPixelPopData(unittest.TestCase):
+    """PixelPopData on a padded rectangular set tracks real per-event counts."""
+
+    def _build(self, counts=(50, 120, 300)):
+        rng = np.random.default_rng(1)
+        npe = max(counts)
+        events = {
+            f'event_{ii}': {
+                'log_mass_1': rng.uniform(np.log(6), np.log(40), n),
+                'redshift': rng.uniform(0.05, 1.2, n),
+                'prior': rng.uniform(0.1, 1.0, n),
+            }
+            for ii, n in enumerate(counts)
+        }
+        rect, event_counts, _ = posteriors_to_rectangular(
+            events, ['log_mass_1', 'redshift'], npe
+        )
+        # prior=inf on padded rows -> log_prior=inf (zero weight)
+        rect['log_prior'] = jnp.log(rect.pop('prior'))
+
+        n_inj = 4000
+        injections = {
+            'log_mass_1': jnp.asarray(rng.uniform(np.log(6), np.log(40), n_inj)),
+            'redshift': jnp.asarray(rng.uniform(0.05, 1.2, n_inj)),
+            'log_prior': jnp.zeros(n_inj),
+            'total_generated': 1e6,
+            'analysis_time': 1.0,
+        }
+        pp = PixelPopData(
+            name='padded_test',
+            posteriors=rect,
+            injections=injections,
+            pixelpop_parameters=['log_mass_1', 'redshift'],
+            other_parameters=[],
+            bins=10,
+            minima={'log_mass_1': float(np.log(3)), 'redshift': 0.0},
+            maxima={'log_mass_1': float(np.log(100)), 'redshift': 2.0},
+            event_counts=event_counts,
+        )
+        return pp, npe
+
+    def test_padded_construction(self):
+        counts = (50, 120, 300)
+        npe = max(counts)
+        pp, npe = self._build(counts)
+
+        self.assertEqual(pp.Nobs, len(counts))
+        # rectangular bins: one index array per pixelpop dimension, each (Nobs, npe)
+        self.assertEqual(len(pp.event_bins), pp.dimension)
+        self.assertEqual(pp.event_bins[0].shape, (len(counts), npe))
+        self.assertEqual(pp.posteriors['log_prior'].shape, (len(counts), npe))
+        # real per-event counts are preserved on the object
+        np.testing.assert_array_equal(np.asarray(pp.event_counts), np.asarray(counts))
+
+    def test_default_event_counts_is_npe(self):
+        # when event_counts is not supplied, it defaults to NPE for every event
+        rng = np.random.default_rng(2)
+        npe = 200
+        posteriors = {
+            'log_mass_1': jnp.asarray(rng.uniform(np.log(6), np.log(40), (3, npe))),
+            'redshift': jnp.asarray(rng.uniform(0.05, 1.2, (3, npe))),
+            'log_prior': jnp.zeros((3, npe)),
+        }
+        injections = {
+            'log_mass_1': jnp.asarray(rng.uniform(np.log(6), np.log(40), 4000)),
+            'redshift': jnp.asarray(rng.uniform(0.05, 1.2, 4000)),
+            'log_prior': jnp.zeros(4000),
+            'total_generated': 1e6,
+            'analysis_time': 1.0,
+        }
+        pp = PixelPopData(
+            name='default_counts',
+            posteriors=posteriors,
+            injections=injections,
+            pixelpop_parameters=['log_mass_1', 'redshift'],
+            other_parameters=[],
+            bins=10,
+            minima={'log_mass_1': float(np.log(3)), 'redshift': 0.0},
+            maxima={'log_mass_1': float(np.log(100)), 'redshift': 2.0},
+        )
+        np.testing.assert_array_equal(np.asarray(pp.event_counts), np.full(3, npe))

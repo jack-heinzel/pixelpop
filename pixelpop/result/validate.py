@@ -75,15 +75,19 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     _ = event_pixelpop_model(posteriors, first_hypersample)
     _ = injection_pixelpop_model(injections, first_hypersample)
     
+    # Posteriors are a rectangular (Nobs, NPE) dict; events with fewer real samples are
+    # padded with prior=+inf rows (zero weight). event_counts gives each event's real
+    # sample count so the single-event Monte-Carlo integral size is correct.
     error_dict = population_error.error_statistics(
-        event_pixelpop_model, 
-        injections, 
-        posteriors, 
-        hyperposterior, 
+        event_pixelpop_model,
+        injections,
+        posteriors,
+        hyperposterior,
         vt_model_function=injection_pixelpop_model,
         include_likelihood_correction=True,
         rate=True,
         verbose=verbose,
+        event_counts=pixelpop_data.event_counts,
         )
     
     return error_dict
