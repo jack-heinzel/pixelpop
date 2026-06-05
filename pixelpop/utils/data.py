@@ -192,10 +192,16 @@ def check_bins(event_bins, injection_bins, bins=100):
     
     # first uniquely flatten bins
     # flatten to single index for each bin to assist checking of uniqueness. Simpler than a multi-dimensional index
-    flattened_ebins = jnp.ravel_multi_index(event_bins, bins)
-    flattened_ibins = jnp.ravel_multi_index(injection_bins, bins)
+    flattened_ebins = jnp.ravel_multi_index(event_bins, bins, mode='clip')
+    flattened_ibins = jnp.ravel_multi_index(injection_bins, bins, mode='clip')
 
-    isin = jnp.isin(flattened_ebins, flattened_ibins)
+    # Membership test via a flat bin-occupancy array rather than jnp.isin, which
+    # broadcasts to an (N_event, N_inj) intermediate. With padded posteriors the
+    # event array is large (Nobs*NPE) and that intermediate overflows GPU kernel
+    # launch limits. Occupancy is O(N_event + N_inj + prod(bins)) and tiny.
+    n_flat_bins = int(np.prod(np.asarray(bins)))
+    inj_occupancy = jnp.zeros(n_flat_bins, dtype=bool).at[flattened_ibins.ravel()].set(True)
+    isin = inj_occupancy[flattened_ebins]
     if jnp.any(~isin):
         warnings.warn(
             f'\n\tSome ({jnp.sum(~isin)}, {int(10_000*jnp.mean(~isin)+0.001)/100}%) posterior samples are in bins with no detectability.\n',

@@ -100,10 +100,34 @@ def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
                 len(pd.DataFrame(posteriors[post])),
                 args.samples_per_posterior
                 ), random_state=args.collection_seed
-        )
+        ).reset_index(drop=True)
         for post in posteriors
         }
-    posteriors = evaluate_prior(posteriors, args=args, dataset=label, meta=meta)
+    # Evaluate the prior on shape-stable inputs. ``evaluate_prior`` jits the
+    # (expensive) chi_eff/chi_p spin prior under the jax backend, and jax
+    # recompiles every time the input length changes. Since we deliberately keep
+    # each event at its natural (ragged) sample count, passing the frames as-is
+    # would trigger a fresh, costly recompile for *every* event. Instead we pad
+    # all events up to a common width (so the spin prior compiles exactly once),
+    # evaluate, then trim each event's prior back to its real samples. The padded
+    # rows are appended at the end, so the leading rows are untouched.
+    real_lengths = {name: len(posteriors[name]) for name in posteriors}
+    common_width = max(real_lengths.values())
+    padded = {}
+    for name, frame in posteriors.items():
+        n = real_lengths[name]
+        if n < common_width:
+            extra = frame.sample(
+                common_width - n, replace=True, random_state=args.collection_seed
+            )
+            padded[name] = pd.concat([frame, extra], ignore_index=True)
+        else:
+            padded[name] = frame
+    padded = evaluate_prior(padded, args=args, dataset=label, meta=meta)
+    posteriors = {
+        name: padded[name].iloc[: real_lengths[name]].reset_index(drop=True)
+        for name in padded
+    }
     for key in args.parameters:
         for name in posteriors:
             if key not in posteriors[name]:
