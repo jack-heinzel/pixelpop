@@ -366,6 +366,11 @@ class PixelPopData:
         If True, the merger rate field is evaluated on both BHs 1 and 2
     cauchy_icar : bool, optional (EXPERIMENTAL)
         If True, use Cauchy ICAR coupling prior, more sensitivity to gaps and more robust uncertainties
+    diagonalize_icar : bool, optional (EXPERIMENTAL)
+        If True, sample the ICAR field in a Gaussian IID ("eigenbasis") space and map
+        to the merger rate density via DiagonalizedICARTransform, rather than sampling
+        merger_rate_density directly from the ICAR distribution. Often improves geometry
+        for NUTS. Not compatible with cauchy_icar or marginalize_sigma.
     skip_nonparametric : bool, optional
         If True, disable the pixelized (nonparametric) component.
     constraint_funcs : list of callables, optional
@@ -399,6 +404,7 @@ class PixelPopData:
     UncertaintyCut: float = 1.0
     lower_triangular: bool = False
     cauchy_icar: bool = False
+    diagonalize_icar: bool = False
     marginalize_sigma: bool = False
     length_scales: bool = False
     IID: bool = False # TODO: make this IID parameters, so some parameters can be IID others not (e.g., a1, a2 IID, mass ratio not)
@@ -462,6 +468,15 @@ class PixelPopData:
                 "Grid bounds are taken from coupling_prior.",
                 stacklevel=2,
             )
+        if self.diagonalize_icar:
+            # The eigenbasis transform draws lnsigma explicitly and applies the
+            # DiagonalizedICARTransform; it is incompatible with the Cauchy ICAR
+            # and with the analytic sigma marginalization (which need the raw
+            # ICAR log_prob / quadratic form).
+            if self.cauchy_icar:
+                raise ValueError("diagonalize_icar is not compatible with cauchy_icar.")
+            if self.marginalize_sigma:
+                raise ValueError("diagonalize_icar is not compatible with marginalize_sigma.")
         key0 = list(self.posteriors.keys())[0]
         self.Nobs = self.posteriors[key0].shape[0]
         # Real (un-padded) per-event sample count for the Monte-Carlo variance / Neff.

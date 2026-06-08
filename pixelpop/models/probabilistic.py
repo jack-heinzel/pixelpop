@@ -77,7 +77,35 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             ]
         # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
-        
+
+        # When sampling in the Gaussian IID eigenbasis, the free sites are the
+        # standard-normal '_eigenbasis_sites' (shape = bins) plus a scalar
+        # 'log_rate_offset' carrying the overall rate; merger_rate_density is a
+        # deterministic of these and cannot be initialized directly.
+        if pixelpop_data.diagonalize_icar:
+            eigenbasis_init = jnp.array(
+                np.random.normal(loc=0, scale=1, size=pixelpop_data.bins)
+                )
+            if random_initialization:
+                log_rate_offset_init = 0.0
+            else:
+                # Seed the offset near the expected log rate, mirroring the Rexp
+                # computation in the standard (non-eigenbasis) initialization.
+                data_grid = {p.replace('_psi',''): interpolation_grid[ii] for ii, p in enumerate(parameters)}
+                initial_interpolation = np.sum([
+                    pixelpop_data.parametric_models[p](data_grid, *[
+                        plausible_hyperparameters[h]
+                        for h in pixelpop_data.parameter_to_hyperparameters[p]
+                        ])
+                    for ii, p in enumerate(parameters)
+                ], axis=0)
+                pdet = LSE(initial_interpolation[pixelpop_data.inj_bins] + inj_weights) - jnp.log(pixelpop_data.injections['total_generated'])
+                log_rate_offset_init = jnp.log(Nobs) - pdet - jnp.log(pixelpop_data.injections['analysis_time'])
+            return {
+                '_eigenbasis_sites': eigenbasis_init,
+                'log_rate_offset': jnp.asarray(log_rate_offset_init, dtype=float),
+                }
+
         return_key = 'merger_rate_density'
         if random_initialization:
             if pixelpop_data.lower_triangular:
@@ -227,15 +255,46 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         if skip:
             R = numpyro.sample('log_rate', dist.ImproperUniform(dist.constraints.real, (), ()))
             return event_weights + R[None,None], inj_weights + R[None]
-        
+
         if not pixelpop_data.marginalize_sigma:
             coupling_prior = pixelpop_data.coupling_prior
             if pixelpop_data.length_scales:
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=(pixelpop_data.dimension,))
             else:
-                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=()) 
-        
-        if pixelpop_data.cauchy_icar:
+                lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=())
+
+        if pixelpop_data.diagonalize_icar:
+            # Sample in the Gaussian IID ("eigenbasis") space and map to the
+            # merger rate density with DiagonalizedICARTransform. This mirrors the
+            # experimental prior_probabilistic_model and tends to give NUTS a nicer
+            # (closer-to-isotropic) geometry than sampling merger_rate_density
+            # directly from the ICAR distribution. lsigma was drawn above.
+            _eigenbasis_sites = numpyro.sample(
+                '_eigenbasis_sites',
+                dist.Normal(0., 1.).expand(pixelpop_data.bins),
+            )
+            # Pin the zero-mode (the constant/DC eigenvector) to 0: the transform
+            # would otherwise scale it by the regularized eigenvalue, imposing a
+            # spurious proper prior on the overall offset. With it pinned, the
+            # eigenbasis carries only shape, and the overall rate is restored by a
+            # free improper-uniform log-rate offset added below.
+            eigenbasis_sites = _eigenbasis_sites.at[(0,) * pixelpop_data.dimension].set(0.)
+            transformed = DiagonalizedICARTransform(
+                lsigma, pixelpop_data.adj_matrices, is_sparse=True
+                )(eigenbasis_sites)
+            if pixelpop_data.lower_triangular:
+                # Symmetrize, equivalent to sampling from the symmetrized space.
+                transformed = 0.5 * (transformed + transformed.swapaxes(0, 1))
+            # Free overall log-rate offset (flat prior), carrying the absolute-rate
+            # information that the pinned zero-mode removed. The 'log_rate'
+            # deterministic computed below picks this up via LSE(field + c) = LSE(field) + c.
+            log_rate_offset = numpyro.sample(
+                'log_rate_offset', dist.ImproperUniform(dist.constraints.real, (), ())
+                )
+            transformed = transformed + log_rate_offset
+            merger_rate_density = numpyro.deterministic('merger_rate_density', transformed)
+
+        elif pixelpop_data.cauchy_icar:
             if not pixelpop_data.lower_triangular:
                 merger_rate_density = numpyro.sample(
                         'merger_rate_density',
