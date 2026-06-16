@@ -371,6 +371,11 @@ class PixelPopData:
         to the merger rate density via DiagonalizedICARTransform, rather than sampling
         merger_rate_density directly from the ICAR distribution. Often improves geometry
         for NUTS. Not compatible with cauchy_icar or marginalize_sigma.
+    spde_matern : bool, optional (EXPERIMENTAL)
+        If True, replace the intrinsic ICAR field with a proper anisotropic Matern
+        (Lindgren-Rue-Lindstrom) SPDE field via MaternSPDETransform, with free
+        marginal SD (coupling_prior), per-axis range (range_prior) and smoothness
+        nu (smoothness_prior). Implies diagonalize_icar and requires length_scales=False.
     skip_nonparametric : bool, optional
         If True, disable the pixelized (nonparametric) component.
     constraint_funcs : list of callables, optional
@@ -405,6 +410,7 @@ class PixelPopData:
     lower_triangular: bool = False
     cauchy_icar: bool = False
     diagonalize_icar: bool = False
+    spde_matern: bool = False
     marginalize_sigma: bool = False
     length_scales: bool = False
     IID: bool = False # TODO: make this IID parameters, so some parameters can be IID others not (e.g., a1, a2 IID, mass ratio not)
@@ -416,6 +422,10 @@ class PixelPopData:
     skip_nonparametric: bool = False
     constraint_funcs: List[Callable] = field(default_factory=list)
     coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+    # (args, dist) priors for the Matern-SPDE field (spde_matern=True): per-axis
+    # log-range (bin units) and SPDE smoothness nu.
+    range_prior: Tuple[Any, Any] = ((-1.0, 3.0), dist.Uniform)
+    smoothness_prior: Tuple[Any, Any] = ((0.5, 5.0), dist.Uniform)
     # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
     # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
     # event_counts[i] is the number of real samples for event i, used as the
@@ -468,6 +478,12 @@ class PixelPopData:
                 "Grid bounds are taken from coupling_prior.",
                 stacklevel=2,
             )
+        if self.spde_matern:
+            # The Matern-SPDE field uses the eigenbasis path with a scalar marginal
+            # SD; anisotropy is carried by per-axis range_prior, not length_scales.
+            self.diagonalize_icar = True
+            if self.length_scales:
+                raise ValueError("spde_matern carries anisotropy via range_prior; set length_scales=False.")
         if self.diagonalize_icar:
             # The eigenbasis transform draws lnsigma explicitly and applies the
             # DiagonalizedICARTransform; it is incompatible with the Cauchy ICAR

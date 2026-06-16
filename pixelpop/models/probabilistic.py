@@ -3,6 +3,7 @@ from .gwpop_models import *
 from .car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular_map
 from ..experimental.car import (
     DiagonalizedICARTransform,
+    MaternSPDETransform,
     StudentICAR,
     sigma_marginalized_ICAR,
     grid_marginalized_ICAR_length_scales,
@@ -101,10 +102,14 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 ], axis=0)
                 pdet = LSE(initial_interpolation[pixelpop_data.inj_bins] + inj_weights) - jnp.log(pixelpop_data.injections['total_generated'])
                 log_rate_offset_init = jnp.log(Nobs) - pdet - jnp.log(pixelpop_data.injections['analysis_time'])
-            return {
+            init = {
                 '_eigenbasis_sites': eigenbasis_init,
                 'log_rate_offset': jnp.asarray(log_rate_offset_init, dtype=float),
                 }
+            if pixelpop_data.spde_matern:
+                init['nu_spde'] = jnp.asarray(1.0)
+                init['log_ranges'] = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float) / 4.)
+            return init
 
         return_key = 'merger_rate_density'
         if random_initialization:
@@ -279,9 +284,13 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             # eigenbasis carries only shape, and the overall rate is restored by a
             # free improper-uniform log-rate offset added below.
             eigenbasis_sites = _eigenbasis_sites.at[(0,) * pixelpop_data.dimension].set(0.)
-            transformed = DiagonalizedICARTransform(
-                lsigma, pixelpop_data.adj_matrices, is_sparse=True
-                )(eigenbasis_sites)
+            if pixelpop_data.spde_matern:
+                nu_spde = numpyro.sample('nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0]))
+                log_ranges = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(pixelpop_data.dimension,))
+                transform = MaternSPDETransform(lsigma, log_ranges, nu_spde, pixelpop_data.adj_matrices, is_sparse=True)
+            else:
+                transform = DiagonalizedICARTransform(lsigma, pixelpop_data.adj_matrices, is_sparse=True)
+            transformed = transform(eigenbasis_sites)
             if pixelpop_data.lower_triangular:
                 # Symmetrize, equivalent to sampling from the symmetrized space.
                 transformed = 0.5 * (transformed + transformed.swapaxes(0, 1))
