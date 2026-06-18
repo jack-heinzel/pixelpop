@@ -409,6 +409,70 @@ class DiagonalizedICARTransform:
         return std_lp + 0.5*jnp.sum(jnp.log(self.multiD_eigenvalues))
 
 
+class MaternSPDETransform:
+    r"""
+    Anisotropic Matern (Whittle / Lindgren-Rue-Lindstrom) SPDE field on a regular
+    grid, sampled in the fixed tensor-product eigenbasis.
+
+    Generalizes ``DiagonalizedICARTransform`` (the intrinsic kappa=0, nu+d/2=1
+    limit) to a proper field with free smoothness and range. The precision
+    spectrum is
+
+        q = (1 + sum_i (rho_i^2 / 8 nu) lambda^(i))^alpha,   alpha = nu + d/2,
+
+    so the eigenvectors never depend on the hyperparameters: a Normal(0,1)
+    eigenbasis is mapped to the field by a smooth per-mode rescaling alone, which
+    keeps the NUTS geometry fixed as (sigma, rho, nu) move. Because the spectrum
+    is available explicitly, fractional alpha (fractional nu) is exact, unlike the
+    sparse-FEM SPDE construction. The global kappa is absorbed into the per-axis
+    ranges rho_i and the marginal-variance normalization, so it is not a separate
+    free parameter here.
+
+    Parameters
+    ----------
+    log_sigma : scalar
+        Log marginal standard deviation (site-averaged) of the field.
+    log_ranges : array-like, shape (dimension,) or scalar
+        Log correlation range rho_i per axis, in bin units; the source of the
+        anisotropy.
+    nu : scalar
+        SPDE smoothness; alpha = nu + dimension/2.
+    pin_dc : bool
+        If True, the constant (DC) mode is dropped so the field carries only
+        shape and the overall rate is supplied separately.
+    """
+    def __init__(self, log_sigma, log_ranges, nu, single_dimension_adj_matrices, is_sparse=False, pin_dc=True):
+        self.dimension = len(single_dimension_adj_matrices)
+        log_ranges = jnp.broadcast_to(log_ranges, (self.dimension,))
+        g = jnp.exp(2 * log_ranges) / (8 * nu)
+        alpha = nu + self.dimension / 2
+
+        self.eigenvector_list = []
+        scaled_eigvals = []
+        for ii, mat in enumerate(single_dimension_adj_matrices):
+            adj = jnp.array(mat.toarray()) if is_sparse else jnp.asarray(mat)
+            laplacian = jnp.diag(jnp.sum(adj, axis=1)) - adj
+            eig = jnp.linalg.eigh(laplacian)
+            scaled_eigvals.append(g[ii] * eig.eigenvalues.at[0].set(0.))
+            self.eigenvector_list.append(eig.eigenvectors)
+
+        spectrum = (1. + reduce(add_outer, scaled_eigvals)) ** (-alpha / 2)
+        if pin_dc:
+            # TODO: optionally fix the DC mode to a constant instead of dropping it,
+            # so exp(field) normalizes to a probability distribution rather than a
+            # rate density (requires kappa>0, which this proper spectrum already has).
+            spectrum = spectrum.at[(0,) * self.dimension].set(0.)
+        # Scale so the site-averaged marginal variance equals sigma^2.
+        norm = jnp.exp(log_sigma) * jnp.sqrt(spectrum.size / jnp.sum(spectrum ** 2))
+        self.scaling = norm * spectrum
+
+    def __call__(self, eigenbasis):
+        res = eigenbasis * self.scaling
+        for v in self.eigenvector_list:
+            res = jnp.tensordot(res, v, axes=(0, 1))
+        return res
+
+
 class _LogSimplex(constraints.ParameterFreeConstraint):
     event_dim = 1
     def __init__(self, logsumexp: ArrayLike) -> None:
