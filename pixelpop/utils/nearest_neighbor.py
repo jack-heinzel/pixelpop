@@ -176,7 +176,6 @@ def nearest_neighbors(density, dimension, isVisible=False):
             raise IndexError('Length of densities is different from dimension')
         indices = np.arange(0, np.prod(density))
         powers = np.eye(dimension)
-        #print(powers)
     else:
         raise TypeError('density must be an integer or list / tuple')
     i_vals = []
@@ -190,8 +189,6 @@ def nearest_neighbors(density, dimension, isVisible=False):
     for index in array:
         converted = np.array(np.unravel_index(index, shape=density, order='C')) 
         for d in range(dimension):
-            #print(index, converted + powers[d], is_valid(converted + powers[d], density, dimension))
-            #print(index, converted - powers[d], is_valid(converted - powers[d], density, dimension))
             if is_valid(converted + powers[d], density, dimension):
                 i_vals.append(index)
                 j_vals.append(coordinate_to_index(converted+powers[d], density=density, dimension=dimension))
@@ -268,7 +265,6 @@ def place_samples_in_bins(bin_axes, sample_coordinates, reshape=False):
     if $\text{edge}_i \le x < \text{edge}_{i+1}$.
     """
     dimension = len(sample_coordinates)
-    # density = len(bin_axes[0]) - 1
 
     if isinstance(bin_axes, list):
         # Assuming bin_axes is a list of arrays
@@ -287,7 +283,6 @@ def place_samples_in_bins(bin_axes, sample_coordinates, reshape=False):
         return _data_nd_bins
     else:
         _data_nd_bins = [np.digitize(sample_coordinates[i], bin_axes[i]) - 1 for i in range(dimension)]
-    #print(_data_nd_bins)
     np.array(_data_nd_bins)
     _data_bins = coordinate_to_index(_data_nd_bins, density, dimension)
     return _data_bins

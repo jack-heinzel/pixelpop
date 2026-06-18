@@ -76,7 +76,6 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             (pixelpop_data.bin_axes[ii][:-1] + pixelpop_data.bin_axes[ii][1:])/2 
             for ii in range(pixelpop_data.dimension)
             ]
-        # print(bin_med)
         interpolation_grid = np.meshgrid(*bin_med, indexing='ij')
 
         # When sampling in the Gaussian IID eigenbasis, the free sites are the
@@ -285,7 +284,7 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             # free improper-uniform log-rate offset added below.
             eigenbasis_sites = _eigenbasis_sites.at[(0,) * pixelpop_data.dimension].set(0.)
             if pixelpop_data.spde_matern:
-                nu_spde = numpyro.sample('nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0]))
+                nu_spde = jnp.exp(numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0])))
                 log_ranges = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(pixelpop_data.dimension,))
                 transform = MaternSPDETransform(lsigma, log_ranges, nu_spde, pixelpop_data.adj_matrices, is_sparse=True)
             else:

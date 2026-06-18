@@ -6,6 +6,17 @@ import warnings
 import population_error
 from .post_processing import PixelPopRateFunction
 
+
+def _as_dataset(obj):
+    """Coerce an arviz rhat/ess result to a Dataset (arviz>=1 returns a DataTree)."""
+    if isinstance(obj, xr.Dataset):
+        return obj
+    to_dataset = getattr(obj, "to_dataset", None)
+    if to_dataset is not None:
+        return to_dataset()
+    return obj
+
+
 def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     """
     Compute systematic error statistics for a PixelPop inference result.
@@ -149,8 +160,8 @@ def rank_normalized_rhat(
         print('Computing rank-normalized rhats')
         print('='*50 + '\n')
 
-    rhat_results = az.rhat(hyperposterior, method="rank")
-    
+    rhat_results = _as_dataset(az.rhat(hyperposterior, method="rank"))
+
     # with so many parameters, it's likely for spurious fluctuations in rhat
     # estimation with finite samples to be above threshold
     all_rhats = jnp.concatenate([rhat_results[v].values.flatten() for v in rhat_results.data_vars])
@@ -219,10 +230,9 @@ def compute_effective_sample_sizes(
         print('='*50)
         print('Computing aggregate effective sample sizes')
         print('='*50 + '\n')
-    # Compute both types of ESS
-    ess_bulk = az.ess(hyperposterior, method="bulk")
-    ess_tail = az.ess(hyperposterior, method="tail")
-    
+    ess_bulk = _as_dataset(az.ess(hyperposterior, method="bulk"))
+    ess_tail = _as_dataset(az.ess(hyperposterior, method="tail"))
+
     ess_results = xr.merge([
         ess_bulk.rename({v: f"{v}_bulk" for v in ess_bulk.data_vars}),
         ess_tail.rename({v: f"{v}_tail" for v in ess_tail.data_vars})
@@ -295,12 +305,11 @@ def convert_to_arviz(hyperposterior):
             if processed_posterior[k].ndim > 2:
                 auto_dims[k] = [f"{k}_idx_{i}" for i in range(processed_posterior[k].ndim - 2)]
 
-    # ArviZ automatically maps the first two dims to 'chain' and 'draw'
-    # The 'dims' dict tells it what to call everything else.
-    idata = az.from_dict(
-        posterior=processed_posterior,
-        dims=auto_dims
-    )
+    # arviz>=1 takes a nested mapping; arviz<1 used the `posterior=` kwarg.
+    try:
+        idata = az.from_dict({"posterior": processed_posterior}, dims=auto_dims)
+    except TypeError:
+        idata = az.from_dict(posterior=processed_posterior, dims=auto_dims)
     return idata
 
 def validate_pixelpop_inference(

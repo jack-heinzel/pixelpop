@@ -424,8 +424,8 @@ class PixelPopData:
     coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
     # (args, dist) priors for the Matern-SPDE field (spde_matern=True): per-axis
     # log-range (bin units) and SPDE smoothness nu.
-    range_prior: Tuple[Any, Any] = ((-1.0, 3.0), dist.Uniform)
-    smoothness_prior: Tuple[Any, Any] = ((0.5, 5.0), dist.Uniform)
+    range_prior: Tuple[Any, Any] = ((-3.0, 10.0), dist.Uniform)
+    smoothness_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
     # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
     # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
     # event_counts[i] is the number of real samples for event i, used as the

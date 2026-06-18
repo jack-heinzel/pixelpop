@@ -32,7 +32,6 @@ def get_input_metadata(file_label, datadir='../data'):
             wfs.append(name.split('-')[0])
         else:
             wfs.append(name.split('-')[3].replace('_PEDataRelease_mixed_cosmo.h5', '').replace('_PEDataRelease_cosmo.h5', ''))
-    # print(wfs)
     return wfs, wf_paths, metadata
 
 
@@ -190,7 +189,6 @@ def create_popsummary(
         assert bins[0] == bins[1]
         skip_parameters = pixelpop_parameters[:2]
         axes = tuple(range(2, dimension))
-        # 
         ldm1 = pixelpop_data.logdV[0]
         ldm2 = pixelpop_data.logdV[1]
 
