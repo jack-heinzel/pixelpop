@@ -376,6 +376,13 @@ class PixelPopData:
         (Lindgren-Rue-Lindstrom) SPDE field via MaternSPDETransform, with free
         marginal SD (coupling_prior), per-axis range (range_prior) and smoothness
         nu (smoothness_prior). Implies diagonalize_icar and requires length_scales=False.
+    spde_wkb : bool, optional (EXPERIMENTAL)
+        If True, use the first-order WKB *nonstationary* SPDE field
+        (WKBNonStationaryMaternSPDETransform): per-axis log-range, log-nu and log
+        marginal SD each vary linearly across the grid. Intercepts come from
+        range_prior / smoothness_prior / coupling_prior, slopes from
+        range_response_prior (dim x dim), nu_slope_prior and sigma_slope_prior.
+        Implies diagonalize_icar; requires length_scales=False, marginalize_sigma=False.
     skip_nonparametric : bool, optional
         If True, disable the pixelized (nonparametric) component.
     constraint_funcs : list of callables, optional
@@ -411,6 +418,7 @@ class PixelPopData:
     cauchy_icar: bool = False
     diagonalize_icar: bool = False
     spde_matern: bool = False
+    spde_wkb: bool = False
     marginalize_sigma: bool = False
     length_scales: bool = False
     IID: bool = False # TODO: make this IID parameters, so some parameters can be IID others not (e.g., a1, a2 IID, mass ratio not)
@@ -421,11 +429,19 @@ class PixelPopData:
     plausible_hyperparameters: Dict[str, float] = field(default_factory=dict)
     skip_nonparametric: bool = False
     constraint_funcs: List[Callable] = field(default_factory=list)
-    coupling_prior: Tuple[Any, Any] = ((-3, 3), dist.Uniform)
+    coupling_prior: Tuple[Any, Any] = ((0.0, 2), dist.Normal)
     # (args, dist) priors for the Matern-SPDE field (spde_matern=True): per-axis
     # log-range (bin units) and SPDE smoothness nu.
-    range_prior: Tuple[Any, Any] = ((-3.0, 10.0), dist.Uniform)
+    range_prior: Tuple[Any, Any] = ((0.0, 3.0), dist.Normal) # could be np.log(bins) / 2? Seems like a good length scale
     smoothness_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
+    # Slope priors for the WKB field (spde_wkb=True). Fields are theta(x) =
+    # intercept + slope . x on the normalized [-0.5, 0.5] grid, so each slope is the
+    # edge-to-edge change in the (log) hyperparameter. range_response is the
+    # (dim, dim) response matrix; nu_slope/sigma_slope are length-dim vectors. sd=0.5
+    # (~65% change at 1 sigma) stays inside the first-order WKB regime; widen with care.
+    range_response_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
+    nu_slope_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
+    sigma_slope_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
     # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
     # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
     # event_counts[i] is the number of real samples for event i, used as the
@@ -478,6 +494,15 @@ class PixelPopData:
                 "Grid bounds are taken from coupling_prior.",
                 stacklevel=2,
             )
+        if self.spde_wkb:
+            # The WKB nonstationary field uses the same eigenbasis path; it carries
+            # anisotropy and a spatial marginal-SD envelope itself, so length_scales
+            # must be off and sigma cannot be analytically marginalized.
+            self.diagonalize_icar = True
+            if self.length_scales:
+                raise ValueError("spde_wkb carries anisotropy via its range fields; set length_scales=False.")
+            if self.marginalize_sigma:
+                raise ValueError("spde_wkb uses a spatial log-sigma field; set marginalize_sigma=False.")
         if self.spde_matern:
             # The Matern-SPDE field uses the eigenbasis path with a scalar marginal
             # SD; anisotropy is carried by per-axis range_prior, not length_scales.
@@ -516,6 +541,16 @@ class PixelPopData:
         self.adj_matrices = [
             create_CAR_coupling_matrix(self.bins[ii], 1, isVisible=False) for ii in range(self.dimension)
             ]
+
+        # Normalized [-0.5, 0.5] per-axis grid coordinates used by the WKB
+        # nonstationary SPDE field (spde_wkb) to build the linear-in-log
+        # hyperparameter fields. Shape: (*bins, dimension).
+        self.spde_coords = jnp.stack(
+            jnp.meshgrid(
+                *[jnp.linspace(-0.5, 0.5, n) for n in self.bins], indexing='ij'
+            ),
+            axis=-1,
+        )
 
         new_minima = gwpop_models.bbh_minima.copy()
         new_maxima = gwpop_models.bbh_maxima.copy()

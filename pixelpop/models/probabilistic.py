@@ -4,6 +4,7 @@ from .car import ICAR_length_scales, lower_triangular_log_prob, lower_triangular
 from ..experimental.car import (
     DiagonalizedICARTransform,
     MaternSPDETransform,
+    WKBNonStationaryMaternSPDETransform,
     StudentICAR,
     sigma_marginalized_ICAR,
     grid_marginalized_ICAR_length_scales,
@@ -105,7 +106,15 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 '_eigenbasis_sites': eigenbasis_init,
                 'log_rate_offset': jnp.asarray(log_rate_offset_init, dtype=float),
                 }
-            if pixelpop_data.spde_matern:
+            if pixelpop_data.spde_wkb:
+                dim = pixelpop_data.dimension
+                init['log_nu_spde'] = jnp.asarray(0.0)
+                init['log_ranges'] = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float) / 4.)
+                # Start at the stationary background: all slopes zero.
+                init['range_response'] = jnp.zeros((dim, dim))
+                init['nu_slope'] = jnp.zeros(dim)
+                init['sigma_slope'] = jnp.zeros(dim)
+            elif pixelpop_data.spde_matern:
                 init['nu_spde'] = jnp.asarray(1.0)
                 init['log_ranges'] = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float) / 4.)
             return init
@@ -283,7 +292,23 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             # eigenbasis carries only shape, and the overall rate is restored by a
             # free improper-uniform log-rate offset added below.
             eigenbasis_sites = _eigenbasis_sites.at[(0,) * pixelpop_data.dimension].set(0.)
-            if pixelpop_data.spde_matern:
+            if pixelpop_data.spde_wkb:
+                # WKB field: each (log) hyperparameter varies linearly, intercept + slope . x.
+                dim = pixelpop_data.dimension
+                X = pixelpop_data.spde_coords                      # (*bins, dim)
+                # Intercepts (log-sigma is lsigma, sampled above) and slopes.
+                l_0 = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(dim,))
+                log_nu_0 = numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0]))
+                A_range = numpyro.sample('range_response', pixelpop_data.range_response_prior[1](*pixelpop_data.range_response_prior[0]), sample_shape=(dim, dim))
+                a_nu = numpyro.sample('nu_slope', pixelpop_data.nu_slope_prior[1](*pixelpop_data.nu_slope_prior[0]), sample_shape=(dim,))
+                a_sigma = numpyro.sample('sigma_slope', pixelpop_data.sigma_slope_prior[1](*pixelpop_data.sigma_slope_prior[0]), sample_shape=(dim,))
+                # Build the linear-in-log spatial fields.
+                log_ranges_field = l_0.reshape((dim,) + (1,) * dim) + jnp.einsum('ij,...j->i...', A_range, X)
+                nu_field = jnp.exp(log_nu_0 + jnp.einsum('i,...i->...', a_nu, X))
+                log_sigma_field = lsigma + jnp.einsum('i,...i->...', a_sigma, X)
+                transform = WKBNonStationaryMaternSPDETransform(
+                    log_sigma_field, log_ranges_field, nu_field, pixelpop_data.adj_matrices, is_sparse=True)
+            elif pixelpop_data.spde_matern:
                 nu_spde = jnp.exp(numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0])))
                 log_ranges = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(pixelpop_data.dimension,))
                 transform = MaternSPDETransform(lsigma, log_ranges, nu_spde, pixelpop_data.adj_matrices, is_sparse=True)

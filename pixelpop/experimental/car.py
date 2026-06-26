@@ -473,6 +473,104 @@ class MaternSPDETransform:
         return res
 
 
+class WKBNonStationaryMaternSPDETransform:
+    r"""
+    First-order (WKB) *nonstationary* Matern SPDE field.
+
+    Generalizes ``MaternSPDETransform`` to slowly-varying hyperparameters
+    theta(x) = theta_bar + theta_tilde(x). Expanding the amplitude to first order,
+
+        X(x) ~ X_0(x) + sum_theta theta_tilde(x) X_theta(x),
+
+    where X_0 is the stationary field from the spatial-mean hyperparameters and
+    each X_theta a stationary "derivative field" (amplitude d a_0 / d theta) driven
+    by the same white noise. Each truncation is linear in the noise, so positive-
+    definiteness is automatic; the omitted term is O(theta_tilde^2). The perturbed
+    hyperparameters are the per-axis log-ranges and nu; the marginal SD is applied
+    exactly in the spatial domain (not perturbatively). See the spde-spectra
+    notebook section "Nonstationary fields, perturbatively".
+
+    Parameters
+    ----------
+    log_sigma_field : array-like, shape == grid
+        Per-site log marginal SD envelope.
+    log_ranges_field : array-like, shape (dimension, *grid)
+        Per-site log range per axis; its axis-mean sets the stationary background.
+    nu_field : array-like, shape == grid
+        Per-site SPDE smoothness nu; its mean sets the background smoothness.
+    pin_dc : bool
+        If True, drop the constant (DC) mode so the field carries only shape.
+    """
+    def __init__(self, log_sigma_field, log_ranges_field, nu_field,
+                 single_dimension_adj_matrices, is_sparse=False, pin_dc=True):
+        self.dimension = len(single_dimension_adj_matrices)
+        self.log_sigma_field = log_sigma_field
+        self.log_ranges_field = log_ranges_field
+        self.nu_field = nu_field
+
+        # Stationary background = spatial mean of the hyperparameter fields.
+        self.base_nu = jnp.mean(nu_field)
+        self.base_log_ranges = jnp.mean(
+            log_ranges_field, axis=tuple(range(1, log_ranges_field.ndim)))
+
+        g_base = jnp.exp(2 * self.base_log_ranges) / (8 * self.base_nu)
+        alpha_base = self.base_nu + self.dimension / 2
+
+        self.eigenvector_list = []
+        scaled_eigvals_nd = []
+        for ii, mat in enumerate(single_dimension_adj_matrices):
+            adj = jnp.array(mat.toarray()) if is_sparse else jnp.asarray(mat)
+            laplacian = jnp.diag(jnp.sum(adj, axis=1)) - adj
+            eig = jnp.linalg.eigh(laplacian)
+            evals = g_base[ii] * eig.eigenvalues.at[0].set(0.)
+            shape = [1] * self.dimension
+            shape[ii] = -1
+            scaled_eigvals_nd.append(evals.reshape(shape))
+            self.eigenvector_list.append(eig.eigenvectors)
+
+        E_0 = sum(scaled_eigvals_nd)                    # sum_i g_i lambda^(i)
+        base_spectrum = (1. + E_0) ** (-alpha_base / 2)
+        if pin_dc:
+            base_spectrum = base_spectrum.at[(0,) * self.dimension].set(0.)
+
+        # Normalize the background to unit site-averaged variance; the actual
+        # marginal SD is restored by the exact spatial envelope in __call__.
+        norm = jnp.sqrt(base_spectrum.size / jnp.sum(base_spectrum ** 2))
+        self.base_scaling = norm * base_spectrum
+
+        # Spectral filters for the derivative fields: d log(amplitude) / d theta.
+        # amplitude = (1 + E_0)^(-alpha/2), with E_0 ~ 1/nu through g = e^(2rho)/(8nu).
+        self.d_amp_nu = (-0.5 * jnp.log(1. + E_0)
+                         + (alpha_base * E_0) / (2 * self.base_nu * (1. + E_0)))
+        self.d_amp_rho = [-alpha_base * ev / (1. + E_0) for ev in scaled_eigvals_nd]
+
+    def _transform_basis(self, coeffs):
+        """Map eigenbasis coefficients back to the spatial grid."""
+        res = coeffs
+        for v in self.eigenvector_list:
+            res = jnp.tensordot(res, v, axes=(0, 1))
+        return res
+
+    def __call__(self, white_noise):
+        # Stationary background field (same white noise drives every term).
+        u_shape = self._transform_basis(white_noise * self.base_scaling)
+
+        # First-order smoothness modulation.
+        dnu_x = self.nu_field - self.base_nu
+        u_nu = self._transform_basis(white_noise * self.base_scaling * self.d_amp_nu)
+        u_shape = u_shape + dnu_x * u_nu
+
+        # First-order per-axis range modulation.
+        for i in range(self.dimension):
+            dlog_rho_x = self.log_ranges_field[i] - self.base_log_ranges[i]
+            u_rho_i = self._transform_basis(
+                white_noise * self.base_scaling * self.d_amp_rho[i])
+            u_shape = u_shape + dlog_rho_x * u_rho_i
+
+        # Exact spatial marginal-variance envelope.
+        return u_shape * jnp.exp(self.log_sigma_field)
+
+
 class _LogSimplex(constraints.ParameterFreeConstraint):
     event_dim = 1
     def __init__(self, logsumexp: ArrayLike) -> None:
