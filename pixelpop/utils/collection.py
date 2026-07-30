@@ -19,6 +19,7 @@ also kept for callers that want the ragged representation.)
 """
 
 import os
+import glob
 import json
 import re
 import pickle as pkl
@@ -41,7 +42,166 @@ from gwpopulation_pipe.data_collection import (
     resolve_arguments
 )
 
-def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
+#: Pattern used to pull the event name (e.g. ``GW150914_095045``) out of a
+#: posterior file path.
+EVENT_NAME_REGEX = r"(GW\d{6}_\d{6}|S\d{6}[a-z]*|GW\d{6})"
+
+
+def event_name_from_filename(filename):
+    """
+    Extract the event name from a posterior file path.
+
+    Parameters
+    ----------
+    filename: str
+        Path to a posterior file, e.g.
+        ``.../IGWN-GWTC3p0-v2-GW150914_095045_PEDataRelease_mixed_cosmo.h5``.
+
+    Returns
+    -------
+    str or None
+        The last event-like substring in the path (``GW150914_095045``,
+        ``GW150914``, ``S190425z``, ...), or ``None`` if the path contains none.
+    """
+    matches = re.findall(EVENT_NAME_REGEX, filename)
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _labels_for_file(filename, event_labels):
+    """
+    Look up the preferred label(s) for a single posterior file.
+
+    The lookup is by event name (see :func:`event_name_from_filename`); if that
+    fails, any key of ``event_labels`` appearing verbatim in ``filename`` is
+    used (longest key first, so ``GW150914_095045`` wins over ``GW150914``).
+
+    Parameters
+    ----------
+    filename: str
+        Path to a posterior file.
+    event_labels: dict
+        Mapping of event name -> preferred label. The value may be a single
+        string (``"C01:IMRPhenomXPHM"``) or a list of strings in order of
+        precedence.
+
+    Returns
+    -------
+    tuple
+        ``(event, labels)`` where ``event`` is the matched key of
+        ``event_labels`` (``None`` if no key matched) and ``labels`` is the
+        corresponding list of labels (``None`` if no key matched).
+    """
+    event = event_name_from_filename(filename)
+    if event not in event_labels:
+        event = None
+        for key in sorted(event_labels, key=len, reverse=True):
+            if key in filename:
+                event = key
+                break
+    if event is None:
+        return None, None
+    labels = event_labels[event]
+    if isinstance(labels, str):
+        labels = [labels]
+    return event, list(labels)
+
+
+def _load_batch_of_meta_files_per_event(
+    regex,
+    label,
+    event_labels,
+    labels=None,
+    keys=None,
+    ignore=None,
+    mapping=None,
+    only_listed_events=False,
+):
+    """
+    Load a batch of `PESummary` meta files, choosing the label per event.
+
+    Upstream :func:`gwpopulation_pipe.data_collection._load_batch_of_meta_files`
+    applies one global list of preferred labels to every file it globs. Here we
+    glob first and hand each file to the upstream loader individually, with the
+    label taken from ``event_labels``, so different events can be read with
+    different waveform/label choices.
+
+    Parameters
+    ----------
+    regex: str
+        Glob pattern for the posterior files.
+    label: str
+        Name of the dataset the files belong to (used for logging upstream).
+    event_labels: dict
+        Mapping of event name -> preferred label (str) or labels (list of str),
+        e.g. ``{"GW150914_095045": "C01:IMRPhenomXPHM"}``.
+    labels: list, optional
+        Fallback list of preferred labels for events absent from
+        ``event_labels``. Passed straight through to the upstream loader.
+    keys: list, optional
+        Parameters that must be present for a posterior to be kept.
+    ignore: list, optional
+        Substrings that cause a file to be skipped.
+    mapping: dict, optional
+        Parameter name mapping.
+    only_listed_events: bool
+        If True, files whose event is absent from ``event_labels`` are skipped
+        entirely rather than loaded with the fallback ``labels``.
+
+    Returns
+    -------
+    posteriors: dict
+        Mapping of file name -> `pd.DataFrame`, as upstream.
+    meta_data: dict
+        Mapping of file name -> meta data dict, as upstream.
+    """
+    posteriors = dict()
+    meta_data = dict()
+    all_files = sorted(glob.glob(regex))
+    logger.info(f"Found {len(all_files)} {label} events in standard format.")
+    for filename in all_files:
+        event, file_labels = _labels_for_file(filename, event_labels)
+        if event is None:
+            if only_listed_events:
+                logger.info(
+                    f"No preferred label given for {filename}, skipping "
+                    "(only_listed_events=True)."
+                )
+                continue
+            logger.warning(
+                f"No preferred label given for {filename}, falling back to {labels}."
+            )
+            file_labels = labels
+        posts, meta = _load_batch_of_meta_files(
+            # The file has already been globbed; escape it so that any glob
+            # metacharacters in the path are matched literally.
+            regex=glob.escape(filename),
+            label=label,
+            labels=file_labels,
+            keys=keys,
+            ignore=ignore,
+            mapping=mapping,
+        )
+        for name in posts:
+            loaded = meta[name].get("label")
+            if event is not None and loaded not in file_labels:
+                logger.warning(
+                    f"Requested {file_labels} for {event} but loaded {loaded} "
+                    f"from {name}."
+                )
+        posteriors.update(posts)
+        meta_data.update(meta)
+    return posteriors, meta_data
+
+
+def load_all_events_no_downsample(
+    args,
+    save_meta_data=True,
+    ignore=None,
+    event_labels=None,
+    only_listed_events=False,
+):
     """
     Load posteriors for some/all events, keeping each event's full sample count.
 
@@ -66,6 +226,16 @@ def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
         Whether to write meta data about the loaded results to plain-text files.
     ignore: list
         List of strings to ignore in the file names to filter unwanted events.
+    event_labels: dict, optional
+        Mapping of event name -> preferred label in the `PESummary` file, e.g.
+        ``{"GW150914_095045": "C01:IMRPhenomXPHM", ...}``. The value may also be
+        a list of labels in order of precedence. Events absent from the mapping
+        fall back to ``args.preferred_labels`` (unless ``only_listed_events``).
+        If not given, ``args.preferred_labels`` is used for every event -- but
+        if ``args.preferred_labels`` is itself a dict it is taken as this
+        mapping, so a collection script can simply set it to a dict.
+    only_listed_events: bool
+        If True, only events appearing in ``event_labels`` are loaded.
 
     Returns
     -------
@@ -78,16 +248,32 @@ def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
     parameter_mapping = DEFAULT_PARAMETER_MAPPING.copy()
     if args.custom_parameter_mapping is not None:
         parameter_mapping.update(args.custom_parameter_mapping)
+    preferred_labels = getattr(args, "preferred_labels", None)
+    if event_labels is None and isinstance(preferred_labels, dict):
+        event_labels = preferred_labels
+        preferred_labels = None
     logger.info("Loading posteriors...")
     for label, regex in args.sample_regex.items():
-        posts, meta = _load_batch_of_meta_files(
-            regex=regex,
-            label=label,
-            labels=args.preferred_labels,
-            keys=args.parameters,
-            ignore=ignore,
-            mapping=parameter_mapping,
-        )
+        if event_labels is None:
+            posts, meta = _load_batch_of_meta_files(
+                regex=regex,
+                label=label,
+                labels=preferred_labels,
+                keys=args.parameters,
+                ignore=ignore,
+                mapping=parameter_mapping,
+            )
+        else:
+            posts, meta = _load_batch_of_meta_files_per_event(
+                regex=regex,
+                label=label,
+                event_labels=event_labels,
+                labels=preferred_labels,
+                keys=args.parameters,
+                ignore=ignore,
+                mapping=parameter_mapping,
+                only_listed_events=only_listed_events,
+            )
         posteriors.update(posts)
         meta_data.update(meta)
     if save_meta_data:
@@ -111,6 +297,11 @@ def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
     # all events up to a common width (so the spin prior compiles exactly once),
     # evaluate, then trim each event's prior back to its real samples. The padded
     # rows are appended at the end, so the leading rows are untouched.
+    if not posteriors:
+        raise ValueError(
+            "No posteriors were loaded; check sample_regex, preferred labels and "
+            "the event names in event_labels."
+        )
     real_lengths = {name: len(posteriors[name]) for name in posteriors}
     common_width = max(real_lengths.values())
     padded = {}
@@ -138,7 +329,9 @@ def load_all_events_no_downsample(args, save_meta_data=True, ignore=None):
     logger.info(f"Loaded {len(posteriors)} posteriors.")
     return posteriors
 
-def gather_posteriors(args, save_meta_data=True):
+def gather_posteriors(
+    args, save_meta_data=True, event_labels=None, only_listed_events=False
+):
     """
     Load in posteriors from files according to the command-line arguments.
 
@@ -148,6 +341,12 @@ def gather_posteriors(args, save_meta_data=True):
         Command-line arguments
     save_meta_data: bool
         Whether to write meta data about the loaded results to plain-text files.
+    event_labels: dict, optional
+        Mapping of event name -> preferred label in the `PESummary` file, e.g.
+        ``{"GW150914_095045": "C01:IMRPhenomXPHM", ...}``. See
+        :func:`load_all_events_no_downsample`.
+    only_listed_events: bool
+        If True, only events appearing in ``event_labels`` are loaded.
 
     Returns
     -------
@@ -157,13 +356,19 @@ def gather_posteriors(args, save_meta_data=True):
         Event labels
     """
     posteriors = load_all_events_no_downsample(
-        args, save_meta_data=save_meta_data, ignore=args.ignore
+        args,
+        save_meta_data=save_meta_data,
+        ignore=args.ignore,
+        event_labels=event_labels,
+        only_listed_events=only_listed_events,
     )
     posts = {}
     events = list()
     filenames = list()
     for filename in posteriors.keys():
-        event = re.findall(r"(GW\d{6}_\d{6}|S\d{6}[a-z]*|GW\d{6})", filename)[-1]
+        event = event_name_from_filename(filename)
+        if event is None:
+            event = os.path.splitext(os.path.basename(filename))[0]
         if event in events:
             logger.warning(f"Duplicate event {event} found, ignoring {filename}.")
             continue
@@ -215,10 +420,33 @@ def posteriors_to_pytree(posteriors, parameters):
     return event_dicts, event_names
 
 
-def main():
+def main(event_labels=None, only_listed_events=None):
+    """
+    Collect posteriors and write them to the run directory.
+
+    Parameters
+    ----------
+    event_labels: dict, optional
+        Mapping of event name -> preferred label in the `PESummary` file, e.g.
+        ``{"GW150914_095045": "C01:IMRPhenomXPHM", ...}``; the value may also be
+        a list of labels in order of precedence. This lets a collection script
+        build the mapping itself and call ``main(event_labels=...)``. If not
+        given, it is taken from ``args.event_labels`` (or from
+        ``args.preferred_labels`` if that is a dict), and otherwise the usual
+        global ``args.preferred_labels`` list applies to every event.
+    only_listed_events: bool, optional
+        If True, only events appearing in ``event_labels`` are loaded; events
+        without an entry are skipped rather than loaded with the fallback
+        labels. Defaults to ``args.only_listed_events`` if set, else False.
+    """
     parser = create_parser()
     args = parser.parse_args()
     resolve_arguments(args)
+
+    if event_labels is None:
+        event_labels = getattr(args, "event_labels", None)
+    if only_listed_events is None:
+        only_listed_events = getattr(args, "only_listed_events", False)
 
     if args.backend.lower() == "cupy":
         logger.warning(
@@ -236,7 +464,11 @@ def main():
         events = [str(ii) for ii in range(len(posts))]
         posts = {e: p for e, p in zip(posts, events)}
     else:
-        posts, events = gather_posteriors(args=args)
+        posts, events = gather_posteriors(
+            args=args,
+            event_labels=event_labels,
+            only_listed_events=only_listed_events,
+        )
     logger.info(f"Using {len(posts)} events, final event list is: {', '.join(events)}.")
     posterior_file = f"{args.data_label}.pkl"
     logger.info(f"Saving posteriors to {posterior_file}")
