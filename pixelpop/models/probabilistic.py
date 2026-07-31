@@ -26,6 +26,7 @@ import os
 from contextlib import redirect_stdout
 import h5ify
 from numpyro import handlers
+from functools import partial
 
 def setup_probabilistic_model(pixelpop_data, log='default'):
     """
@@ -676,7 +677,13 @@ def inference_loop(
 
     table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
     skip_keys = [k[1:] for k in print_keys if k.startswith('~')]
-    kernel = NUTS(probabilistic_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
+
+    # Bind the data in rather than passing it to mcmc.run(): numpyro keys its compiled-step cache
+    # on the model kwargs, and our nested dicts are unhashable, so it recompiles every restart.
+    # Caching only -- the data is a compile-time constant either way, so samples are unchanged.
+    bound_model = partial(probabilistic_model, **model_kwargs) if model_kwargs else probabilistic_model
+
+    kernel = NUTS(bound_model, max_tree_depth=maxtreedepth, target_accept_prob=pacc, init_strategy=numpyro.infer.init_to_value(values=initial_value), dense_mass=dense_mass)
 
     samples = []
     if not isinstance(parallel, (list, tuple)):
@@ -685,9 +692,10 @@ def inference_loop(
     for ii, chain in enumerate(parallel):
         rng_key = rng_keys[ii]
         print(f"Warming up chain #{chain} out of {parallel}")
+        # NOTE: leave progress_bar at its default; progress_bar=False recompiles every restart.
         mcmc = MCMC(kernel, thinning=thinning, num_warmup=warmup, num_samples=num_samples*thinning, num_chains=1)# , chain_method='vectorized')# , chain_method='sequential') # vectorized is an experimental method. We can pass 'parallel' which attempts to distribute the chains across multiple GPUs, e.g. on pcdev12 we could do num_chains = 4 across the a100s. If num_chains is too large, it defaults to 'sequential' which simply evaluates the chains in series.
         
-        mcmc.warmup(rng_key, **model_kwargs)
+        mcmc.warmup(rng_key)
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
         chain_samples = None
         mcmc.transfer_states_to_host()
@@ -695,7 +703,7 @@ def inference_loop(
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
-            mcmc.run(mcmc.post_warmup_state.rng_key, **model_kwargs)
+            mcmc.run(mcmc.post_warmup_state.rng_key)
             next_sample = mcmc.get_samples()
             sys.stdout.write("\x1b[1A\n\x1b[1A")
 

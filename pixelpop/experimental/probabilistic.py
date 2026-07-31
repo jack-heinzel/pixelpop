@@ -14,6 +14,7 @@ from jax import random
 from numpyro import handlers
 import os
 import h5ify
+from functools import partial
 
 def prior_probabilistic_model(pixelpop_data, log='default'):
     """
@@ -559,8 +560,12 @@ def neutra_inference(
     latent_dim = guide.get_base_dist().shape()[-1]
     neutra_init = {latent_name: jnp.zeros(latent_dim)}
 
+    # Bind the data in rather than passing it to mcmc.run(), to avoid recompiling every restart.
+    # See inference_loop in pixelpop.models.probabilistic.
+    bound_model = partial(reparam_model, **model_kwargs) if model_kwargs else reparam_model
+
     kernel = NUTS(
-        reparam_model,
+        bound_model,
         max_tree_depth=maxtreedepth,
         target_accept_prob=pacc,
         dense_mass=dense_mass,
@@ -583,7 +588,7 @@ def neutra_inference(
             num_chains=1,
         )
 
-        mcmc.warmup(chain_key, **model_kwargs)
+        mcmc.warmup(chain_key)
         sys.stdout.write("\n" * (table_size + 3))
         chain_samples = None
         mcmc.transfer_states_to_host()
@@ -591,7 +596,7 @@ def neutra_inference(
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
-            mcmc.run(mcmc.post_warmup_state.rng_key, **model_kwargs)
+            mcmc.run(mcmc.post_warmup_state.rng_key)
             next_sample = mcmc.get_samples()
             sys.stdout.write("\x1b[1A\n\x1b[1A")
 
