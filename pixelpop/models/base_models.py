@@ -135,15 +135,8 @@ def trunc_gaussian(data, mean, sig, lower, upper):
     Truncated Gaussian distribution. Numerically stable implementation adapted from
     https://github.com/ColmTalbot/gwpopulation/blob/6e60056be9ae809515eb4576e1ab581c5607a49c/gwpopulation/utils.py#L133-L183
 
-    Notes
-    -----
-    ``jnp.select`` evaluates *every* branch under XLA, so keep ``lower``/``upper``
-    scalar wherever possible. Passing a data-shaped bound turns the normalization
-    into six full-array ``log_ndtr``/``ndtr`` calls instead of a compile-time
-    constant -- measured at ~28x the cost on a (297, 10000) block. If a bound only
-    takes a handful of discrete values, evaluate one scalar-bound call per value
-    and ``jnp.where`` between the results (see
-    :func:`~pixelpop.models.O4_models.iid_normal_spin_fms`).
+    Keep ``lower``/``upper`` scalar: ``jnp.select`` evaluates every branch under
+    XLA, so a data-shaped bound costs ~28x a compile-time constant one.
 
     Parameters
     ----------
@@ -243,14 +236,8 @@ def TripleBrokenPowerLaw(data, slope_1, slope_2, slope_3, xmin, xmax,
             x^{s_3} & x_{\rm{b,2}} \leq x < x_{\max}
         \end{cases}
 
-    Unlike :func:`BrokenPowerLaw`, the breaks are given as *absolute* positions
-    rather than as a fraction of ``[xmin, xmax]``, because that is how the
-    GWTC-6 priors are specified (``break_mass_1``, ``break_mass_2``).
-
-    The caller is responsible for ``xmin < break_1 < break_2 < xmax``; enforce it
-    with disjoint prior ranges rather than a constraint function. Out of order,
-    the continuity corrections below are still finite but the density is not the
-    intended one.
+    Breaks are absolute positions, not fractions of ``[xmin, xmax]``. Requires
+    ``xmin < break_1 < break_2 < xmax``.
 
     Parameters
     ----------

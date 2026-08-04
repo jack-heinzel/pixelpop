@@ -194,18 +194,8 @@ def TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass(
     `alpha_2` the gap between the breaks, and `alpha_3` the BH range above
     `break_mass_2`.
 
-    The model requires ``mmin < break_mass_1 < break_mass_2 < mmax``. Enforce it
-    with disjoint prior ranges (the GWTC-6 defaults use ``mlow_1 ~ U(1, 3)``,
-    ``break_mass_1 ~ U(3, 20)``, ``break_mass_2 ~ U(20, 50)``) rather than a
-    constraint function.
-
-    Notes
-    -----
-    Normalized on a *log*-spaced grid over
-    ``[FMS_GRID_MINIMUM, FMS_GRID_MAXIMUM]``, evaluating
-    :math:`\\int p\\,dm = \\int p\\,m\\,d\\ln m`. Do not push `mmin` below
-    ``FMS_GRID_MINIMUM`` (1 Msun) -- support outside the grid is simply missing
-    from the normalization.
+    Requires ``mmin < break_mass_1 < break_mass_2 < mmax``, and ``mmin`` at or
+    above ``FMS_GRID_MINIMUM``.
 
     Parameters
     ----------
@@ -389,18 +379,9 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
     ``BaseSmoothedMassDistribution.p_q``.
 
     Prefer this over :func:`~pixelpop.models.gwpop_models.PowerlawPlusPeak_MassRatio`,
-    which is the same density but normalizes on a BBH-only fiducial grid
-    (``m1`` in [2, 100], ``m2`` from 1.99) and looks the norm up with ``jnp.digitize``.
-    That grid mis-normalizes by ~3.5x below ``m1 = 2`` and costs ~8% in log-density at
-    ``m1 = 10``; it is kept unchanged because the GWTC-3/4/5 default sets use it.
-
-    Notes
-    -----
-    Normalized directly on a log-spaced ``(q, m1)`` grid --
-    :math:`\int f\,dq = \int f\,q\,d\ln q` -- with no fiducial-``qmin`` rescaling, then
-    ``jnp.interp``\ ed in :math:`\ln m_1`, which is exactly uniform in the grid
-    spacing. Accuracy degrades within roughly one grid spacing (~1% in ``m1``) above
-    ``mmin``, where the normalization is genuinely collapsing to zero.
+    which is the same density but normalizes on a BBH-only fiducial grid and
+    mis-normalizes by ~3.5x below ``m1 = 2``. That one is kept unchanged because
+    the GWTC-3/4/5 default sets use it.
 
     Parameters
     ----------
@@ -526,12 +507,9 @@ def iid_normal_spin_fms(data, mu, var, NS_amax=NS_SPIN_MAXIMUM, NS_mmax=NS_MASS_
 
 def _two_gaussian_mixture(a, mu_1, sigma_1, mu_2, sigma_2, lamb, amax):
     """One component's spin magnitude density: a two-truncated-Gaussian mixture
-    on ``[0, amax]``, mixed with weight ``lamb`` on the first Gaussian.
-
-    ``trunc_gaussian`` returns ``-inf`` out of support; both terms are clipped to
-    ``-INF`` first so that ``logaddexp`` never sees ``(-inf, -inf)``, which would
-    hand a NaN back through the ``jnp.where`` in
-    :func:`two_gaussian_spin_fms`."""
+    on ``[0, amax]``, mixed with weight ``lamb`` on the first Gaussian."""
+    # clip off -inf so logaddexp never sees (-inf, -inf), which would hand a NaN
+    # back through the jnp.where in two_gaussian_spin_fms
     p_1 = jnp.clip(trunc_gaussian(a, mu_1, sigma_1, 0., amax), -INF)
     p_2 = jnp.clip(trunc_gaussian(a, mu_2, sigma_2, 0., amax), -INF)
     return jnp.logaddexp(jnp.log(lamb) + p_1, jnp.log1p(-lamb) + p_2)
@@ -543,10 +521,9 @@ def two_gaussian_spin(data, mu_1_chi, mu_2_chi, sigma_1_chi, sigma_2_chi,
     Spin magnitude distribution: mixture of two truncated Gaussians.
 
     The GWTC-6 BBH component-spin magnitude model, i.e. the log-space equivalent
-    of ``gwtc6_population_models.spin.spin_magnitude_two_gaussians_BBH``. The
-    primary and secondary spins are drawn from the *same* pair of truncated
-    Gaussians on ``[0, amax]``, but with independent mixing fractions, so the
-    model is identically distributed in shape but not in the mixture weight.
+    of ``gwtc6_population_models.spin.spin_magnitude_two_gaussians_BBH``. Both
+    components share the same pair of truncated Gaussians on ``[0, amax]`` but
+    have independent mixing fractions.
 
     Parameters
     ----------
@@ -600,16 +577,6 @@ def two_gaussian_spin_fms(data, mu_1_chi, mu_2_chi, sigma_1_chi, sigma_2_chi,
     lighter than `NS_mmax` cannot spin faster than `NS_amax`. This is the GWTC-6
     full-mass-spectrum component-spin model, i.e. the log-space equivalent of
     ``gwtc6_population_models.spin.spin_magnitude_two_gaussians_CBC``.
-
-    Notes
-    -----
-    The cap is applied as a *two-level select* -- both mixtures are evaluated
-    with scalar truncation bounds and ``jnp.where`` picks between them -- rather
-    than by passing a per-sample ``amax``. ``trunc_gaussian`` normalizes with a
-    ``jnp.select`` whose branches XLA evaluates unconditionally, so a data-shaped
-    bound costs ~28x a scalar one; doubling the cheap pdf evaluation to keep the
-    expensive normalization a compile-time constant is a large net win, and the
-    result is identical.
 
     Parameters
     ----------

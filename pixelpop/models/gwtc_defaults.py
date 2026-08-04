@@ -39,21 +39,13 @@ The fields line up with what :class:`~pixelpop.utils.data.PixelPopData` accepts:
         maxima=defaults.maxima,
     )
 
-Hyperparameter names are positional
------------------------------------
-``probabilistic.py`` calls each model as
-``model(data, *[sample[h] for h in hyperparameters[parameter]])``, so the order
-of each hyperparameter list **must** match the model's signature after ``data``.
-Adding a name means passing that argument; the corresponding keyword default is
-then ignored.
+Hyperparameter lists are **positional**: ``probabilistic.py`` calls
+``model(data, *[sample[h] for h in hyperparameters[parameter]])``, so their order
+must match each model's signature after ``data``.
 
-A note on ``mu_spin`` / ``sigma_spin``
---------------------------------------
-GWTC-6 uses these names for the *tilt* mean and width (``$\\mu_t$``,
-``$\\sigma_t$`` in its prior file), whereas GWTC-3/4/5 use ``mu_spin`` and
-``var_spin`` for the spin *magnitude*. Each set carries a complete, self-
-contained prior dict, so the collision is harmless as long as sets are not
-mixed -- do not splice a GWTC-6 prior dict into a GWTC-4 model set.
+Do not mix prior dicts across sets. GWTC-6 uses ``mu_spin``/``sigma_spin`` for the
+*tilt* mean and width, GWTC-3/4/5 use ``mu_spin``/``var_spin`` for the spin
+*magnitude*.
 """
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -103,11 +95,8 @@ class CatalogDefaults:
         Bin edges for the pixelated parameters, overriding ``bbh_minima`` /
         ``bbh_maxima``. Empty means "use the pixelpop BBH defaults".
 
-    Notes
-    -----
-    The mappings are wrapped read-only and copied on construction, so a set can
-    never be mutated through this object nor alias the module-level registries.
-    Use :meth:`merge` to derive a variant.
+    The mappings are copied and wrapped read-only on construction; use
+    :meth:`merge` to derive a variant.
     """
 
     models: MappingProxyType
