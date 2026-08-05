@@ -584,7 +584,54 @@ def get_worst_rhat_neff(chain_samples, skip_keys=[]):
     neff_key = f'{name[worst_neff]}{[int(p) for p in pos[worst_neff]]}'.replace('[]','')
     return rhat_key, rhat_chain, neff_key, neff_chain
 
-def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys):
+def trace_model(probabilistic_model, initial_value={}, model_kwargs={}):
+    """
+    Trace the probabilistic model once at ``initial_value``.
+
+    Parameters
+    ----------
+    probabilistic_model : callable
+        NumPyro probabilistic model.
+    initial_value : dict, optional
+        Dictionary of initial parameter values to condition on.
+    model_kwargs : dict, optional
+        Keyword arguments for the probabilistic model (e.g., posterior and injection data).
+
+    Returns
+    -------
+    trace : dict
+        NumPyro trace, keyed by site name.
+    """
+    conditioned_model = handlers.condition(probabilistic_model, data=initial_value)
+    with handlers.seed(rng_seed=0):
+        return handlers.trace(conditioned_model).get_trace(**model_kwargs)
+
+def get_latent_sites(trace, initial_value={}):
+    """
+    Names of the sites NUTS will actually sample.
+
+    Parameters
+    ----------
+    trace : dict
+        NumPyro trace, as returned by :func:`trace_model`.
+    initial_value : dict, optional
+        The values the trace was conditioned on.
+
+    Returns
+    -------
+    latent_sites : set of str
+        Names of the unobserved sample sites.
+    """
+    # Conditioning marks the initialized sites observed even though they are latent
+    # in the unconditioned model, so they are added back by name. numpyro.factor
+    # sites are genuinely observed and stay out, as do deterministic sites.
+    return {
+        name for name, site in trace.items()
+        if site['type'] == 'sample'
+        and (name in initial_value or not site.get('is_observed', False))
+    }
+
+def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys, trace=None):
     """
     Calculate the size of the in-progress summary table.
 
@@ -598,15 +645,16 @@ def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
         Keyword arguments for the probabilistic model (e.g., posterior and injection data).
     print_keys : list of str
         Keys for which to include values in the summary table.
+    trace : dict, optional
+        Pre-computed trace of the model, to avoid tracing it twice.
 
     Returns
     -------
     size : int
         Number of rows expected in the summary table.
     """
-    conditioned_model = handlers.condition(probabilistic_model, data=initial_value)
-    with handlers.seed(rng_seed=0):
-        trace = handlers.trace(conditioned_model).get_trace(**model_kwargs)
+    if trace is None:
+        trace = trace_model(probabilistic_model, initial_value, model_kwargs)
 
     size = 2
     for name in print_keys:
@@ -618,10 +666,122 @@ def get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
             raise KeyError(f'You are trying to print \"{name}\", valid print_keys are {list(trace.keys())}')
     return size
 
+PARAMETRIC_DENSE_MASS = 'parametric'
+
+def parametric_dense_blocks(pixelpop_data):
+    """
+    One dense mass-matrix block per parametric model dimension.
+
+    Each block holds the hyperparameters of a single model, so NUTS learns the
+    within-model correlations (e.g. the power-law slopes against the peak
+    locations) without paying for a full dense matrix over every site.
+
+    Parameters
+    ----------
+    pixelpop_data : PixelPopData
+        Run configuration, read for ``other_parameters`` and
+        ``parameter_to_hyperparameters``.
+
+    Returns
+    -------
+    blocks : list of tuple of str
+        Hyperparameter names, grouped by the model that consumes them.
+    """
+    return [
+        tuple(pixelpop_data.parameter_to_hyperparameters[p])
+        for p in pixelpop_data.other_parameters
+    ]
+
+def resolve_dense_mass(dense_mass, pixelpop_data=None, latent_sites=None):
+    """
+    Expand a dense mass-matrix specification into numpyro's list-of-tuples form.
+
+    Accepts, in addition to numpyro's own ``True``/``False``/list-of-tuples:
+
+    - ``'parametric'``, which expands to one block per parametric model, i.e.
+      ``[('alpha_1', 'alpha_2', ..., 'mpp_1', ...), ('lamb', 'max_z'), ...]``;
+    - blocks that name *model dimensions* rather than hyperparameters, so
+      ``[('log_mass_1', 'mass_ratio', 'redshift'), ('a', 't')]`` correlates the
+      masses with the redshift and, separately, the spin magnitudes with the
+      tilts. Hyperparameter and model-dimension names may be mixed freely in one
+      block;
+    - ``'parametric'`` as an element, which expands in place, so
+      ``['parametric', ('log_nu_spde', 'log_ranges', 'lnsigma')]`` blocks the
+      parametric models and the nonparametric field separately.
+
+    Names that are not sampled -- Delta priors, or sites that this run's model
+    does not have -- are dropped rather than raising, and a name repeated across
+    blocks stays only in the first, since numpyro requires the blocks to
+    partition the latent sites.
+
+    Parameters
+    ----------
+    dense_mass : bool, str, or sequence
+        The specification to expand.
+    pixelpop_data : PixelPopData, optional
+        Run configuration. Required to expand ``'parametric'`` or model-dimension
+        names.
+    latent_sites : set of str, optional
+        Names of the sites NUTS samples, from :func:`get_latent_sites`. Anything
+        outside this set is dropped. If omitted, only Delta-prior hyperparameters
+        are dropped.
+
+    Returns
+    -------
+    dense_mass : bool or list of tuple of str
+        Ready to hand to ``numpyro.infer.NUTS``. ``False`` if no block survived.
+    """
+    if dense_mass is None:
+        return False
+    if isinstance(dense_mass, bool):
+        return dense_mass
+    if isinstance(dense_mass, str):
+        dense_mass = [dense_mass]
+
+    if pixelpop_data is None:
+        model_dimensions, parameter_hypers, priors = set(), {}, {}
+    else:
+        model_dimensions = set(pixelpop_data.other_parameters)
+        parameter_hypers = pixelpop_data.parameter_to_hyperparameters
+        priors = pixelpop_data.priors
+
+    groups = []
+    for group in dense_mass:
+        if group == PARAMETRIC_DENSE_MASS:
+            if pixelpop_data is None:
+                raise ValueError(
+                    f"dense_mass='{PARAMETRIC_DENSE_MASS}' needs pixelpop_data to "
+                    "know which hyperparameters belong to which model"
+                )
+            groups.extend(parametric_dense_blocks(pixelpop_data))
+        elif isinstance(group, str):
+            groups.append((group,))
+        else:
+            groups.append(tuple(group))
+
+    blocks, seen = [], set()
+    for group in groups:
+        block = []
+        for name in group:
+            names = parameter_hypers[name] if name in model_dimensions else [name]
+            for site in names:
+                if site in seen:
+                    continue
+                if latent_sites is not None and site not in latent_sites:
+                    continue
+                if site in priors and priors[site][1].__name__ == 'Delta':
+                    continue
+                seen.add(site)
+                block.append(site)
+        if block:
+            blocks.append(tuple(block))
+    return blocks or False
+
 def inference_loop(
-    probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10, 
+    probabilistic_model, model_kwargs={}, initial_value={}, warmup=10000, tot_samples=100, thinning=100, pacc=0.65, maxtreedepth=10,
     num_samples=1, parallel=1, rng_key=random.PRNGKey(1), cache_cadence=1, run_dir='./', name='',
-    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0
+    print_keys=['Nexp', 'log_likelihood', 'log_likelihood_variance'], dense_mass=False, chain_offset=0,
+    pixelpop_data=None
     ):
     """
     Run MCMC inference with a probabilistic model and return posterior samples.
@@ -662,10 +822,16 @@ def inference_loop(
         Subdirectory name for this run.
     print_keys : list of str, optional
         Keys to include in periodic summaries (default ["Nexp", "log_likelihood", "log_likelihood_variance"]).
-    dense_mass : bool, optional
-        Whether to use a dense mass matrix in NUTS (default False).
+    dense_mass : bool, str, or sequence, optional
+        Dense mass-matrix specification (default False), expanded by
+        :func:`resolve_dense_mass`. Beyond numpyro's own ``True``/``False``/
+        list-of-tuples this takes ``'parametric'`` (one dense block per parametric
+        model) and blocks named by model dimension rather than hyperparameter.
     chain_offset : int, optional
         Offset applied to chain index when saving outputs (default 0).
+    pixelpop_data : PixelPopData, optional
+        Run configuration, needed only to expand a ``dense_mass`` specification
+        that names models rather than hyperparameters.
 
     Returns
     -------
@@ -675,7 +841,13 @@ def inference_loop(
         Completed MCMC sampler instance.
     """
 
-    table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys)
+    trace = trace_model(probabilistic_model, initial_value, model_kwargs)
+    table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys, trace=trace)
+    dense_mass = resolve_dense_mass(
+        dense_mass, pixelpop_data, latent_sites=get_latent_sites(trace, initial_value)
+        )
+    if isinstance(dense_mass, list):
+        print(f"Dense mass-matrix blocks: {dense_mass}")
     skip_keys = [k[1:] for k in print_keys if k.startswith('~')]
 
     # Bind the data in rather than passing it to mcmc.run(): numpyro keys its compiled-step cache
