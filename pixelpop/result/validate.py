@@ -306,9 +306,9 @@ def convert_to_arviz(hyperposterior):
                 auto_dims[k] = [f"{k}_idx_{i}" for i in range(processed_posterior[k].ndim - 2)]
 
     # arviz>=1 takes a nested mapping; arviz<1 used the `posterior=` kwarg.
-    try:
+    if int(az.__version__.split('.')[0]) >= 1:
         idata = az.from_dict({"posterior": processed_posterior}, dims=auto_dims)
-    except TypeError:
+    else:
         idata = az.from_dict(posterior=processed_posterior, dims=auto_dims)
     return idata
 
