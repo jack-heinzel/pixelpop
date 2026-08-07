@@ -231,13 +231,11 @@ def create_popsummary(
         event_parameters=gwparameters
         )
     # set one dimensional rates
-    skip_parameters = []
     pp_grids = pixelpop_data.bin_axes
     
     if lower_triangular:
         # first two axes are assumed lower triangular
         assert bins[0] == bins[1]
-        skip_parameters = pixelpop_parameters[:2]
         axes = tuple(range(2, dimension))
         ldm1 = pixelpop_data.logdV[0]
         ldm2 = pixelpop_data.logdV[1]
@@ -260,23 +258,9 @@ def create_popsummary(
                 [LSE(Rsub, axis=(0,)+axes) + np.sum(lda) + ldm1 for Rsub in tqdm(R, desc=f'Computing mass_2 marginals')]
             )
             
-            m1 = np.concatenate((m1[:,0][:,None], m1), axis=1)
-            m2 = np.concatenate((m2[:,0][:,None], m2), axis=1)
-            
-            result.set_rates_on_grids(
-                grid_key=pixelpop_parameters[0],
-                grid_params=pixelpop_parameters[0],
-                positions=pp_grids[0],
-                rates=np.exp(m1),
-                overwrite=overwrite
-                )
-            result.set_rates_on_grids(
-                grid_key=pixelpop_parameters[1],
-                grid_params=pixelpop_parameters[1],
-                positions=pp_grids[1],
-                rates=np.exp(m2),
-                overwrite=overwrite
-                )
+            # in case these parameters are windowed, we need log_marginals to be in hyperposterior
+            hyperposterior[f'log_marginal_{pixelpop_parameters[0]}'] = m1 - hyperposterior['log_rate'][:,None]
+            hyperposterior[f'log_marginal_{pixelpop_parameters[1]}'] = m2 - hyperposterior['log_rate'][:,None]
             
         for ii_par, par in enumerate(pixelpop_parameters[2:]):
             sum_axes = (0,1) + axes[:ii_par] + axes[ii_par+1:]
@@ -284,7 +268,7 @@ def create_popsummary(
             marginal = np.array(
                 [LSE(Rsub, axis=sum_axes) + total_d for Rsub in tqdm(R, desc=f'Computing {par} marginals')]
             )
-            hyperposterior[f'log_marginal_{par}'] = marginal
+            hyperposterior[f'log_marginal_{par}'] = marginal - hyperposterior['log_rate'][:,None]
     
     
     assert 'log_rate' in hyperposterior
@@ -354,7 +338,7 @@ def create_popsummary(
         # (where the window is applied per-event via the parametric model).
         R_windowed = R + window_in_bins
         log_norms = LSE(R_windowed, axis=tuple(range(1, R_windowed.ndim))) + np.sum(pixelpop_data.logdV)
-        hyperposterior['log_rate'] = log_norms
+        hyperposterior['log_rate'] = log_norms 
         for par in pixelpop_parameters:
             par_idx = pixelpop_parameters.index(par)
             par_axis = par_idx + 1
@@ -373,9 +357,6 @@ def create_popsummary(
     for ii, par in enumerate(parameters):
         print(f'Saving {par} rates on grids...')
         if par in pixelpop_parameters:
-            if par in skip_parameters:
-                continue
-            
             if 'redshift' in pixelpop_parameters:
                 if par != 'redshift':
                     # naive marginalization over redshift neglects implicit dVc/dz 1/1+z term
