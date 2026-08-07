@@ -20,7 +20,8 @@ import numpyro
 from numpyro.infer import MCMC, NUTS
 from tqdm import tqdm
 import sys
-from numpyro.diagnostics import summary, print_summary
+from numpyro.diagnostics import (effective_sample_size, print_summary,
+                                 split_gelman_rubin)
 from jax import random
 import os
 from contextlib import redirect_stdout
@@ -531,7 +532,43 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
 
     return probabilistic_model, initial_value
 
-def get_worst_rhat_neff(chain_samples, skip_keys=[]):
+#: Sites this size or smaller are diagnosed in one call rather than sliced.
+BULK_DIAGNOSTIC_PARAMETERS = 4096
+
+
+def _arg_best(values, argbest):
+    """Pick out the best of `values` and the index tuple that located it."""
+    values = np.asarray(values)
+    flat = int(argbest(values))
+    index = np.unravel_index(flat, values.shape) if values.ndim else ()
+    return float(values.reshape(-1)[flat]), tuple(int(p) for p in index)
+
+
+def _worst_over_site(value):
+    """
+    Largest split R-hat and smallest Neff within one site, with their indices.
+
+    ``value`` is ``(num_draws, *event_shape)``. Big sites are walked a slice of the
+    leading event axis at a time: same arithmetic, but the FFT inside
+    ``effective_sample_size`` allocates per slice rather than per site.
+    """
+    if value.ndim == 1 or value[0].size <= BULK_DIAGNOSTIC_PARAMETERS:
+        return (_arg_best(split_gelman_rubin(value[None, ...]), np.argmax),
+                _arg_best(effective_sample_size(value[None, ...]), np.argmin))
+
+    worst_rhat, worst_neff = (-np.inf, ()), (np.inf, ())
+    for i in range(value.shape[1]):
+        block = value[:, i][None, ...]
+        rhat, rhat_index = _arg_best(split_gelman_rubin(block), np.argmax)
+        neff, neff_index = _arg_best(effective_sample_size(block), np.argmin)
+        if rhat > worst_rhat[0]:
+            worst_rhat = (rhat, (i, *rhat_index))
+        if neff < worst_neff[0]:
+            worst_neff = (neff, (i, *neff_index))
+    return worst_rhat, worst_neff
+
+
+def get_worst_rhat_neff(chain_samples, skip_keys=[], latent_sites=None):
     """
     Identify the parameter with the worst R-hat and effective sample size (Neff).
 
@@ -540,7 +577,11 @@ def get_worst_rhat_neff(chain_samples, skip_keys=[]):
     chain_samples : dict
         Dictionary of chain samples from NumPyro MCMC, with parameter name keys
     skip_keys : list
-        List of keys to skip over in calculation of worst Rhat and Neff
+        Names of sites to leave out of the search.
+    latent_sites : set of str, optional
+        Restrict the search to these sites, as returned by :func:`get_latent_sites`.
+        Deterministic sites are functions of the latents, so their diagnostics are
+        redundant and the big ones dominate the cost. Defaults to every key.
 
     Returns
     -------
@@ -553,35 +594,29 @@ def get_worst_rhat_neff(chain_samples, skip_keys=[]):
     neff_chain : ndarray
         Sample chain of the worst Neff parameter.
     """
-    chain_summary = summary(chain_samples, group_by_chain=False)
-    rhats = [[key, chain_summary[key]['r_hat']] for key in chain_summary]
-    neffs = [[key, chain_summary[key]['n_eff']] for key in chain_summary]
-    
-    name, pos, rhat_values = [], [], []
-    for rh in rhats:
-        ind = np.unravel_index(np.argmax(rh[1], axis=None), rh[1].shape)
-        k = f'{rh[0]}{[int(p) for p in ind]}'.replace('[]','')
-        if k not in skip_keys:
-            name.append(rh[0])
-            pos.append(ind)
-            rhat_values.append(rh[1][ind])
-    
-    worst_rhat = np.argmax(rhat_values)
-    rhat_chain = chain_samples[name[worst_rhat]][...,*pos[worst_rhat]]
-    rhat_key = f'{name[worst_rhat]}{[int(p) for p in pos[worst_rhat]]}'.replace('[]','')
+    keys = [k for k in chain_samples
+            if k not in skip_keys and (latent_sites is None or k in latent_sites)]
+    if not keys:  # nothing survived the filters
+        keys = [k for k in chain_samples if k not in skip_keys]
 
-    name, pos, neff_values = [], [], []
-    for rh in neffs:
-        ind = np.unravel_index(np.argmin(rh[1], axis=None), rh[1].shape)
-        k = f'{rh[0]}{[int(p) for p in ind]}'.replace('[]','')
-        if k not in skip_keys:
-            name.append(rh[0])
-            pos.append(ind)
-            neff_values.append(rh[1][ind])
-        
-    worst_neff = np.argmin(neff_values)
-    neff_chain = chain_samples[name[worst_neff]][...,*pos[worst_neff]]
-    neff_key = f'{name[worst_neff]}{[int(p) for p in pos[worst_neff]]}'.replace('[]','')
+    # Seeded from the first site rather than +-inf: a site whose diagnostics come
+    # back NaN loses every comparison, and with no seed that would leave nothing to
+    # report at all.
+    worst_rhat = worst_neff = None
+    for key in keys:
+        (rhat, rhat_index), (neff, neff_index) = _worst_over_site(np.asarray(chain_samples[key]))
+        if worst_rhat is None or rhat > worst_rhat[0]:
+            worst_rhat = (rhat, key, rhat_index)
+        if worst_neff is None or neff < worst_neff[0]:
+            worst_neff = (neff, key, neff_index)
+
+    def label_and_chain(worst):
+        _, key, index = worst
+        return (f'{key}{[int(p) for p in index]}'.replace('[]', ''),
+                chain_samples[key][(..., *index)])
+
+    rhat_key, rhat_chain = label_and_chain(worst_rhat)
+    neff_key, neff_chain = label_and_chain(worst_neff)
     return rhat_key, rhat_chain, neff_key, neff_chain
 
 def trace_model(probabilistic_model, initial_value={}, model_kwargs={}):
@@ -843,9 +878,8 @@ def inference_loop(
 
     trace = trace_model(probabilistic_model, initial_value, model_kwargs)
     table_size = get_table_size(probabilistic_model, initial_value, model_kwargs, print_keys, trace=trace)
-    dense_mass = resolve_dense_mass(
-        dense_mass, pixelpop_data, latent_sites=get_latent_sites(trace, initial_value)
-        )
+    latent_sites = get_latent_sites(trace, initial_value)
+    dense_mass = resolve_dense_mass(dense_mass, pixelpop_data, latent_sites=latent_sites)
     if isinstance(dense_mass, list):
         print(f"Dense mass-matrix blocks: {dense_mass}")
     skip_keys = [k[1:] for k in print_keys if k.startswith('~')]
@@ -869,9 +903,10 @@ def inference_loop(
         
         mcmc.warmup(rng_key)
         sys.stdout.write("\n"*(table_size+3)) # buffer line between the progress bars
-        chain_samples = None
+        chain_samples, filled = None, 0
         mcmc.transfer_states_to_host()
-        sample_iterator = tqdm(range(int(1e-4 + tot_samples/num_samples)))
+        num_chunks = int(1e-4 + tot_samples/num_samples)
+        sample_iterator = tqdm(range(num_chunks))
         sample_iterator.set_description("drawing thinned samples")
         for sample in sample_iterator:
             mcmc.post_warmup_state = mcmc.last_state
@@ -879,29 +914,42 @@ def inference_loop(
             next_sample = mcmc.get_samples()
             sys.stdout.write("\x1b[1A\n\x1b[1A")
 
+            # Allocate the whole chain once and fill slices. Growing by concatenation
+            # instead holds the old and the new array at the same time, which on the
+            # last chunks of a 3D run is several GB of transient.
+            chunk = len(next_sample[next(iter(next_sample))])
             if chain_samples is None:
-                chain_samples = {key: np.array(next_sample[key]) for key in next_sample}
-            else:
-                for key in chain_samples:
-                    chain_samples[key] = np.concatenate((chain_samples[key], np.array(next_sample[key])), axis=0)
+                chain_samples = {
+                    key: np.empty((num_chunks*chunk, *value.shape[1:]), dtype=value.dtype)
+                    for key, value in next_sample.items()
+                    }
+            for key, value in chain_samples.items():
+                value[filled:filled+chunk] = next_sample[key]
+            filled += chunk
+            # views onto the filled part, so nothing downstream sees the unwritten tail
+            collected = {key: value[:filled] for key, value in chain_samples.items()}
+
             mcmc.transfer_states_to_host()
-            key0 = list(chain_samples.keys())[0]
-            if (sample % cache_cadence == 0) and (chain_samples[key0].shape[0] >= 4):
+            # always save the last chunk, so the h5 holds the whole chain even when
+            # cache_cadence does not divide the number of chunks
+            last_chunk = sample == num_chunks - 1
+            if (sample % cache_cadence == 0 or last_chunk) and (filled >= 4):
                 sys.stdout.write(f"\x1b[1A\x1b[2K"*(table_size+3)) # move the cursor up to overwrite the summary table for the NEXT print
-                
-                rhat, rhat_chain, neff, neff_chain = get_worst_rhat_neff(chain_samples, skip_keys=skip_keys)
-                summary_dict = {key: chain_samples[key] for key in print_keys if key[1:] not in skip_keys}
+
+                rhat, rhat_chain, neff, neff_chain = get_worst_rhat_neff(
+                    collected, skip_keys=skip_keys, latent_sites=latent_sites)
+                summary_dict = {key: collected[key] for key in print_keys if key[1:] not in skip_keys}
                 summary_dict['worst r_hat: '+rhat] = rhat_chain
                 summary_dict['worst n_eff: '+neff] = neff_chain
-                
+
                 print_summary(summary_dict, group_by_chain=False)
                 os.makedirs(os.path.join(run_dir, name), exist_ok=True)
                 with open(os.path.join(run_dir, name, f'chain_{chain+chain_offset}_metadata.txt'), 'w+') as f:
                     with redirect_stdout(f):
                         print_summary(summary_dict, group_by_chain=False)
                 f = os.path.join(run_dir, name, f'chain_{chain+chain_offset}_samples.h5')
-                h5ify.save(f, chain_samples, mode='w')
-        
-        samples.append(chain_samples)
+                h5ify.save(f, collected, mode='w')
+
+        samples.append({key: value[:filled] for key, value in chain_samples.items()})
 
     return samples, mcmc
