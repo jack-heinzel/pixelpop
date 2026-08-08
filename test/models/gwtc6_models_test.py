@@ -302,10 +302,12 @@ def test_mass_ratio_vanishes_below_mmin():
     """m1 < mmin, and q below mmin/m1, both give vanishing probability rather than a
     spurious finite value from dividing two sentinels.
 
-    The threshold is -100, not the -INF sentinel: m_smoother clips m - mmin to
-    `buffer` = 1e-3 rather than branching, so below mmin it returns
-    log_expit(-delta_m/1e-3) ~ -1000*delta_m. That underflows to exactly zero
-    probability for any delta_m of order 1.
+    The threshold is -100, not the -INF sentinel: m_smoother clips
+    (m - mmin)/delta_m to EDGE_FRACTION rather than branching, so below mmin it
+    floors at about -1/EDGE_FRACTION = -1000 and keeps falling from there. That
+    underflows to exactly zero probability, and stays far enough below
+    MASS_RATIO_LOG_NORM_FLOOR that subtracting the floored norm cannot lift it back
+    into a spurious spike.
     """
     q = jnp.asarray([0.1, 0.5, 0.9])
     below = {'log_mass_1': jnp.log(jnp.full(3, 2.0)), 'mass_ratio': q}

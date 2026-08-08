@@ -28,6 +28,12 @@ from contextlib import redirect_stdout
 import h5ify
 from numpyro import handlers
 from functools import partial
+from .reparameterization import (
+    ordered_pair_bounds,
+    ordered_pair_initial_value,
+    reparameterized_sites,
+    sample_ordered_pair,
+)
 
 def setup_probabilistic_model(pixelpop_data, log='default'):
     """
@@ -160,6 +166,19 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             random_initialization=pixelpop_data.random_initialization
             )
 
+    ordered_bounds = ordered_pair_bounds(pixelpop_data.priors)
+    reparameterized = {name for pair in ordered_bounds for name in pair}
+    if ordered_bounds:
+        initial_value.update(ordered_pair_initial_value(
+            pixelpop_data.priors, pixelpop_data.plausible_hyperparameters
+            ))
+        if pixelpop_data.constraint_funcs:
+            print(
+                f"[warning] {sorted(reparameterized)} are ordered by construction; "
+                "any constraint_func that also imposes that ordering now double-counts "
+                f"it: {[f.__name__ for f in pixelpop_data.constraint_funcs]}"
+            )
+
     def parametric_model(data, injections, event_weights, inj_weights):
         """
         Evaluate the parametric population model contribution.
@@ -187,12 +206,16 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
         """
         sample = {}
         for key in pixelpop_data.priors:
+            if key in reparameterized:
+                continue                          # drawn as an ordered pair below
             args, distribution = pixelpop_data.priors[key]
             if distribution.__name__ == 'Delta':
                 sample[key] = args[0]
             else:
-                sample[key] = numpyro.sample(key, distribution(*args))        
-        
+                sample[key] = numpyro.sample(key, distribution(*args))
+        for (upper, lower), (lo, hi) in ordered_bounds.items():
+            sample[upper], sample[lower] = sample_ordered_pair(upper, lower, lo, hi)
+
         if log == 'debug':
             for p in pixelpop_data.other_parameters:
                 jaxprint('[DEBUG] =================================')
@@ -779,6 +802,10 @@ def resolve_dense_mass(dense_mass, pixelpop_data=None, latent_sites=None):
         model_dimensions = set(pixelpop_data.other_parameters)
         parameter_hypers = pixelpop_data.parameter_to_hyperparameters
         priors = pixelpop_data.priors
+    # A reparameterized hyperparameter is a deterministic, not a latent site, so a
+    # block naming it would otherwise be silently dropped along with the
+    # correlations it was asked to capture.
+    reparameterized = reparameterized_sites(priors)
 
     groups = []
     for group in dense_mass:
@@ -799,12 +826,13 @@ def resolve_dense_mass(dense_mass, pixelpop_data=None, latent_sites=None):
         block = []
         for name in group:
             names = parameter_hypers[name] if name in model_dimensions else [name]
-            for site in names:
+            for hyper in names:
+                site = reparameterized.get(hyper, hyper)
                 if site in seen:
                     continue
                 if latent_sites is not None and site not in latent_sites:
                     continue
-                if site in priors and priors[site][1].__name__ == 'Delta':
+                if hyper in priors and priors[hyper][1].__name__ == 'Delta':
                     continue
                 seen.add(site)
                 block.append(site)

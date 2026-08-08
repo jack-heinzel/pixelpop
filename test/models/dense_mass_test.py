@@ -15,6 +15,7 @@ from jax import random
 from numpyro.infer import MCMC, NUTS
 
 from pixelpop.models.gwtc_defaults import gwtc6_default
+from pixelpop.models.reparameterization import reparameterized_sites
 from pixelpop.models.probabilistic import (
     get_latent_sites,
     parametric_dense_blocks,
@@ -48,12 +49,26 @@ def test_bools_and_none_pass_through(pixelpop_data):
 
 
 def test_parametric_gives_one_block_per_model(pixelpop_data):
+    sites = reparameterized_sites(pixelpop_data.priors)
     blocks = resolve_dense_mass('parametric', pixelpop_data)
     assert len(blocks) == len(PARAMETERS)
     for block, parameter in zip(blocks, PARAMETERS):
-        expected = [h for h in pixelpop_data.parameter_to_hyperparameters[parameter]
+        expected = [sites.get(h, h)
+                    for h in pixelpop_data.parameter_to_hyperparameters[parameter]
                     if pixelpop_data.priors[h][1] is not dist.Delta]
         assert list(block) == expected
+
+
+def test_ordered_pairs_block_under_their_sampled_names(pixelpop_data):
+    """mlow_1/mlow_2 are deterministics of the sites NUTS actually adapts, so a
+    block naming them has to come back holding the _frac sites -- otherwise it is
+    dropped as unsampled and the correlations go unmodelled."""
+    blocks = resolve_dense_mass([('mlow_1', 'mlow_2')], pixelpop_data)
+    assert blocks == [('mlow_1_frac', 'mlow_2_frac')]
+
+    flat = {h for block in resolve_dense_mass('parametric', pixelpop_data) for h in block}
+    assert {'mlow_1_frac', 'mlow_2_frac'} <= flat
+    assert not {'mlow_1', 'mlow_2'} & flat
 
 
 def test_parametric_drops_delta_priors(pixelpop_data):

@@ -1,6 +1,7 @@
 import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import *
+from ..models.reparameterization import ordered_pair_bounds, sample_ordered_pair
 from .car import DiagonalizedICARTransform
 import numpyro.distributions as dist
 import jax.numpy as jnp
@@ -67,6 +68,9 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
             
     initial_value = get_initial_value()
 
+    ordered_bounds = ordered_pair_bounds(pixelpop_data.priors)
+    reparameterized = {name for pair in ordered_bounds for name in pair}
+
     def parametric_prior(data, injections, event_weights, inj_weights):
         """
         Evaluate the parametric population model contribution.
@@ -75,11 +79,15 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         """
         sample = {}
         for key in pixelpop_data.priors:
+            if key in reparameterized:
+                continue                          # drawn as an ordered pair below
             args, distribution = pixelpop_data.priors[key]
             if distribution.__name__ == 'Delta':
                 sample[key] = args[0]
             else:
-                sample[key] = numpyro.sample(key, distribution(*args))        
+                sample[key] = numpyro.sample(key, distribution(*args))
+        for (upper, lower), (lo, hi) in ordered_bounds.items():
+            sample[upper], sample[lower] = sample_ordered_pair(upper, lower, lo, hi)
         for constraint_func in pixelpop_data.constraint_funcs:
             numpyro.factor(constraint_func.__name__, constraint_func(sample))
             if log == 'debug':

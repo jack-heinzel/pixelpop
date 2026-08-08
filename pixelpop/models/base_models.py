@@ -46,13 +46,33 @@ def log_expit(x):
 
     return jnp.where(condition, negx_valid-jnp.log1p(jnp.exp(negx_valid)), -jnp.log1p(jnp.exp(-posx_valid)))
 
-def m_smoother(m1s, minimum, delta, buffer=1e-3):
+#: Fraction of the turn-on width at each end where the Planck taper is clipped.
+#: The taper sees the mass only through x = (m - minimum) / delta, so clipping x
+#: floors it at a fixed -1/EDGE_FRACTION. Clipping (m - minimum) at a fixed mass
+#: instead floors it at -delta/buffer, i.e. a spurious -1/buffer gradient pushing
+#: the turn-on width to zero whenever anything falls below the edge.
+EDGE_FRACTION = 1e-3
+
+#: How much further the log taper falls per turn-on width below the edge. The clip
+#: alone leaves that region flat -- no gradient in the mass, the edge or the width
+#: -- so a sampler that has put an event below the minimum mass has nothing to tell
+#: it which way is out. Steep-but-finite, and shallow enough for NUTS to follow.
+BELOW_EDGE_SLOPE = 10.
+
+
+def m_smoother(m1s, minimum, delta, edge_fraction=EDGE_FRACTION,
+               below_edge_slope=BELOW_EDGE_SLOPE):
     """
     Apply a smoothing function at the minimum mass cutoff.
 
     Implements the standard smoothing of a power-law at the low-mass
     edge, following Eq. (B5) of arXiv:2111.03634. Ensures continuity
     across [mmin, mmin + delta].
+
+    Exact over the turn-on. Below its bottom ``edge_fraction``, where the taper has
+    already fallen to ``exp(-1/edge_fraction)`` and its exponent is heading for a
+    pole, it continues linearly in the log so that the density keeps falling rather
+    than flattening onto a plateau.
 
     Parameters
     ----------
@@ -62,21 +82,38 @@ def m_smoother(m1s, minimum, delta, buffer=1e-3):
         Minimum allowed mass.
     delta : float
         Width of smoothing region.
-    buffer : float, optional
-        Small offset to avoid division-by-zero.
+    edge_fraction : float, optional
+        Fraction of ``delta`` at each end of the turn-on where the taper is
+        clipped, see :data:`EDGE_FRACTION`.
+    below_edge_slope : float, optional
+        Slope of the continuation below the edge, per turn-on width, see
+        :data:`BELOW_EDGE_SLOPE`.
 
     Returns
     -------
     jnp.ndarray
         Log-smoothing factor applied to the mass distribution.
     """
+    # delta == 0 is a step, and the taper is 0/0 there. Evaluate it at a dummy width
+    # and swap the step in after: on the real delta the nan reaches the gradient of
+    # the branch that is taken, not just the one that is discarded.
+    is_step = jnp.isclose(delta, 0)
+    delta_safe = jnp.where(is_step, 1., delta)
 
-    m_prime = jnp.clip(m1s - minimum, buffer, delta-buffer)
+    # The clip leaves both ratios pure functions of edge_fraction at the ends, so
+    # neither the taper nor its gradient can blow up.
+    m_prime = jnp.clip(m1s - minimum,
+                       edge_fraction * delta_safe,
+                       (1. - edge_fraction) * delta_safe)
+    taper = log_expit(-delta_safe/m_prime - delta_safe/(m_prime - delta_safe))
+    floor = log_expit(-1./edge_fraction - 1./(edge_fraction - 1.))
 
-    return jnp.where(jnp.isclose(delta, 0),
-        jnp.where(m1s >= minimum, 0.0, -INF),
-        log_expit(-delta/m_prime - delta/(m_prime - delta))
-    )
+    # Distance below the junction, in turn-on widths: exactly zero wherever the
+    # taper above is the real thing, so the model above the edge is untouched.
+    deficit = jnp.clip(minimum + edge_fraction * delta - m1s, 0.) / delta_safe
+
+    return (jnp.where(is_step, jnp.where(m1s >= minimum, 0., floor), taper)
+            - below_edge_slope * deficit)
 
 def powerlaw(data, slope, minimum, maximum):
     """

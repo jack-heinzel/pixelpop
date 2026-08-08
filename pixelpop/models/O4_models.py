@@ -433,11 +433,12 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
 
     log_norms = jnp.clip(log_norms, MASS_RATIO_LOG_NORM_FLOOR)
 
-    # m1 below mmin needs no separate cut: the numerator's m_smoother is ~-1000*delta_m
-    # there, which underflows to zero probability on its own. Note that this is a soft
-    # floor, not a hard zero -- m_smoother clips m - mmin to `buffer` rather than
-    # branching -- so for delta_m << 0.01 a little probability leaks below mmin. That
-    # is pixelpop-wide behaviour, and the normalization above integrates only over
+    # m1 below mmin needs no separate cut: the numerator's m_smoother is ~-1/EDGE_FRACTION
+    # there and still falling, which underflows to zero probability on its own and stays
+    # far enough below the norm floor that the subtraction cannot lift it back up. Note
+    # that this is a soft floor, not a hard zero -- m_smoother clips (m - mmin)/delta_m
+    # rather than branching -- so a little probability leaks below mmin. That is
+    # pixelpop-wide behaviour, and the normalization above integrates only over
     # [mmin/m1, 1], so it deliberately excludes the leak rather than blessing it.
     return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 

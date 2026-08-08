@@ -197,7 +197,9 @@ def PlanckWindow_MassRatio(data, qmin, delta_q):
         # Assume data is already mass_ratio.
         x = data
 
-    return m_smoother(x, qmin, delta_q, buffer=1e-5)
+    # m_smoother clips at a fraction of delta_q, so it already scales to a variable
+    # running over [0, 1] and needs no buffer override here.
+    return m_smoother(x, qmin, delta_q)
 
 def PlanckWindow_PrimaryMassSecondaryMass_TwoMmin(data, mmin_1, delta_m_1, mmin_2, delta_m_2):
     """
