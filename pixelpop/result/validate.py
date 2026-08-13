@@ -21,11 +21,9 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
     """
     Compute systematic error statistics for a PixelPop inference result.
 
-    This function calculates the information loss (in bits) due to finite 
-    Monte Carlo sampling in both the single-event posterior estimation and 
-    the selection function estimation. It leverages the `population_error` 
-    package to compute precision (variance) and accuracy (bias) metrics. 
-    For mathematical details, see https://arxiv.org/abs/2509.07221
+    Information loss (in bits) due to finite Monte Carlo sampling in the
+    single-event posterior and selection function estimates, via the
+    `population_error` package. See https://arxiv.org/abs/2509.07221
 
     Parameters
     ----------
@@ -50,13 +48,6 @@ def compute_error_statistics(hyperposterior, pixelpop_data, verbose=True):
         - 'selection_precision_statistic': Variance contribution from selection effects.
         - 'event_accuracy_statistic': Bias contribution from single-event PE.
         - 'selection_accuracy_statistic': Bias contribution from selection effects.
-
-    Notes
-    -----
-    This function automatically instantiates `PixelPopRateFunction` wrappers for 
-    both the event posteriors and the injection set. It assumes a rate-based 
-    likelihood (`rate=True`) and includes the likelihood correction term 
-    (`include_likelihood_correction=True`).
     """
     if verbose:
         print('='*50)
@@ -109,9 +100,8 @@ def rank_normalized_rhat(
     """
     Compute rank-normalized R-hat diagnostics with a high-dimensional noise filter.
 
-    This function transforms posterior samples into an ArviZ-compatible format, 
-    calculates rank-normalized R-hats, and evaluates convergence based on the 
-    global distribution of R-hat values across all parameters.
+    Rank-normalized R-hat is robust to non-Gaussianity and heavy tails; see
+    https://arxiv.org/abs/1903.08008
 
     Parameters
     ----------
@@ -121,9 +111,9 @@ def rank_normalized_rhat(
         The R-hat value above which an individual parameter is considered to have 
         "failed" convergence.
     fail_percentage_threshold : float, default 0.01
-        The allowable fraction of parameters that can exceed `threshold` before 
-        a warning is issued. This accounts for spurious fluctuations inherent in 
-        estimating ~10^4 to ~10^6 parameters from finite samples.
+        The allowable fraction of parameters that can exceed `threshold` before
+        a warning is issued, accounting for multiple comparisons across the
+        ~10^4 to ~10^6 parameters of the field.
     verbose : bool, default=True
         Flag for printing information at runtime.
     Returns
@@ -133,27 +123,13 @@ def rank_normalized_rhat(
         retain their shape with automatically generated dimension names 
         (e.g., 'param_idx_0').
     passed : bool
-        Whether the posterior satisfies the tolerance requirements for sampling 
+        Whether the posterior satisfies the tolerance requirements for sampling
         convergence.
-
-
-    Notes
-    -----
-    **Rank-Normalization:**
-    Uses the improved R-hat which rank-transforms samples to be robust to 
-    non-Gaussianity and heavy tails. See https://arxiv.org/abs/1903.08008
-
-
-    **High-Dimensional Handling:**
-    For a model with 1,000,000 parameters, a 1% threshold allows for 10,000 
-    parameters to "fail" by chance due to the multiple comparisons problem. 
-    If the `fail_pct` is below `fail_percentage_threshold`, the high R-hats are 
-    treated as sampling noise rather than structural convergence issues.
 
     Warnings
     --------
-    warning if the percentage of parameters exceeding the threshold 
-    surpasses the `fail_percentage_threshold`.
+    Warns if the percentage of parameters exceeding the threshold surpasses
+    `fail_percentage_threshold`.
     """
     if verbose:
         print('='*50)
@@ -211,20 +187,10 @@ def compute_effective_sample_sizes(
         Whether the posterior satisfies the tolerance requirements for sampling 
         efficiency.
 
-    Notes
-    -----
-    **Bulk vs Tail ESS:**
-    Bulk-ESS is useful for diagnostics of the location of the distribution, 
-    whereas Tail-ESS is useful for diagnostics of the scale/variance. 
-    Low tail-ESS often indicates the sampler is not exploring the edges 
-    of the high-dimensional space efficiently.
-
-    
-
     Warnings
     --------
-    warning if the percentage of parameters with ESS below threshold 
-    surpasses the `fail_percentage_threshold`.
+    Warns if the percentage of parameters with a bulk ESS below `threshold`
+    surpasses `fail_percentage_threshold`.
     """
     if verbose:
         print('='*50)

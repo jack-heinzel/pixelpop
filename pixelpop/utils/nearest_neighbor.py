@@ -7,10 +7,7 @@ def is_valid(l, base, dimension):
     """
     Validate if a multidimensional coordinate is within the grid boundaries.
 
-    Checks if a given coordinate vector (indices) is valid for a grid of a 
-    specified dimension and density. A coordinate is valid if it has the 
-    correct number of dimensions and every component $i$ satisfies 
-    $0 \le \text{coord}_i < \text{base}_i$.
+    Valid means the right number of dimensions, and ``0 <= coord[i] < base[i]``.
 
     Parameters
     ----------
@@ -56,9 +53,7 @@ def coordinate_to_index(coordinate, density, dimension):
     """
     Convert multi-dimensional grid coordinates to flattened C-style indices.
 
-    This function maps a set of coordinates (row, col, ...) to a single integer 
-    index based on a row-major (C-style) flattening of the grid. It supports 
-    broadcasting where 'coordinate' contains arrays of samples.
+    Broadcasts over arrays of samples in ``coordinate``.
 
     Parameters
     ----------
@@ -234,10 +229,6 @@ def create_CAR_coupling_matrix(density, dimension, isVisible=False):
 def place_samples_in_bins(bin_axes, sample_coordinates, reshape=False):
     """
     Discretize real number sample coordinates into multi-dimensional bin indices.
-
-    This function determines which bin each sample falls into based on provided 
-    axis boundaries. It supports returning either the multi-dimensional 
-    bin indices (default) or a single flattened index per sample.
 
     Parameters
     ----------

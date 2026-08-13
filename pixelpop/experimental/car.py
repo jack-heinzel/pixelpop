@@ -5,6 +5,7 @@ from jax.scipy.special import logsumexp as LSE
 from jax.typing import ArrayLike
 
 import numpyro
+import numpyro.distributions as dist
 from numpyro.distributions import constraints
 from numpyro.distributions.distribution import Distribution
 from numpyro.distributions.continuous import _is_sparse, _to_sparse
@@ -281,12 +282,8 @@ class StudentICAR(Distribution):
 
 class DiagonalizedICARTransform:
     """
-    A transformation class for Intrinsic Conditional Autoregressive (ICAR) priors.
-    
-    This class leverages the Cartesian product structure of the pixel grid to 
-    decompose the high-dimensional precision matrix into a Kronecker sum of 
-    1D Graph Laplacians. This allows for efficient sampling and log-probability 
-    evaluation by working in the diagonalized eigenbasis.
+    Intrinsic Conditional Autoregressive (ICAR) field, sampled in the
+    diagonalized tensor-product eigenbasis.
 
     Parameters
     ----------
@@ -414,19 +411,10 @@ class MaternSPDETransform:
     Anisotropic Matern (Whittle / Lindgren-Rue-Lindstrom) SPDE field on a regular
     grid, sampled in the fixed tensor-product eigenbasis.
 
-    Generalizes ``DiagonalizedICARTransform`` (the intrinsic kappa=0, nu+d/2=1
-    limit) to a proper field with free smoothness and range. The precision
-    spectrum is
-
-        q = (1 + sum_i (rho_i^2 / 8 nu) lambda^(i))^alpha,   alpha = nu + d/2,
-
-    so the eigenvectors never depend on the hyperparameters: a Normal(0,1)
-    eigenbasis is mapped to the field by a smooth per-mode rescaling alone, which
-    keeps the NUTS geometry fixed as (sigma, rho, nu) move. Because the spectrum
-    is available explicitly, fractional alpha (fractional nu) is exact, unlike the
-    sparse-FEM SPDE construction. The global kappa is absorbed into the per-axis
-    ranges rho_i and the marginal-variance normalization, so it is not a separate
-    free parameter here.
+    The precision spectrum is
+    ``q = (1 + sum_i (rho_i^2 / 8 nu) lambda^(i))^alpha`` with ``alpha = nu +
+    d/2``. ``DiagonalizedICARTransform`` is the intrinsic ``kappa = 0``,
+    ``nu + d/2 = 1`` limit.
 
     Parameters
     ----------
@@ -477,18 +465,11 @@ class WKBNonStationaryMaternSPDETransform:
     r"""
     First-order (WKB) *nonstationary* Matern SPDE field.
 
-    Generalizes ``MaternSPDETransform`` to slowly-varying hyperparameters
-    theta(x) = theta_bar + theta_tilde(x). Expanding the amplitude to first order,
-
-        X(x) ~ X_0(x) + sum_theta theta_tilde(x) X_theta(x),
-
-    where X_0 is the stationary field from the spatial-mean hyperparameters and
-    each X_theta a stationary "derivative field" (amplitude d a_0 / d theta) driven
-    by the same white noise. Each truncation is linear in the noise, so positive-
-    definiteness is automatic; the omitted term is O(theta_tilde^2). The perturbed
+    ``MaternSPDETransform`` with slowly-varying hyperparameters
+    ``theta(x) = theta_bar + theta_tilde(x)``, expanded to first order as
+    ``X(x) ~ X_0(x) + sum_theta theta_tilde(x) X_theta(x)``. The perturbed
     hyperparameters are the per-axis log-ranges and nu; the marginal SD is applied
-    exactly in the spatial domain (not perturbatively). See the spde-spectra
-    notebook section "Nonstationary fields, perturbatively".
+    exactly in the spatial domain.
 
     Parameters
     ----------
@@ -569,6 +550,102 @@ class WKBNonStationaryMaternSPDETransform:
 
         # Exact spatial marginal-variance envelope.
         return u_shape * jnp.exp(self.log_sigma_field)
+
+
+def sample_log_ranges(pixelpop_data, name='log_ranges'):
+    """
+    Draw the per-axis SPDE log-range from ``pixelpop_data.range_prior``.
+
+    ``expand`` broadcasts a scalar prior up to one entry per axis and is a no-op
+    on a prior that is already per-axis.
+
+    Parameters
+    ----------
+    pixelpop_data : PixelPopData
+        Read for ``range_prior`` and ``dimension``.
+    name : str, optional
+        Site name (default ``'log_ranges'``).
+
+    Returns
+    -------
+    log_ranges : jnp.ndarray, shape (dimension,)
+    """
+    args, distribution = pixelpop_data.range_prior
+    return numpyro.sample(
+        name, distribution(*args).expand((pixelpop_data.dimension,)))
+
+
+def sample_diagonalized_field(pixelpop_data, lsigma, rate_offset=True):
+    """
+    Draw the pixelated log merger-rate density in the eigenbasis ("diagonalized")
+    parameterization.
+
+    The transform follows ``pixelpop_data``: ``WKBNonStationaryMaternSPDETransform``
+    for ``spde_wkb``, ``MaternSPDETransform`` for ``spde_matern``, and
+    ``DiagonalizedICARTransform`` otherwise. Shared by the posterior model and the
+    prior-predictive model so that both build the same field.
+
+    Parameters
+    ----------
+    pixelpop_data : PixelPopData
+        Run configuration: ``bins``, ``dimension``, ``adj_matrices``, the SPDE
+        flags, ``lower_triangular``, and the range/smoothness/slope priors.
+    lsigma : jnp.ndarray
+        Log marginal SD, already drawn by the caller (scalar, or one per axis
+        under ``length_scales``).
+    rate_offset : bool, optional
+        If True (default), add a free ``log_rate_offset ~ ImproperUniform`` to the
+        field. Callers that apply no likelihood factor must pass False, or the
+        site is unconstrained.
+
+    Returns
+    -------
+    merger_rate_density : jnp.ndarray, shape == bins
+        Emitted as the ``'merger_rate_density'`` deterministic site.
+    """
+    dim = pixelpop_data.dimension
+    _eigenbasis_sites = numpyro.sample(
+        '_eigenbasis_sites',
+        dist.Normal(0., 1.).expand(pixelpop_data.bins),
+    )
+    # Pin the zero-mode (the constant/DC eigenvector) to 0 so the eigenbasis
+    # carries only shape; the overall rate is restored by log_rate_offset below.
+    eigenbasis_sites = _eigenbasis_sites.at[(0,) * dim].set(0.)
+
+    if pixelpop_data.spde_wkb:
+        # WKB field: each (log) hyperparameter varies linearly, intercept + slope . x.
+        X = pixelpop_data.spde_coords                      # (*bins, dim)
+        # Intercepts (log-sigma is lsigma, drawn by the caller) and slopes. The
+        # range prior caps the intercept, not the per-site range at the edges.
+        l_0 = sample_log_ranges(pixelpop_data)
+        log_nu_0 = numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0]))
+        A_range = numpyro.sample('range_response', pixelpop_data.range_response_prior[1](*pixelpop_data.range_response_prior[0]), sample_shape=(dim, dim))
+        a_nu = numpyro.sample('nu_slope', pixelpop_data.nu_slope_prior[1](*pixelpop_data.nu_slope_prior[0]), sample_shape=(dim,))
+        a_sigma = numpyro.sample('sigma_slope', pixelpop_data.sigma_slope_prior[1](*pixelpop_data.sigma_slope_prior[0]), sample_shape=(dim,))
+        # Build the linear-in-log spatial fields.
+        log_ranges_field = l_0.reshape((dim,) + (1,) * dim) + jnp.einsum('ij,...j->i...', A_range, X)
+        nu_field = jnp.exp(log_nu_0 + jnp.einsum('i,...i->...', a_nu, X))
+        log_sigma_field = lsigma + jnp.einsum('i,...i->...', a_sigma, X)
+        transform = WKBNonStationaryMaternSPDETransform(
+            log_sigma_field, log_ranges_field, nu_field, pixelpop_data.adj_matrices, is_sparse=True)
+    elif pixelpop_data.spde_matern:
+        nu_spde = jnp.exp(numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0])))
+        log_ranges = sample_log_ranges(pixelpop_data)
+        transform = MaternSPDETransform(lsigma, log_ranges, nu_spde, pixelpop_data.adj_matrices, is_sparse=True)
+    else:
+        transform = DiagonalizedICARTransform(lsigma, pixelpop_data.adj_matrices, is_sparse=True)
+
+    transformed = transform(eigenbasis_sites)
+    if pixelpop_data.lower_triangular:
+        # Symmetrize, equivalent to sampling from the symmetrized space.
+        transformed = 0.5 * (transformed + transformed.swapaxes(0, 1))
+    if rate_offset:
+        # free overall log-rate offset, carrying the absolute rate that pinning
+        # the zero mode removed
+        transformed = transformed + numpyro.sample(
+            'log_rate_offset', dist.ImproperUniform(dist.constraints.real, (), ())
+            )
+    return numpyro.deterministic('merger_rate_density', transformed)
 
 
 class _LogSimplex(constraints.ParameterFreeConstraint):

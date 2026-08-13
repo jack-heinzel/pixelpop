@@ -2,7 +2,7 @@ import numpy as np
 from ..utils.nearest_neighbor import create_CAR_coupling_matrix
 from ..models.gwpop_models import *
 from ..models.reparameterization import ordered_pair_bounds, sample_ordered_pair
-from .car import DiagonalizedICARTransform
+from .car import DiagonalizedICARTransform, sample_diagonalized_field
 import numpyro.distributions as dist
 import jax.numpy as jnp
 from jax.debug import print as jaxprint
@@ -25,7 +25,13 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
     of a gravitational-wave population model, returning a NumPyro-compatible model
     along with suitable initial values for MCMC warmup.
 
-    
+    A prior predictive: the likelihood is recorded as the ``log_likelihood``
+    deterministic but never applied as a ``numpyro.factor``. The field comes from
+    :func:`pixelpop.experimental.car.sample_diagonalized_field`, as in the
+    posterior model, minus ``log_rate_offset`` -- unconstrained without a
+    likelihood factor. ``log_rate`` is therefore field-determined here and free in
+    the posterior, so the two are not comparable in absolute rate.
+
     Returns
     -------
     probabilistic_model : callable
@@ -64,7 +70,18 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         return_dict = {'_eigenbasis_sites': jnp.array(
             np.random.normal(loc=0, scale=1, size=bins))
             }
-        return return_dict
+        if pixelpop_data.spde_wkb or pixelpop_data.spde_matern:
+            # seed the SPDE hyperparameters as the posterior model does
+            log_bins = jnp.log(jnp.asarray(bins, dtype=float))
+            return_dict['log_nu_spde'] = jnp.asarray(0.0)
+            return_dict['log_ranges'] = jnp.clip(
+                log_bins - jnp.log(4.), 0.05 * log_bins, 0.95 * log_bins)
+        if pixelpop_data.spde_wkb:
+            # Start at the stationary background: all slopes zero.
+            return_dict['range_response'] = jnp.zeros((dimension, dimension))
+            return_dict['nu_slope'] = jnp.zeros(dimension)
+            return_dict['sigma_slope'] = jnp.zeros(dimension)
+        return {k: jnp.asarray(v) for k, v in return_dict.items()}
             
     initial_value = get_initial_value()
 
@@ -113,27 +130,13 @@ def prior_probabilistic_model(pixelpop_data, log='default'):
         if pixelpop_data.length_scales:
             lsigma = numpyro.sample('lnsigma', pixelpop_data.coupling_prior[1](*pixelpop_data.coupling_prior[0]), sample_shape=(dimension,))
         else:
-            lsigma = numpyro.sample('lnsigma', pixelpop_data.coupling_prior[1](*pixelpop_data.coupling_prior[0]), sample_shape=()) 
-        
-        _eigenbasis_sites = numpyro.sample(
-            "_eigenbasis_sites",
-            dist.Normal(0., 1.).expand(bins)
-        )
-        
-        _eigenbasis_site_0 = 0.
-        eigenbasis_sites = _eigenbasis_sites.at[(0,) * dimension].set(_eigenbasis_site_0)
-        
-        transformed = DiagonalizedICARTransform(lsigma, adj_matrices, is_sparse=True)(
-                eigenbasis_sites
-            )
+            lsigma = numpyro.sample('lnsigma', pixelpop_data.coupling_prior[1](*pixelpop_data.coupling_prior[0]), sample_shape=())
 
-        if pixelpop_data.lower_triangular:
-            transformed = 0.5*(transformed + transformed.swapaxes(0,1)) # symmetrize, equivalent to sampling from symmetrized space
+        # build the field exactly as the posterior model does; rate_offset=False
+        # because this model applies no likelihood factor (see the docstring)
+        merger_rate_density = sample_diagonalized_field(
+            pixelpop_data, lsigma, rate_offset=False)
 
-        merger_rate_density = numpyro.deterministic(
-            'merger_rate_density',
-            transformed
-        )
         if not pixelpop_data.lower_triangular:
             normalization = numpyro.deterministic('log_rate', LSE(merger_rate_density)+jnp.sum(pixelpop_data.logdV))
             for ii, p in enumerate(parameters):

@@ -57,15 +57,10 @@ def posteriors_to_rectangular(posteriors, parameters, n_samples, seed=None):
     """
     Stack per-event posteriors into a single rectangular dict, padding short events.
 
-    PixelPop runs on a rectangular ``(Nobs, NPE)`` set of posterior samples. Real GW
-    events have different numbers of PE samples, so this helper truncates events with
-    more than ``n_samples`` samples and **pads** events with fewer up to ``n_samples``
-    by repeating randomly drawn existing rows. The padded rows' ``"prior"`` is set to
-    ``+inf`` so their PixelPop importance weight ``exp(model - log_prior)`` is exactly
-    zero and they drop out of every Monte-Carlo sum. The real (un-padded) per-event
-    sample count is returned separately and should be passed to ``PixelPopData`` as
-    ``event_counts`` so the variance / effective-sample calculations divide by the right
-    N rather than the padded width.
+    Events with more than ``n_samples`` samples are truncated; events with fewer
+    are padded by repeating randomly drawn rows, with the padded rows' ``"prior"``
+    set to ``+inf`` so they carry zero weight. Pass the returned ``event_counts``
+    to ``PixelPopData`` so the variance calculations use the un-padded N.
 
     Parameters
     ----------
@@ -130,13 +125,10 @@ def check_bins(event_bins, injection_bins, bins=100):
     """
     Validate consistency between posterior-sample bins and injection bins.
 
-    This function checks whether any posterior samples fall into bins that
-    contain no injections, which would render Monte Carlo likelihood estimates
-    unstable (formally divergent). It also verifies that both posterior and
-    injection samples lie within the allowed bin range.
-
-    Samples that violate these conditions are flagged by assigning an infinite
-    prior weight, ensuring they do not contribute to Monte Carlo integrals.
+    Checks for posterior samples in bins containing no injections, and for
+    samples of either kind outside the allowed bin range. Offending samples are
+    flagged with an infinite prior weight so they drop out of the Monte Carlo
+    integrals.
 
     Parameters
     ----------
@@ -224,15 +216,9 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     """
     Discretize posterior and injection samples onto a common multidimensional bin grid.
 
-    This function constructs a rectangular binning over the specified population
-    parameters, places both posterior samples and injection samples into these
-    bins, and performs consistency checks to ensure that all posterior bins are
-    populated by injections. Bin ranges are taken from the default BBH population
-    limits and can be overridden by user-supplied minima and maxima.
-
-    Invalid samples or samples falling into injection-free bins are flagged via
-    infinite prior weights to prevent numerical instabilities in Monte Carlo
-    likelihood evaluations.
+    Bin ranges are taken from the default BBH population limits and can be
+    overridden by user-supplied minima and maxima. Invalid samples, and samples
+    in injection-free bins, are flagged with infinite prior weights.
 
     Parameters
     ----------
@@ -299,31 +285,71 @@ def place_in_bins(parameters, posteriors, injections, bins=100, minima={}, maxim
     return event_bins, inj_bins, bin_axes, logdV, e_prior_mod, i_prior_mod
 
 
+def log_dVTc(cosmology, redshift):
+    """
+    Log of the differential comoving volume-time element, ``4 pi (dVc/dz)/(1+z)``.
+
+    Converts a rate per unit comoving volume per unit source-frame time into a
+    rate per unit redshift per unit detector-frame time.
+
+    Parameters
+    ----------
+    cosmology : object
+        Anything with a ``differential_comoving_volume(z)``, as
+        ``pixelpop.models.gwpop_models.COSMO``.
+    redshift : array-like
+
+    Returns
+    -------
+    log_dVTc : ndarray
+        In log Gpc^3. ``-inf`` at ``z = 0``, where the element vanishes.
+    """
+    dVs = cosmology.differential_comoving_volume(redshift)
+    try:
+        dVs = dVs.value
+    except AttributeError:
+        pass
+    with np.errstate(divide='ignore'):
+        return np.log(4 * np.pi * 1e-9 * np.asarray(dVs)) - np.log1p(redshift)
+
+
+def capped_log_range_prior(bins, factor=1.0):
+    """
+    Per-axis prior on the SPDE log-range, capped at the size of the domain.
+
+    ``Uniform(0, log(bins[i]))`` on axis ``i``, confining the range to the scales
+    the grid can represent: one pixel to the full domain. Above the domain the
+    marginal-variance normalization divides the range back out and the likelihood
+    goes flat in it.
+
+    Parameters
+    ----------
+    bins : int or sequence of int
+        Number of bins on each pixelated axis, i.e. ``PixelPopData.bins``.
+    factor : float, optional
+        Multiple of the domain to cap at (default 1). The spectrum is still ~12%
+        from its saturated limit at ``rho = bins``; ``factor=2`` cuts that to 3%
+        and ``factor=4`` to 1%.
+
+    Returns
+    -------
+    range_prior : tuple
+        ``(args, distribution)``, as ``PixelPopData.range_prior`` takes it. The
+        bounds are length-``dimension`` arrays, so the distribution is already
+        per-axis and must not be re-expanded with a ``sample_shape``.
+    """
+    high = jnp.log(factor * jnp.asarray(bins, dtype=float))
+    return ((jnp.zeros_like(high), high), dist.Uniform)
+
+
 # Assuming you have your COSMO object available globally or pass it in
-# from .cosmology import COSMO 
+# from .cosmology import COSMO
 
 @dataclass
 class PixelPopData:
     """
-    Helper class which holds data:
-    - Single event posteriors
-    - Injection set
-    - PixelPop specific arguments:
-        - PixelPop parameters
-        - Other "nuisance" parameters
-        - bins (number along each axis)
-        - axis minima and maxima
-    - Analysis settings
-        - variance cut
-        - lower triangular flag (for m1, m2 analyses)
-        - length_scales flag
-        - marginalize_sigma flag
-    - Additional settings or flags, which should usually be set to defaults:
-        - random_initialization
-        - plausible_hyperparameters
-        - skip_nonparametric
-        - constraint_functions
-        - coupling_prior
+    Container for the single-event posteriors, the injection set, the pixelpop
+    grid definition and the analysis settings.
 
     Parameters
     ----------
@@ -431,53 +457,44 @@ class PixelPopData:
     constraint_funcs: List[Callable] = field(default_factory=list)
     coupling_prior: Tuple[Any, Any] = ((0.0, 2), dist.Normal)
     # (args, dist) priors for the Matern-SPDE field (spde_matern=True): per-axis
-    # log-range (bin units) and SPDE smoothness nu.
-    range_prior: Tuple[Any, Any] = ((0.0, 3.0), dist.Normal) # could be np.log(bins) / 2? Seems like a good length scale
+    # log-range (bin units) and SPDE smoothness nu. range_prior defaults to
+    # capped_log_range_prior(bins) in __post_init__, where `bins` is known; a
+    # scalar prior such as ((0.0, 3.0), dist.Normal) is broadcast across axes.
+    range_prior: Optional[Tuple[Any, Any]] = None
     smoothness_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
     # Slope priors for the WKB field (spde_wkb=True). Fields are theta(x) =
-    # intercept + slope . x on the normalized [-0.5, 0.5] grid, so each slope is the
-    # edge-to-edge change in the (log) hyperparameter. range_response is the
-    # (dim, dim) response matrix; nu_slope/sigma_slope are length-dim vectors. sd=0.5
-    # (~65% change at 1 sigma) stays inside the first-order WKB regime; widen with care.
+    # intercept + slope . x on the normalized [-0.5, 0.5] grid, so each slope is
+    # the edge-to-edge change in the (log) hyperparameter. range_response is the
+    # (dim, dim) response matrix; nu_slope/sigma_slope are length-dim vectors.
     range_response_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
     nu_slope_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
     sigma_slope_prior: Tuple[Any, Any] = ((0.0, 0.5), dist.Normal)
-    # Real (un-padded) per-event sample count. Events with fewer than NPE real PE
-    # samples are padded up to the common NPE width with prior=+inf rows (zero weight);
-    # event_counts[i] is the number of real samples for event i, used as the
-    # single-event Monte-Carlo integral size in the variance / Neff calculations.
-    # If None, defaults to NPE for every event (all events equal length, no padding).
+    # Real (un-padded) per-event sample count, used as the single-event
+    # Monte-Carlo integral size in the variance / Neff calculations. If None,
+    # defaults to NPE for every event (no padding).
     event_counts: Optional[Any] = None
 
     def preprocess_cosmology(self, cosmology):
         """
         Calculates differential comoving volumes if 'redshift' is a parameter.
-        Modifies self.posteriors and self.injections in-place to add 'ln_dVTc'.
+        Modifies self.posteriors and self.injections in-place to add 'ln_dVTc',
+        and stores `cosmology` on the object for post-processing.
         """
-        
+
         print("Preprocessing cosmology data...")
         # from unxt.quantity import Quantity
-        
+
         # Extract data
         event_z = self.posteriors['redshift']
         inj_z = self.injections['redshift']
-        
+
         max_z = np.maximum(np.max(inj_z), np.max(event_z))
         zs = np.linspace(1e-6, max_z, 10000)
-        
+
         # Calculate dVc/dz / (1+z)
-        dVs = cosmology.differential_comoving_volume(zs)
-        
-        # if isinstance(dVs, Quantity):
-        #     # TODO: implement in terms of unxt/wcosmo unit manipulations
-        #     dVs = dVs.value 
-        try:
-            dVs = dVs.value
-        except AttributeError:
-            pass
-        dVs = 4 * np.pi * 1e-9 * dVs 
-            
-        ln_dVTc = np.log(dVs) - np.log(1 + zs)
+        ln_dVTc = log_dVTc(cosmology, zs)
+
+        self.cosmology = cosmology
 
         # Interpolate and store in the dictionaries
         self.posteriors['ln_dVTc'] = jnp.interp(event_z, zs, ln_dVTc)
@@ -521,9 +538,8 @@ class PixelPopData:
         key0 = list(self.posteriors.keys())[0]
         self.Nobs = self.posteriors[key0].shape[0]
         # Real (un-padded) per-event sample count for the Monte-Carlo variance / Neff.
-        # Captured here, before place_in_bins flags out-of-range / injection-free samples
-        # with prior=inf: those flagged samples are genuine draws (zero weight) that must
-        # remain in the count, so the count cannot be re-derived from the prior later.
+        # captured before place_in_bins flags out-of-range / injection-free
+        # samples with prior=inf, since those must stay in the count
         NPE = self.posteriors[key0].shape[1]
         if self.event_counts is None:
             self.event_counts = jnp.full(self.Nobs, NPE)
@@ -533,6 +549,10 @@ class PixelPopData:
         self.dimension = len(self.pixelpop_parameters)
         if jnp.ndim(self.bins) == 0:
             self.bins = [self.bins] * self.dimension
+
+        # default the SPDE range prior once `bins` is known; the cap is per-axis
+        if self.range_prior is None:
+            self.range_prior = capped_log_range_prior(self.bins)
 
         # window function
         self.window_parameters = [p.replace('_window', '') for p in self.other_parameters if '_window' in p]

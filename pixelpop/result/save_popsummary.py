@@ -11,8 +11,75 @@ from .validate import validate_pixelpop_inference
 from .post_processing import *
 import xarray as xr
 from ..models.gwpop_models import map_to_gwpop_parameters
+from ..utils.data import log_dVTc
 
 WINDOW_MARGINAL_POINTS = 512
+
+#: popsummary metadata whose length is tied to the `hyperparameters` attribute.
+HYPERPARAMETER_LINKED_METADATA = (
+    'hyperparameter_descriptions',
+    'hyperparameter_units',
+    'hyperparameter_latex_labels',
+    )
+
+
+def _reconcile_hyperparameters(result, h_keys, filepath, overwrite):
+    '''
+    Make the file's `hyperparameters` attribute describe what is about to be
+    written into it.
+
+    `popsummary.PopulationResult` writes that attribute only when it creates the
+    file, and keeps the stored one otherwise.
+
+    Parameters
+    ----------
+    result : popsummary.popresult.PopulationResult
+        Opened on `filepath`.
+    h_keys : list of str
+        The hyperparameter names, in the column order they will be written in.
+    filepath : str
+        Path to the popsummary file, for the messages.
+    overwrite : bool
+        If True a stale attribute is rewritten; if False a mismatch raises.
+
+    Raises
+    ------
+    ValueError
+        If the stored list disagrees with `h_keys` and it cannot be safely
+        rewritten.
+    '''
+    # one read of every attribute: get_metadata(field) warns on a missing one
+    metadata = result.get_metadata()
+    if 'hyperparameters' not in metadata:
+        return
+    stored = [s.decode() if isinstance(s, bytes) else str(s)
+              for s in metadata['hyperparameters']]
+    h_keys = list(h_keys)
+    if stored == h_keys:
+        return
+
+    added = [k for k in h_keys if k not in stored]
+    removed = [k for k in stored if k not in h_keys]
+    if added or removed:
+        change = f"added {added}, removed {removed}"
+    else:
+        change = "same names, different order; writing would mislabel every column"
+    if not overwrite:
+        raise ValueError(
+            f"the hyperparameter list has changed since {filepath} was written "
+            f"({change}). Pass overwrite=True to rewrite the attribute, or write "
+            f"to a new path.\nstored={stored}\nnew={h_keys}"
+            )
+    linked = [f for f in HYPERPARAMETER_LINKED_METADATA if f in metadata]
+    if linked:
+        raise ValueError(
+            f"the hyperparameter list has changed since {filepath} was written "
+            f"({change}), but {linked} in that file are indexed against the stored "
+            f"list, so rewriting it would leave the file inconsistent. Write to a "
+            f"new path instead.\nstored={stored}\nnew={h_keys}"
+            )
+    print(f"[warning] rewriting the hyperparameter list of {filepath}: {change}")
+    result.set_metadata('hyperparameters', h_keys, overwrite=True)
 
 
 def _compiled(func):
@@ -32,6 +99,74 @@ def _broadcast_axis(values, axis, ndim):
     shape = [1] * ndim
     shape[axis] = -1
     return np.reshape(np.asarray(values), shape)
+
+
+def _redshift_volume_weight(pixelpop_data, subsamples=65):
+    '''
+    Log of the bin-averaged ``dVc/dz * 1/(1+z)``, shaped to broadcast against the
+    pixelpop grid.
+
+    The field is piecewise constant on a bin, so the weight is averaged across
+    each bin rather than evaluated at its centre.
+
+    Parameters
+    ----------
+    pixelpop_data : PixelPopData
+        Must pixelate 'redshift', and must have been through
+        `preprocess_cosmology`.
+    subsamples : int, optional
+        Points per bin used for the average (default 65).
+
+    Returns
+    -------
+    log_weight : ndarray
+        Shape `(1, ..., nbins_z, ..., 1)`, broadcasting against the grid axes of
+        a `(Nsamples, *bins)` field.
+    '''
+    axis = pixelpop_data.pixelpop_parameters.index('redshift')
+    edges = np.asarray(pixelpop_data.bin_axes[axis], dtype=float)
+    # (nbins, subsamples): the sub-grid of each bin, endpoints included
+    sub = np.linspace(edges[:-1], edges[1:], subsamples, axis=-1)
+    weight = np.exp(log_dVTc(pixelpop_data.cosmology, sub))
+    mean_weight = np.trapezoid(weight, sub, axis=-1) / np.diff(edges)
+    return _broadcast_axis(np.log(mean_weight), axis, pixelpop_data.dimension)
+
+
+def _probability_density_grids(field, pixelpop_data, log_volume_weight=0.):
+    '''
+    Normalized probability densities on the pixelpop grid.
+
+    Parameters
+    ----------
+    field : ndarray, shape (Nsamples, *bins)
+        The final log merger rate density on the grid: after any window factor
+        and, for a lower-triangular run, after the triangle mask.
+    pixelpop_data : PixelPopData
+    log_volume_weight : ndarray or float, optional
+        `_redshift_volume_weight` when redshift is pixelated, else 0.
+
+    Returns
+    -------
+    log_joint : ndarray, shape (Nsamples, *bins)
+        Normalized to integrate to 1 over the whole grid.
+    log_marginals : dict
+        `{parameter: (Nsamples, nbins)}`, each normalized to integrate to 1.
+    '''
+    logdV = np.asarray(pixelpop_data.logdV)
+    weighted = field + log_volume_weight
+    grid_axes = tuple(range(1, weighted.ndim))
+    # normalize from the same array the marginals come from, so a masked
+    # (lower-triangular) field normalizes over its own support
+    log_norm = LSE(weighted, axis=grid_axes) + np.sum(logdV)
+
+    log_marginals = {}
+    for par_idx, par in enumerate(pixelpop_data.pixelpop_parameters):
+        par_axis = par_idx + 1
+        sum_axes = tuple(ax for ax in grid_axes if ax != par_axis)
+        logdV_other = np.sum(logdV[:par_idx]) + np.sum(logdV[par_idx + 1:])
+        log_marginals[par] = (
+            LSE(weighted, axis=sum_axes) + logdV_other - log_norm[:, None])
+    return weighted - log_norm.reshape((-1,) + (1,) * len(grid_axes)), log_marginals
 
 
 def _window_marginal_parameters(window_model, hyperparameter_values, grid_data,
@@ -148,9 +283,16 @@ def save_text_summary(
 
 def create_popsummary(
         pixelpop_data, hyperposterior_chains, run_name="", popsummary_path='../results/popsummary/',
-        datadir='../data', metadata_label="", overwrite=False,  
+        datadir='../data', metadata_label="", overwrite=False,
+        probability_density=False, file_suffix=None,
         ):
     '''
+    Write a popsummary file for a completed pixelpop run.
+
+    Called once with `probability_density=False` and once with True, this writes a
+    rate file and a normalized-density file side by side in the same run
+    directory, differing only under `rates_on_grids`.
+
     Parameters
     ----------
     pixelpop_data: PixelPopData
@@ -171,6 +313,20 @@ def create_popsummary(
         stored, e.g., datadir/metadata_label/ contains gwpopulation_pipe metadata
     overwrite : bool
         whether to overwrite existing popsummary data
+    probability_density : bool
+        If True, `rates_on_grids` holds normalized probability densities rather
+        than rates, and the overall rate is left to the `log_rate` hyperparameter
+        samples. When 'redshift' is pixelated the grids also pick up the
+        `dVc/dz * 1/(1+z)` factor, so every pixelated parameter is written; in
+        rate mode all but redshift are skipped.
+
+        Grids keep the rate-mode storage convention: a pixelated grid is a step
+        function at the `bins + 1` bin edges with the first value repeated, so it
+        integrates to 1 as `sum(rates[1:]) * bin_width` rather than by a
+        trapezoid rule. `joint_pixelpop_rate` sums to 1 against the bin volume.
+    file_suffix : str, optional
+        Replaces the `_popsummary` in the filename, without the `.h5`. Defaults to
+        `_prob` when `probability_density` is set and `_popsummary` otherwise.
     '''
 
     pixelpop_parameters = pixelpop_data.pixelpop_parameters
@@ -206,21 +362,34 @@ def create_popsummary(
 
     hyperposterior, Nsamples = pixelpop_data.fill_out_hyperposterior(hyperposterior)
     
+    if file_suffix is None:
+        file_suffix = '_prob' if probability_density else '_popsummary'
+
     popsummary_path = os.path.join(popsummary_path, run_name)
     if not os.path.exists(popsummary_path):
         os.makedirs(popsummary_path)
-    popsummary_filepath = os.path.join(popsummary_path, run_name + '_popsummary.h5')
+    popsummary_filepath = os.path.join(popsummary_path, run_name + file_suffix + '.h5')
 
     try:
         wfs, wf_paths, metadata = get_input_metadata(file_label=metadata_label, datadir=datadir)
     except Exception as e:
         print(f'Warning: {e}\nCould not load run metadata, skipping.')
         wfs, wf_paths, metadata = [], [], []
+    # the hyperparameters are the scalar sites; anything with a spatial extent
+    # is excluded by being more than one-dimensional once stacked over samples
     h_keys = [x for x in hyperposterior.keys() if hyperposterior[x].ndim == 1]
     if not overwrite:
         if os.path.exists(popsummary_filepath):
             for counter in range(100):
-                new_name = os.path.join(popsummary_path, 'old_' + f'{counter}_' + run_name + '.h5')
+                new_name = os.path.join(
+                    popsummary_path, 'old_' + f'{counter}_' + run_name + file_suffix + '.h5')
+                if not os.path.exists(new_name):
+                    break
+            else:
+                raise RuntimeError(
+                    f"{popsummary_path} already holds 100 backups of "
+                    f"{run_name + file_suffix}; clear some out, or pass overwrite=True"
+                    )
             os.rename(popsummary_filepath, new_name)
     result = popsummary.popresult.PopulationResult(
         popsummary_filepath,
@@ -230,6 +399,7 @@ def create_popsummary(
         event_sample_IDs=[metadata[p]['label'] for p in wf_paths],
         event_parameters=gwparameters
         )
+    _reconcile_hyperparameters(result, h_keys, popsummary_filepath, overwrite)
     # set one dimensional rates
     pp_grids = pixelpop_data.bin_axes
     
@@ -353,20 +523,32 @@ def create_popsummary(
     result.set_hyperparameter_samples(np.array([hyperposterior[h] for h in h_keys]).T, overwrite=overwrite)
 
     lrs = hyperposterior['log_rate']
-    
+
+    if probability_density:
+        log_volume_weight = (_redshift_volume_weight(pixelpop_data)
+                             if 'redshift' in pixelpop_parameters else 0.)
+        log_joint, log_marginals = _probability_density_grids(
+            R, pixelpop_data, log_volume_weight)
+    result.set_metadata('probability_density', bool(probability_density),
+                        overwrite=overwrite)
+
     for ii, par in enumerate(parameters):
-        print(f'Saving {par} rates on grids...')
+        print(f'Saving {par} {"probability densities" if probability_density else "rates"} on grids...')
         if par in pixelpop_parameters:
-            if 'redshift' in pixelpop_parameters:
-                if par != 'redshift':
-                    # naive marginalization over redshift neglects implicit dVc/dz 1/1+z term
-                    continue
-            assert 'log_marginal_' + par in hyperposterior
-            rates = hyperposterior['log_marginal_'+par]
+            if probability_density:
+                rates = log_marginals[par]
+            else:
+                if 'redshift' in pixelpop_parameters:
+                    if par != 'redshift':
+                        # naive marginalization over redshift neglects implicit dVc/dz 1/1+z term
+                        continue
+                assert 'log_marginal_' + par in hyperposterior
+                rates = hyperposterior['log_marginal_'+par]
             rates = np.concatenate((rates[:,0][:,None], rates), axis=1)
-            rates += lrs[:,None]
+            if not probability_density:
+                rates += lrs[:,None]
             pos = np.linspace(minima[par], maxima[par], bins[ii]+1)
-            
+
         else:
             try:
                 # for joint models where the marginal is known, e.g., IID spins which are treated as a joint distribution
@@ -379,9 +561,9 @@ def create_popsummary(
                     rate_func = parametric_models[par]
                 required_keys = parameter_to_hyperparameters[par]
                 rates = np.array([rate_func({par.replace('_window', ''): pos}, *[hyperposterior[k][jj] for k in required_keys]) for jj in tqdm(range(Nsamples))])
-                if 'redshift' not in pixelpop_parameters:
+                if not probability_density and 'redshift' not in pixelpop_parameters:
                     rates += lrs[:,None]
-                    # if redshift is one of the pp parameters, the log rate is a naive average over redshift which does 
+                    # if redshift is one of the pp parameters, the log rate is a naive average over redshift which does
                     # not account for cosmo term. In this case, we just save the probability density instead.
             except Exception as e:
                 print(f'Could not save {par} rates on grids with exception\n{e}\n, skipping...')
@@ -400,11 +582,12 @@ def create_popsummary(
     pos = np.vstack([
         x.flatten() for x in x_axes
         ])
+    joint = log_joint if probability_density else R
     result.set_rates_on_grids(
         grid_key='joint_pixelpop_rate',
         grid_params=pixelpop_parameters,
         positions=pos,
-        rates=np.exp(R.reshape(Nsamples,np.prod(bins))),
+        rates=np.exp(joint.reshape(Nsamples,np.prod(bins))),
         overwrite=overwrite
     )
 

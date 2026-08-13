@@ -52,22 +52,35 @@ def test_parametric_gives_one_block_per_model(pixelpop_data):
     sites = reparameterized_sites(pixelpop_data.priors)
     blocks = resolve_dense_mass('parametric', pixelpop_data)
     assert len(blocks) == len(PARAMETERS)
+    seen = set()
     for block, parameter in zip(blocks, PARAMETERS):
-        expected = [sites.get(h, h)
-                    for h in pixelpop_data.parameter_to_hyperparameters[parameter]
-                    if pixelpop_data.priors[h][1] is not dist.Delta]
+        expected = []
+        for h in pixelpop_data.parameter_to_hyperparameters[parameter]:
+            if pixelpop_data.priors[h][1] is dist.Delta:
+                continue
+            # numpyro needs the blocks to partition the latent sites, so a site
+            # already claimed by an earlier block is dropped rather than repeated.
+            # mlow_1 and mlow_2 share one site and sit in different models, so
+            # this is not hypothetical.
+            site = sites.get(h, h)
+            if site not in seen:
+                seen.add(site)
+                expected.append(site)
         assert list(block) == expected
 
 
-def test_ordered_pairs_block_under_their_sampled_names(pixelpop_data):
-    """mlow_1/mlow_2 are deterministics of the sites NUTS actually adapts, so a
-    block naming them has to come back holding the _frac sites -- otherwise it is
-    dropped as unsampled and the correlations go unmodelled."""
+def test_ordered_pairs_block_under_their_sampled_name(pixelpop_data):
+    """mlow_1/mlow_2 are deterministics of the site NUTS actually adapts, so a
+    block naming them has to come back holding that site -- otherwise it is
+    dropped as unsampled and the correlations go unmodelled. Both members share
+    one length-2 site, so the block is a single name and the mass matrix picks up
+    their correlation as that site's own 2x2 block."""
+    site = reparameterized_sites(pixelpop_data.priors)['mlow_1']
     blocks = resolve_dense_mass([('mlow_1', 'mlow_2')], pixelpop_data)
-    assert blocks == [('mlow_1_frac', 'mlow_2_frac')]
+    assert blocks == [(site,)]
 
     flat = {h for block in resolve_dense_mass('parametric', pixelpop_data) for h in block}
-    assert {'mlow_1_frac', 'mlow_2_frac'} <= flat
+    assert site in flat
     assert not {'mlow_1', 'mlow_2'} & flat
 
 

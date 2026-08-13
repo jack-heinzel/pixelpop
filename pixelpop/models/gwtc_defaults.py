@@ -39,13 +39,9 @@ The fields line up with what :class:`~pixelpop.utils.data.PixelPopData` accepts:
         maxima=defaults.maxima,
     )
 
-Hyperparameter lists are **positional**: ``probabilistic.py`` calls
-``model(data, *[sample[h] for h in hyperparameters[parameter]])``, so their order
-must match each model's signature after ``data``.
-
-Do not mix prior dicts across sets. GWTC-6 uses ``mu_spin``/``sigma_spin`` for the
-*tilt* mean and width, GWTC-3/4/5 use ``mu_spin``/``var_spin`` for the spin
-*magnitude*.
+Hyperparameter lists are **positional**: their order must match each model's
+signature after ``data``. Do not mix prior dicts across sets -- GWTC-6 uses
+``mu_spin``/``sigma_spin`` for the *tilt*, GWTC-3/4/5 for the spin *magnitude*.
 """
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType

@@ -5,6 +5,7 @@ from ..experimental.car import (
     DiagonalizedICARTransform,
     MaternSPDETransform,
     WKBNonStationaryMaternSPDETransform,
+    sample_diagonalized_field,
     StudentICAR,
     sigma_marginalized_ICAR,
     grid_marginalized_ICAR_length_scales,
@@ -49,9 +50,10 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
     probabilistic_model : callable
         NumPyro-compatible probabilistic model.
     initial_value : dict
-        Suggested initial values for MCMC warmup.
+        Suggested initial values for MCMC warmup. Every value is a JAX array,
+        never a Python scalar.
     """
-    
+
     if pixelpop_data.lower_triangular:
         lt_map = lower_triangular_map(pixelpop_data.bins[0])
         tri_size = int(pixelpop_data.bins[0]*(pixelpop_data.bins[0]+1)/2) 
@@ -114,17 +116,23 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 '_eigenbasis_sites': eigenbasis_init,
                 'log_rate_offset': jnp.asarray(log_rate_offset_init, dtype=float),
                 }
+            # a quarter of the domain on each axis, clipped strictly inside the
+            # default Uniform(0, log(bins)) support (whose edges unconstrain to
+            # +-inf); the clip only bites on axes of four or fewer bins
+            log_bins = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float))
+            log_ranges_init = jnp.clip(
+                log_bins - jnp.log(4.), 0.05 * log_bins, 0.95 * log_bins)
             if pixelpop_data.spde_wkb:
                 dim = pixelpop_data.dimension
                 init['log_nu_spde'] = jnp.asarray(0.0)
-                init['log_ranges'] = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float) / 4.)
+                init['log_ranges'] = log_ranges_init
                 # Start at the stationary background: all slopes zero.
                 init['range_response'] = jnp.zeros((dim, dim))
                 init['nu_slope'] = jnp.zeros(dim)
                 init['sigma_slope'] = jnp.zeros(dim)
             elif pixelpop_data.spde_matern:
                 init['nu_spde'] = jnp.asarray(1.0)
-                init['log_ranges'] = jnp.log(jnp.asarray(pixelpop_data.bins, dtype=float) / 4.)
+                init['log_ranges'] = log_ranges_init
             return init
 
         return_key = 'merger_rate_density'
@@ -178,6 +186,8 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 "any constraint_func that also imposes that ordering now double-counts "
                 f"it: {[f.__name__ for f in pixelpop_data.constraint_funcs]}"
             )
+    # enforce the array contract at the boundary
+    initial_value = {k: jnp.asarray(v) for k, v in initial_value.items()}
 
     def parametric_model(data, injections, event_weights, inj_weights):
         """
@@ -302,55 +312,9 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
                 lsigma = numpyro.sample('lnsigma', coupling_prior[1](*coupling_prior[0]), sample_shape=())
 
         if pixelpop_data.diagonalize_icar:
-            # Sample in the Gaussian IID ("eigenbasis") space and map to the
-            # merger rate density with DiagonalizedICARTransform. This mirrors the
-            # experimental prior_probabilistic_model and tends to give NUTS a nicer
-            # (closer-to-isotropic) geometry than sampling merger_rate_density
-            # directly from the ICAR distribution. lsigma was drawn above.
-            _eigenbasis_sites = numpyro.sample(
-                '_eigenbasis_sites',
-                dist.Normal(0., 1.).expand(pixelpop_data.bins),
-            )
-            # Pin the zero-mode (the constant/DC eigenvector) to 0: the transform
-            # would otherwise scale it by the regularized eigenvalue, imposing a
-            # spurious proper prior on the overall offset. With it pinned, the
-            # eigenbasis carries only shape, and the overall rate is restored by a
-            # free improper-uniform log-rate offset added below.
-            eigenbasis_sites = _eigenbasis_sites.at[(0,) * pixelpop_data.dimension].set(0.)
-            if pixelpop_data.spde_wkb:
-                # WKB field: each (log) hyperparameter varies linearly, intercept + slope . x.
-                dim = pixelpop_data.dimension
-                X = pixelpop_data.spde_coords                      # (*bins, dim)
-                # Intercepts (log-sigma is lsigma, sampled above) and slopes.
-                l_0 = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(dim,))
-                log_nu_0 = numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0]))
-                A_range = numpyro.sample('range_response', pixelpop_data.range_response_prior[1](*pixelpop_data.range_response_prior[0]), sample_shape=(dim, dim))
-                a_nu = numpyro.sample('nu_slope', pixelpop_data.nu_slope_prior[1](*pixelpop_data.nu_slope_prior[0]), sample_shape=(dim,))
-                a_sigma = numpyro.sample('sigma_slope', pixelpop_data.sigma_slope_prior[1](*pixelpop_data.sigma_slope_prior[0]), sample_shape=(dim,))
-                # Build the linear-in-log spatial fields.
-                log_ranges_field = l_0.reshape((dim,) + (1,) * dim) + jnp.einsum('ij,...j->i...', A_range, X)
-                nu_field = jnp.exp(log_nu_0 + jnp.einsum('i,...i->...', a_nu, X))
-                log_sigma_field = lsigma + jnp.einsum('i,...i->...', a_sigma, X)
-                transform = WKBNonStationaryMaternSPDETransform(
-                    log_sigma_field, log_ranges_field, nu_field, pixelpop_data.adj_matrices, is_sparse=True)
-            elif pixelpop_data.spde_matern:
-                nu_spde = jnp.exp(numpyro.sample('log_nu_spde', pixelpop_data.smoothness_prior[1](*pixelpop_data.smoothness_prior[0])))
-                log_ranges = numpyro.sample('log_ranges', pixelpop_data.range_prior[1](*pixelpop_data.range_prior[0]), sample_shape=(pixelpop_data.dimension,))
-                transform = MaternSPDETransform(lsigma, log_ranges, nu_spde, pixelpop_data.adj_matrices, is_sparse=True)
-            else:
-                transform = DiagonalizedICARTransform(lsigma, pixelpop_data.adj_matrices, is_sparse=True)
-            transformed = transform(eigenbasis_sites)
-            if pixelpop_data.lower_triangular:
-                # Symmetrize, equivalent to sampling from the symmetrized space.
-                transformed = 0.5 * (transformed + transformed.swapaxes(0, 1))
-            # Free overall log-rate offset (flat prior), carrying the absolute-rate
-            # information that the pinned zero-mode removed. The 'log_rate'
-            # deterministic computed below picks this up via LSE(field + c) = LSE(field) + c.
-            log_rate_offset = numpyro.sample(
-                'log_rate_offset', dist.ImproperUniform(dist.constraints.real, (), ())
-                )
-            transformed = transformed + log_rate_offset
-            merger_rate_density = numpyro.deterministic('merger_rate_density', transformed)
+            # sample in the Gaussian IID ("eigenbasis") space and map to the
+            # merger rate density; shared with prior_probabilistic_model
+            merger_rate_density = sample_diagonalized_field(pixelpop_data, lsigma)
 
         elif pixelpop_data.cauchy_icar:
             if not pixelpop_data.lower_triangular:
@@ -754,28 +718,23 @@ def resolve_dense_mass(dense_mass, pixelpop_data=None, latent_sites=None):
     """
     Expand a dense mass-matrix specification into numpyro's list-of-tuples form.
 
-    Accepts, in addition to numpyro's own ``True``/``False``/list-of-tuples:
-
-    - ``'parametric'``, which expands to one block per parametric model, i.e.
-      ``[('alpha_1', 'alpha_2', ..., 'mpp_1', ...), ('lamb', 'max_z'), ...]``;
-    - blocks that name *model dimensions* rather than hyperparameters, so
-      ``[('log_mass_1', 'mass_ratio', 'redshift'), ('a', 't')]`` correlates the
-      masses with the redshift and, separately, the spin magnitudes with the
-      tilts. Hyperparameter and model-dimension names may be mixed freely in one
-      block;
-    - ``'parametric'`` as an element, which expands in place, so
-      ``['parametric', ('log_nu_spde', 'log_ranges', 'lnsigma')]`` blocks the
-      parametric models and the nonparametric field separately.
-
-    Names that are not sampled -- Delta priors, or sites that this run's model
-    does not have -- are dropped rather than raising, and a name repeated across
-    blocks stays only in the first, since numpyro requires the blocks to
-    partition the latent sites.
+    Names that are not sampled are dropped rather than raising, and a name
+    repeated across blocks stays only in the first, since numpyro requires the
+    blocks to partition the latent sites.
 
     Parameters
     ----------
     dense_mass : bool, str, or sequence
-        The specification to expand.
+        numpyro's own ``True``/``False``/list-of-tuples, and additionally:
+
+        - ``'parametric'``, one block per parametric model, e.g.
+          ``[('alpha_1', ..., 'mpp_1', ...), ('lamb', 'max_z'), ...]``;
+        - model-dimension names in place of hyperparameters, e.g.
+          ``[('log_mass_1', 'mass_ratio', 'redshift'), ('a', 't')]``. The two
+          may be mixed in one block;
+        - ``'parametric'`` as an element, expanded in place, e.g.
+          ``['parametric', ('log_nu_spde', 'log_ranges', 'lnsigma',
+          'log_rate_offset')]``.
     pixelpop_data : PixelPopData, optional
         Run configuration. Required to expand ``'parametric'`` or model-dimension
         names.
@@ -802,9 +761,8 @@ def resolve_dense_mass(dense_mass, pixelpop_data=None, latent_sites=None):
         model_dimensions = set(pixelpop_data.other_parameters)
         parameter_hypers = pixelpop_data.parameter_to_hyperparameters
         priors = pixelpop_data.priors
-    # A reparameterized hyperparameter is a deterministic, not a latent site, so a
-    # block naming it would otherwise be silently dropped along with the
-    # correlations it was asked to capture.
+    # a reparameterized hyperparameter is a deterministic, not a latent site, so
+    # a block naming it would otherwise be silently dropped
     reparameterized = reparameterized_sites(priors)
 
     groups = []

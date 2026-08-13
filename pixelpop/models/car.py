@@ -30,11 +30,10 @@ class ICAR_length_scales(Distribution):
     Intrinsic Conditional Autoregressive (ICAR) distribution with optional
     length-scale parameters for each spatial dimension.
 
-    The ICAR distribution is a Gaussian Markov random field with a precision
-    matrix determined by adjacency matrices of sites.
-
-    The log_prob function is a minor modification of Eq. 18 in https://arxiv.org/abs/2406.16813
-    The model as written here is described here:
+    A Gaussian Markov random field with a precision matrix determined by the
+    adjacency matrices of the sites. ``log_prob`` is a minor modification of
+    Eq. 18 in https://arxiv.org/abs/2406.16813; the model as written here is
+    described at
     https://git.ligo.org/jack.heinzel/pixelpop/-/wikis/pixelpop-generic-review#is-the-intrinsic-conditional-autoregressive-icar-model-correctly-implemented
 
     Parameters
@@ -61,24 +60,10 @@ class ICAR_length_scales(Distribution):
     is_sparse : bool
         Indicates whether sparse operations are used.
 
-    Methods
-    -------
-    log_prob(phi)
-        Compute the log-probability of the field `phi` under the ICAR prior.
-    sample(key, sample_shape=())
-        Not implemented; ICAR is improper and cannot be sampled directly.
-    infer_shapes(log_sigmas, single_dimension_adj_matrices)
-        Utility method to infer batch and event shapes.
-    tree_flatten()
-        Support for JAX pytree flattening.
-    tree_unflatten(aux_data, params)
-        Support for JAX pytree unflattening.
-
     Notes
     -----
-    - The ICAR prior is improper; its log-probability is defined up to a constant.
-    - Sparse adjacency matrices can be used for efficiency but must be symmetric.
-    - The distribution is suitable as a prior in hierarchical models.
+    The ICAR prior is improper: its log-probability is defined up to a constant,
+    and it cannot be sampled directly.
     """
 
     arg_constraints = {

@@ -44,12 +44,9 @@ def get_posterior(rundir, chain_regex='chain_*_samples', result_file_type='h5'):
 
 class PixelPopRateFunction(object):
     """
-    A wrapper class that converts PixelPop data and model settings into a 
-    callable rate function compatible with the `population_error` package.
-
-    This class combines the parametric components (e.g., for "nuisance" parameters)
-    and the non-parametric pixelized components of the PixelPop model to return
-    the expected merger rate density for a given set of hyperparameters.
+    Wraps PixelPop data and model settings as a callable rate function
+    compatible with the `population_error` package, combining the parametric and
+    pixelized components into the expected merger rate density.
 
     Parameters
     ----------
@@ -71,11 +68,6 @@ class PixelPopRateFunction(object):
         Dictionary mapping parameters to their corresponding model functions.
     parameter_to_hyperparameters : dict
         Dictionary mapping parameters to the list of required hyperparameters.
-
-    Methods
-    -------
-    __call__(dataset, hyperparameters)
-        Computes the rate density for the provided dataset and hyperparameters.
     """
     
     def __init__(self, pixelpop_data, dataset_type='posteriors'):
@@ -315,9 +307,8 @@ def sample_nd_grid(*bins, p, size=1):
     """
     Sample points from a piecewise constant probability density on an N-D grid.
 
-    This function performs inverse transform sampling over a discrete grid 
-    defined by `p`, then applies a uniform 'intra-bin scatter' to provide 
-    continuous samples within each cell. 
+    Inverse transform sampling over the grid, with a uniform scatter within each
+    cell. Bins are assumed equally spaced, and `p` is normalized internally.
 
     Parameters
     ----------
@@ -337,12 +328,6 @@ def sample_nd_grid(*bins, p, size=1):
     samples : generator of ndarrays
         A generator yielding one array for each dimension. Each array has 
         length `size`, representing the coordinates of the sampled points.
-
-    Notes
-    ----------
-    The function assumes the bins are equally spaced for the calculation 
-    of `dx`. The total probability is normalized internally by 
-    dividing `p` by its sum.
 
     Examples
     ----------

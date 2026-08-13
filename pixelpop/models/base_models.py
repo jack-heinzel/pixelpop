@@ -67,12 +67,8 @@ def m_smoother(m1s, minimum, delta, edge_fraction=EDGE_FRACTION,
 
     Implements the standard smoothing of a power-law at the low-mass
     edge, following Eq. (B5) of arXiv:2111.03634. Ensures continuity
-    across [mmin, mmin + delta].
-
-    Exact over the turn-on. Below its bottom ``edge_fraction``, where the taper has
-    already fallen to ``exp(-1/edge_fraction)`` and its exponent is heading for a
-    pole, it continues linearly in the log so that the density keeps falling rather
-    than flattening onto a plateau.
+    across [mmin, mmin + delta]. Below the bottom ``edge_fraction`` of the
+    turn-on the taper continues linearly in the log.
 
     Parameters
     ----------
@@ -262,8 +258,7 @@ def TripleBrokenPowerLaw(data, slope_1, slope_2, slope_3, xmin, xmax,
     r"""
     Power-law distribution with two spectral breaks.
 
-    The two-break generalisation of :func:`BrokenPowerLaw`, matching
-    ``gwtc6_population_models.mass.triple_power_law_primary_mass``:
+    Matches ``gwtc6_population_models.mass.triple_power_law_primary_mass``:
 
     .. math::
         p(x) \propto

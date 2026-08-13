@@ -1,11 +1,7 @@
 """
 O4-era (GWTC-4 onwards) population models.
 
-These are the named population models introduced for the O4 catalogs, kept apart
-from the O3/GWTC-3 models and the generic primitives so that the catalog default
-sets in :mod:`~pixelpop.models.gwtc_defaults` have an obvious home. Everything
-here is re-exported by :mod:`~pixelpop.models.gwpop_models`, so existing imports
-are unaffected.
+Re-exported by :mod:`~pixelpop.models.gwpop_models`.
 
 Contents
 --------
@@ -187,12 +183,9 @@ def TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass(
 
     The GWTC-6 full-mass-spectrum primary mass model, i.e. the log-space
     equivalent of ``gwtc6_population_models.mass``'s
-    ``TwoPeakThreeBrokenPowerLawSmoothedMassDistribution``. It is
+    ``TwoPeakThreeBrokenPowerLawSmoothedMassDistribution``:
     :func:`BrokenPowerlawPlusTwoPeaks_PrimaryMass` with a third power-law
-    segment, which lets a single model span the neutron-star, low-mass-gap and
-    black-hole ranges: `alpha_1` governs the NS range below `break_mass_1`,
-    `alpha_2` the gap between the breaks, and `alpha_3` the BH range above
-    `break_mass_2`.
+    segment, spanning the neutron-star, low-mass-gap and black-hole ranges.
 
     Requires ``mmin < break_mass_1 < break_mass_2 < mmax``, and ``mmin`` at or
     above ``FMS_GRID_MINIMUM``.
