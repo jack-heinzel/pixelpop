@@ -1,16 +1,7 @@
 """
 Generic, catalog-agnostic building blocks shared by every population model.
 
-These live in their own module so that the catalog-specific model files
-(:mod:`~pixelpop.models.O4_models`, :mod:`~pixelpop.models.gwpop_models`) can
-both import them without a circular import. Everything here is re-exported by
-``gwpop_models``, so ``from pixelpop.models import powerlaw`` and
-``from pixelpop.models.gwpop_models import powerlaw`` both keep working.
-
-Every distribution in pixelpop returns a **log** probability density. Products
-of densities are sums, and mixtures are ``logaddexp``/``logsumexp``. This keeps
-the dynamic range manageable and, unlike working in linear probability, does not
-need float64 to resolve the tails.
+Every distribution in pixelpop is implemented natively in log probability density.
 """
 import jax.numpy as jnp
 import jax.scipy.special as scs
@@ -46,17 +37,12 @@ def log_expit(x):
 
     return jnp.where(condition, negx_valid-jnp.log1p(jnp.exp(negx_valid)), -jnp.log1p(jnp.exp(-posx_valid)))
 
-#: Fraction of the turn-on width at each end where the Planck taper is clipped.
-#: The taper sees the mass only through x = (m - minimum) / delta, so clipping x
-#: floors it at a fixed -1/EDGE_FRACTION. Clipping (m - minimum) at a fixed mass
-#: instead floors it at -delta/buffer, i.e. a spurious -1/buffer gradient pushing
-#: the turn-on width to zero whenever anything falls below the edge.
+
+# help numerical stability and gradients 
 EDGE_FRACTION = 1e-3
 
-#: How much further the log taper falls per turn-on width below the edge. The clip
-#: alone leaves that region flat -- no gradient in the mass, the edge or the width
-#: -- so a sampler that has put an event below the minimum mass has nothing to tell
-#: it which way is out. Steep-but-finite, and shallow enough for NUTS to follow.
+# Trick to give nonzero gradients for below minimum, the idea is
+# to 
 BELOW_EDGE_SLOPE = 10.
 
 
@@ -91,21 +77,21 @@ def m_smoother(m1s, minimum, delta, edge_fraction=EDGE_FRACTION,
         Log-smoothing factor applied to the mass distribution.
     """
     # delta == 0 is a step, and the taper is 0/0 there. Evaluate it at a dummy width
-    # and swap the step in after: on the real delta the nan reaches the gradient of
-    # the branch that is taken, not just the one that is discarded.
+    # and swap the step in after. Helps avoid nan gradients
     is_step = jnp.isclose(delta, 0)
     delta_safe = jnp.where(is_step, 1., delta)
 
-    # The clip leaves both ratios pure functions of edge_fraction at the ends, so
-    # neither the taper nor its gradient can blow up.
     m_prime = jnp.clip(m1s - minimum,
                        edge_fraction * delta_safe,
                        (1. - edge_fraction) * delta_safe)
     taper = log_expit(-delta_safe/m_prime - delta_safe/(m_prime - delta_safe))
+    
+    # minimum value log_expit allowed to reach, (chosen so in practice, it's 
+    # essentially -inf, e.g., it zeroes out the model), however it accomodates
+    # a linear decreasing below edge_fraction to help gradients "push" NUTS in
+    # the right direction 
     floor = log_expit(-1./edge_fraction - 1./(edge_fraction - 1.))
 
-    # Distance below the junction, in turn-on widths: exactly zero wherever the
-    # taper above is the real thing, so the model above the edge is untouched.
     deficit = jnp.clip(minimum + edge_fraction * delta - m1s, 0.) / delta_safe
 
     return (jnp.where(is_step, jnp.where(m1s >= minimum, 0., floor), taper)
@@ -248,7 +234,6 @@ def BrokenPowerLaw(data, slope_1, slope_2, xmin, xmax, break_fraction):
     low_part = powerlaw(data, slope_1, xmin, m_break)
     high_part = powerlaw(data, slope_2, m_break, xmax)
 
-    # this might be nan gradient?
     prob = jnp.where(data < m_break, low_part + correction, high_part)
 
     return prob + log_sigmoid(-correction) # - log(1+exp(correction))
@@ -287,10 +272,8 @@ def TripleBrokenPowerLaw(data, slope_1, slope_2, slope_3, xmin, xmax,
     jnp.ndarray
         Log-probability density of the twice-broken power-law.
     """
-    # Continuity corrections, in log space: correction_1 rescales the low region
-    # to meet the middle one at break_1, correction_2 the middle to meet the high
-    # one at break_2. Each region is individually normalized by `powerlaw`, so the
-    # corrections are exactly the log-ratios at the break points.
+    
+    # corrections for continuity at breaks
     correction_1 = (powerlaw(break_1, slope_2, break_1, break_2)
                     - powerlaw(break_1, slope_1, xmin, break_1))
     correction_2 = (powerlaw(break_2, slope_3, break_2, xmax)

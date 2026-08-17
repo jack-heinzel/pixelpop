@@ -1,8 +1,6 @@
 """
 O4-era (GWTC-4 onwards) population models.
 
-Re-exported by :mod:`~pixelpop.models.gwpop_models`.
-
 Contents
 --------
 Primary mass
@@ -28,11 +26,7 @@ from .base_models import (
     trunc_gaussian,
 )
 
-# Normalization grid for the full-mass-spectrum primary mass model. Log spaced,
-# unlike the BBH models' linear grid: the full spectrum has to resolve structure
-# at ~1.4 Msun (the NS range) and at ~35 Msun with the same grid, and a linear
-# 2000-point grid over [1, 300] has 0.15 Msun steps -- roughly 10% resolution at
-# the NS peak. Log spacing gives ~0.004 Msun there for the same cost.
+# Normalization grid for the full-mass-spectrum primary mass model.
 FMS_GRID_MINIMUM = 1.0
 FMS_GRID_MAXIMUM = 300.0
 FMS_GRID_POINTS = 2000
@@ -41,18 +35,13 @@ FMS_GRID_POINTS = 2000
 NS_SPIN_MAXIMUM = 0.4
 NS_MASS_MAXIMUM = 2.5
 
-# Normalization grid for SmoothedPowerlaw_MassRatio. The m1 axis is log spaced so the
-# norm can be interpolated down into the neutron-star range; the q axis is rescaled to
-# each m1's own support [mmin/m1, 1], since a grid with a fixed q floor either starves
-# the small-m1 end (where the support is a sliver near q = 1) or the turn-on at large
-# m1. 1000 q points with the trapezoid rule holds the normalization to <1e-3.
+# Normalization grid for SmoothedPowerlaw_MassRatio. 
 MASS_RATIO_Q_POINTS = 1000
 MASS_RATIO_M1_MINIMUM = 1.0
 MASS_RATIO_M1_MAXIMUM = 300.0
 MASS_RATIO_M1_POINTS = 500
-# Grid points below mmin have no valid q at all, so their norm is the -INF sentinel.
-# Floor it well above -INF so it cannot dominate the subtraction, or leak a 1e10 into
-# the interpolation for an m1 just above mmin.
+
+# -np.inf causes nan gradients, -100 is small enough in practice
 MASS_RATIO_LOG_NORM_FLOOR = -100.
 
 
@@ -261,7 +250,8 @@ def TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass(
     pm1 -= scs.logsumexp(pm1test) + jnp.log(dlogm1)
     return pm1 + log_jacobian  # jacobian is zero unless data is in log mass
 
-
+# old model, included only for legacy. Applies smoothing only to the BPL, 
+# instead of the full BPL + 2 peaks
 def WrongOrderSmoothed_BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     data, alpha_1, alpha_2, mmin, break_mass, delta_m_1,
     lam_fractions, mpp_1, sigpp_1, mpp_2, sigpp_2,
@@ -396,8 +386,6 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
     q = data['mass_ratio']
 
     def log_integrand(qq, mm):
-        # q^slope on q <= 1, times the turn-on in m2 = m1 q. m_smoother already
-        # returns -INF below mmin, so it carries the q >= mmin/m1 edge as well.
         return (jnp.where(qq <= 1., slope * jnp.log(qq), -INF)
                 + m_smoother(qq * mm, minimum, delta_m))
 
@@ -406,19 +394,14 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
     m1s = jnp.exp(log_m1s)
 
     # q axis rescaled onto each m1's own support so every column resolves the same
-    # number of points across [mmin/m1, 1], and mapped quadratically to cluster them
-    # at the bottom, where the turn-on lives (it spans only delta_m/m1 in q, which at
-    # m1 = 300 is narrower than a uniform step).
+    # number of points across [mmin/m1, 1].
     qmin = jnp.clip(minimum / m1s, 0., 1.)
     unit = jnp.linspace(0., 1., MASS_RATIO_Q_POINTS)[:, None]
-    qs = qmin[None, :] + (1. - qmin[None, :]) * unit ** 2
+    qs = qmin[None, :] + (1. - qmin[None, :]) * unit
     dq = jnp.clip((1. - qmin) / (MASS_RATIO_Q_POINTS - 1), 1e-30)
 
-    # Trapezoid rather than plain Riemann -- the integrand is O(1) at q = 1, so the
-    # left-endpoint rule biases the normalization low by ~h/2, about 1% here. The 2*u
-    # is d(q)/d(u) for the quadratic map, folded into the quadrature weight so that
-    # log(0) never reaches the logsumexp.
-    weights = jnp.ones_like(unit).at[0].set(0.5).at[-1].set(0.5) * 2. * unit
+    # Trapezoid rather than plain Riemann
+    weights = jnp.ones_like(unit).at[0].set(0.5).at[-1].set(0.5)
 
     log_norms = scs.logsumexp(
         log_integrand(qs, m1s[None, :]), b=weights, axis=0
@@ -426,13 +409,6 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
 
     log_norms = jnp.clip(log_norms, MASS_RATIO_LOG_NORM_FLOOR)
 
-    # m1 below mmin needs no separate cut: the numerator's m_smoother is ~-1/EDGE_FRACTION
-    # there and still falling, which underflows to zero probability on its own and stays
-    # far enough below the norm floor that the subtraction cannot lift it back up. Note
-    # that this is a soft floor, not a hard zero -- m_smoother clips (m - mmin)/delta_m
-    # rather than branching -- so a little probability leaks below mmin. That is
-    # pixelpop-wide behaviour, and the normalization above integrates only over
-    # [mmin/m1, 1], so it deliberately excludes the leak rather than blessing it.
     return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 
 
