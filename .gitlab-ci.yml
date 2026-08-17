@@ -1,6 +1,5 @@
 stages:
   - test
-  - deploy
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -19,16 +18,3 @@ unit_tests:
     - pip install -e .
     - pip install pytest
     - pytest
-
-deploy_pypi:
-  stage: deploy
-  image: python:3.11
-  variables:
-    TWINE_USERNAME: __token__
-    TWINE_PASSWORD: $PYPI_TOKEN
-  script:
-    - pip install --upgrade build twine
-    - python -m build
-    - twine upload dist/*
-  rules:
-    - if: $CI_COMMIT_TAG
