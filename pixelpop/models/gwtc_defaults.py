@@ -251,11 +251,14 @@ _GWTC6_PRIORS = {
     'alpha_2': ([-4, 12], dist.Uniform),
     'alpha_3': ([-4, 12], dist.Uniform),        # full spectrum only
     'beta': ([-2, 7], dist.Uniform),
+    'beta_1': ([-2, 7], dist.Uniform),          # full spectrum only
+    'beta_2': ([-8, 3], dist.Uniform),          # full spectrum only
+    'beta_3': ([-2, 7], dist.Uniform),          # full spectrum only
     'mmax': ([300.], dist.Delta),
     'mlow_1': ([3, 10], dist.Uniform),
-    'mlow_2': ([3, 10], dist.Uniform),
+    'mlow_2': ([3, 10], dist.Uniform),          # when mlow_1, mlow_2 are joint, separate joint prior used
     'break_mass': ([20, 50], dist.Uniform),
-    'break_mass_1': ([3, 20], dist.Uniform),    # full spectrum only
+    'break_mass_1': ([3, 10], dist.Uniform),    # full spectrum only
     'break_mass_2': ([20, 50], dist.Uniform),   # full spectrum only
     'mpp_1': ([5, 20], dist.Uniform),
     'mpp_2': ([25, 60], dist.Uniform),
@@ -267,12 +270,12 @@ _GWTC6_PRIORS = {
     # GWTC-6 truncates the Gaussian peaks at 350, not pixelpop's default of 100.
     'gaussian_mass_maximum': ([350.], dist.Delta),
     # component spin magnitude
-    'mu_1_chi': ([0, 0.25], dist.Uniform),
-    'mu_2_chi': ([0.25, 1], dist.Uniform),
+    'mu_1_chi': ([0, 1], dist.Uniform),
+    'mu_2_chi': ([0, 1], dist.Uniform),
     'sigma_1_chi': ([0.005, 1], dist.Uniform),
     'sigma_2_chi': ([0.005, 1], dist.Uniform),
-    'lamb_chi_1': ([0, 1], dist.Uniform),
-    'lamb_chi_2': ([0, 1], dist.Uniform),
+    'lamb_chi_1': ([0.5, 1], dist.Uniform),
+    'lamb_chi_2': ([0.5, 1], dist.Uniform),
     'amax': ([1.], dist.Delta),
     # spin tilt (mu_spin/sigma_spin are the *tilt* mean and width here)
     'xi_spin': ([0, 1], dist.Uniform),
