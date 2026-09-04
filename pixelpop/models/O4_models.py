@@ -50,6 +50,31 @@ MASS_RATIO_M1_POINTS = 500
 # -np.inf causes nan gradients, -100 is small enough in practice
 MASS_RATIO_LOG_NORM_FLOOR = -100.
 
+# Nodes added to the fixed grid above, covering the normalization cliff just
+# above `minimum`. As m1 falls to `minimum` the allowed secondaries m2 in
+# [minimum, m1] shrink to a sliver deep inside the smoothing ramp, where
+# S(m2) ~ exp(-delta_m / eps) with eps = m1 - minimum, so
+#
+#     log_norm(eps) ~ -delta_m / eps + 2 log(eps).
+#
+# That is nearly linear in 1 / eps and violently curved in log(m1): the second
+# derivative differs by ~6 orders of magnitude between the two coordinates. The
+# fixed log grid therefore mis-normalizes p(q | m1) by tens of percent (and far
+# worse closer in) for eps up to ~0.18 at the shipped resolution, and because the
+# error scales only as MASS_RATIO_M1_POINTS ** (-2/3), fixing it by raising that
+# count alone would need ~40k nodes. Spending MASS_RATIO_CLIFF_POINTS nodes
+# spaced uniformly in 1 / eps instead makes the dominant term exactly linear, so
+# the interpolation is correct to leading order for a ~20% increase in cost.
+#
+# Both models normalize on `minimum` and `delta_m`, which are sampled, so these
+# nodes track the cliff wherever it moves.
+MASS_RATIO_CLIFF_POINTS = 100
+
+# The cliff is only worth resolving down to where log_norm reaches the floor
+# above: log_norm ~ -delta_m / eps hits -100 at eps = delta_m / 100, and below
+# that the density is clipped regardless.
+MASS_RATIO_CLIFF_DEPTH = 100.
+
 # The q support [minimum/m1, 1] closes as m1 falls to `minimum`. Hold it open by
 # this much so the power-law normalizations of TriplePowerlaw_MassRatio stay
 # finite: wherever the clip bites, the secondary is below `minimum` and the
@@ -367,11 +392,17 @@ def WrongOrderSmoothed_BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     return pm1
 
 
-def _mass_ratio_log_norms(log_integrand, minimum):
-    """Integrate a mass-ratio integrand over q at each m1 of a fixed grid.
+def _mass_ratio_log_norms(log_integrand, minimum, delta_m):
+    """Integrate a mass-ratio integrand over q at each m1 of a grid.
 
     Returns ``(log_m1s, log_norms)``; interpolating ``log_norms`` in ``log(m1)``
     normalizes p(q | m1) at the data.
+
+    The grid is the fixed log-spaced one plus ``MASS_RATIO_CLIFF_POINTS`` nodes
+    spaced uniformly in ``1 / (m1 - minimum)`` across the normalization cliff, as
+    described where those constants are defined. The fixed nodes are kept rather
+    than replaced: 1/eps spacing is denser than the log grid only for
+    ``eps < delta_m / 10`` or so, and sparser beyond it.
 
     Parameters
     ----------
@@ -380,9 +411,23 @@ def _mass_ratio_log_norms(log_integrand, minimum):
         over a (q, m1) grid.
     minimum : float
         Minimum component mass, which sets the q support at each m1.
+    delta_m : float
+        Width of the smoothing region above `minimum`, which sets the scale of
+        the cliff and so where the extra nodes go.
     """
-    log_m1s = jnp.linspace(jnp.log(MASS_RATIO_M1_MINIMUM),
-                           jnp.log(MASS_RATIO_M1_MAXIMUM), MASS_RATIO_M1_POINTS)
+    # eps = m1 - minimum, spaced uniformly in 1 / eps over the part of the cliff
+    # that sits above the log-norm floor. delta_m -> 0 removes the ramp and with
+    # it the cliff, so fall back to the fixed grid's own resolution there.
+    inverse_eps = jnp.linspace(
+        1. / jnp.clip(delta_m, 1e-3),
+        MASS_RATIO_CLIFF_DEPTH / jnp.clip(delta_m, 1e-3),
+        MASS_RATIO_CLIFF_POINTS,
+    )
+    log_m1s = jnp.sort(jnp.concatenate([
+        jnp.linspace(jnp.log(MASS_RATIO_M1_MINIMUM),
+                     jnp.log(MASS_RATIO_M1_MAXIMUM), MASS_RATIO_M1_POINTS),
+        jnp.log(minimum + 1. / inverse_eps),
+    ]))
     m1s = jnp.exp(log_m1s)
 
     # q axis rescaled onto each m1's own support so every column resolves the same
@@ -441,7 +486,7 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
         return (jnp.where(qq <= 1., slope * jnp.log(qq), -INF)
                 + m_smoother(qq * mm, minimum, delta_m))
 
-    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum)
+    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum, delta_m)
 
     return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 
@@ -543,7 +588,7 @@ def TriplePowerlaw_MassRatio(data, slope_1, slope_2, slope_3, minimum, delta_m,
 
         return jnp.where(qq <= 1., log_p, -INF) + m_smoother(m2, minimum, delta_m)
 
-    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum)
+    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum, delta_m)
 
     return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 
