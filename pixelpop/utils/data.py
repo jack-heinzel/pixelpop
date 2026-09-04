@@ -565,12 +565,17 @@ class PixelPopData:
         # Normalized [-0.5, 0.5] per-axis grid coordinates used by the WKB
         # nonstationary SPDE field (spde_wkb) to build the linear-in-log
         # hyperparameter fields. Shape: (*bins, dimension).
-        self.spde_coords = jnp.stack(
-            jnp.meshgrid(
-                *[jnp.linspace(-0.5, 0.5, n) for n in self.bins], indexing='ij'
-            ),
-            axis=-1,
-        )
+        if self.dimension:
+            self.spde_coords = jnp.stack(
+                jnp.meshgrid(
+                    *[jnp.linspace(-0.5, 0.5, n) for n in self.bins], indexing='ij'
+                ),
+                axis=-1,
+            )
+        else:
+            # A fully parametric run has no grid, so there are no coordinates to
+            # build a field on. See the `dimension == 0` branch below.
+            self.spde_coords = jnp.zeros((0,))
 
         new_minima = gwpop_models.bbh_minima.copy()
         new_maxima = gwpop_models.bbh_maxima.copy()
@@ -582,7 +587,24 @@ class PixelPopData:
         self.maxima = new_maxima
 
         # bin up events and injections
-        if self.IID:
+        if self.dimension == 0:
+            # Fully parametric: no pixelpop_parameters, so there is no grid to
+            # place samples on, no bin volume, and nothing to flag as
+            # out-of-range -- every sample is scored by the parametric models
+            # alone. `skip_nonparametric` is what makes the model ignore the
+            # (empty) bins, so require it rather than fail obscurely later.
+            if not self.skip_nonparametric:
+                raise ValueError(
+                    'pixelpop_parameters is empty, which leaves the nonparametric '
+                    'field nothing to live on; pass skip_nonparametric=True for a '
+                    'fully parametric run.'
+                    )
+            self.event_bins = self.inj_bins = ()
+            self.event_bins_1 = self.event_bins_2 = ()
+            self.inj_bins_1 = self.inj_bins_2 = ()
+            self.bin_axes = []
+            self.logdV = jnp.zeros(0)
+        elif self.IID:
             self.event_bins_1, self.inj_bins_1, self.bin_axes, self.logdV, eprior, iprior = place_in_bins(
                 [x + '_1' for x in self.pixelpop_parameters], 
                 self.posteriors, 

@@ -197,6 +197,110 @@ def _window_marginal_parameters(window_model, hyperparameter_values, grid_data,
     return used
 
 
+def _window_factors(hyperposterior, pixelpop_data, Nsamples):
+    """
+    Per-bin log window factor to add to the pixelated log rate, one entry per
+    hyperposterior sample.
+
+    Every window in ``pixelpop_data.window_parameters`` is evaluated on the bin
+    centres and summed. A window that depends on a parameter which was never
+    pixelated is *marginalized* over that parameter's own parametric model rather
+    than evaluated at some arbitrary value of it:
+
+    .. math::
+        \\log W = \\log \\int dx\\, p(x \\mid \\theta)\\, w(x, \\mathrm{grid})
+                 - \\log \\int dx\\, p(x \\mid \\theta)
+
+    so a window that admits everything gives exactly 0 whatever the model is, and
+    one that admits a fraction of the model's support gives the log of that
+    fraction. The normalization is not optional: ``p`` is a density in ``x``, and
+    without dividing it out the factor would carry ``p``'s own normalization into
+    the rate.
+
+    Parameters
+    ----------
+    hyperposterior : dict
+        Flattened chains, ``(Nsamples, ...)`` per site.
+    pixelpop_data : PixelPopData
+        Read for the grid, the window models and the parametric models the
+        marginalization integrates against.
+    Nsamples : int
+
+    Returns
+    -------
+    window_in_bins : ndarray, shape (Nsamples, *bins)
+        Log factor, summed over every window.
+    """
+    dimension = pixelpop_data.dimension
+    pixelpop_parameters = pixelpop_data.pixelpop_parameters
+    parametric_models = pixelpop_data.parametric_models
+    parameter_to_hyperparameters = pixelpop_data.parameter_to_hyperparameters
+
+    # sparse bin centers: windows depending on several pixelpop parameters
+    # (e.g. m2 = m1*q) get them by broadcasting, without the full N-D grid
+    bin_centers = [0.5 * (g[:-1] + g[1:]) for g in pixelpop_data.bin_axes]
+    grid_data = {par: _broadcast_axis(bin_centers[jj], jj, dimension)
+                 for jj, par in enumerate(pixelpop_parameters)}
+
+    # a window may need parameters that were never pixelated, e.g. m1 for
+    # the secondary-mass window when only mass_ratio is on the grid
+    marg_candidates = [p for p in pixelpop_data.other_parameters
+                       if not p.endswith('_window')
+                       and p in pixelpop_data.minima and p in pixelpop_data.maxima]
+    marg_grids = {p: np.linspace(pixelpop_data.minima[p], pixelpop_data.maxima[p],
+                                 WINDOW_MARGINAL_POINTS)
+                  for p in marg_candidates}
+
+    window_in_bins = 0.
+    for par in pixelpop_data.window_parameters:
+        assert 'log_marginal_' + par in hyperposterior
+        window_model = parametric_models[par + '_window']
+        window_keys = parameter_to_hyperparameters[par + '_window']
+
+        marg_params = _window_marginal_parameters(
+            window_model, [hyperposterior[k][0] for k in window_keys],
+            grid_data, marg_candidates, marg_grids,
+            )
+        if marg_params:
+            print(f'Marginalizing {par} window over parametric {marg_params}')
+
+        # one leading axis per marginalized parameter, then the grid axes
+        ndim = dimension + len(marg_params)
+        marg_data = {p: _broadcast_axis(marg_grids[p], kk, ndim)
+                     for kk, p in enumerate(marg_params)}
+        marg_funcs = {p: _compiled(parametric_models[p]) for p in marg_params}
+        # The model is handed the grid alongside its own axis, so a *conditional*
+        # density such as p(q | m1) can be integrated at each grid point. For a
+        # model that does not read the grid this broadcasts to the same numbers
+        # in every cell, i.e. the plain 1-D case.
+        marg_log_weights = {
+            p: np.array([np.asarray(marg_funcs[p](
+                    dict(grid_data, **{p: marg_data[p]}),
+                    *[hyperposterior[k][ii] for k in parameter_to_hyperparameters[p]]
+                    ))
+                for ii in range(Nsamples)])
+            for p in marg_params}
+
+        window_func = _compiled(window_model)
+        window_factors = []
+        for ii in range(Nsamples):
+            window = np.asarray(window_func(
+                dict(grid_data, **marg_data),
+                *[hyperposterior[k][ii] for k in window_keys]
+                ))
+            if marg_params:
+                # log W = log int dx p(x|theta) w(x, grid) - log int dx p(x|theta)
+                marg_axes = tuple(range(len(marg_params)))
+                log_p = 0.
+                for p in marg_params:
+                    log_p = log_p + marg_log_weights[p][ii]
+                window = LSE(window + log_p, axis=marg_axes) - LSE(log_p, axis=marg_axes)
+            window_factors.append(window)
+        window_in_bins = window_in_bins + np.array(window_factors)
+
+    return window_in_bins
+
+
 def get_input_metadata(file_label, datadir='../data'):
     file_path = os.path.join(datadir, file_label, 'event_data.json')
     try:
@@ -442,65 +546,24 @@ def create_popsummary(
     
     
     assert 'log_rate' in hyperposterior
-    R = hyperposterior['merger_rate_density']
+    # A fully parametric run (no pixelpop_parameters, skip_nonparametric) has no
+    # field and no grid: `log_rate` is sampled directly, and every parameter is
+    # written through its parametric model below.
+    fully_parametric = dimension == 0
+    if fully_parametric:
+        if probability_density:
+            raise ValueError(
+                'probability_density needs pixelated grids to normalize; a fully '
+                'parametric run has none. Its rates_on_grids are already the '
+                'parametric densities times the overall rate.'
+                )
+        R = None
+    else:
+        R = hyperposterior['merger_rate_density']
 
     if pixelpop_data.has_window:
         print('Calculating window factors for joint pixelpop rate')
-        # sparse bin centers: windows depending on several pixelpop parameters
-        # (e.g. m2 = m1*q) get them by broadcasting, without the full N-D grid
-        bin_centers = [0.5 * (g[:-1] + g[1:]) for g in pp_grids]
-        grid_data = {par: _broadcast_axis(bin_centers[jj], jj, dimension)
-                     for jj, par in enumerate(pixelpop_parameters)}
-
-        # a window may need parameters that were never pixelated, e.g. m1 for
-        # the secondary-mass window when only mass_ratio is on the grid
-        marg_candidates = [p for p in other_parameters
-                           if not p.endswith('_window') and p in minima and p in maxima]
-        marg_grids = {p: np.linspace(minima[p], maxima[p], WINDOW_MARGINAL_POINTS)
-                      for p in marg_candidates}
-
-        window_in_bins = 0.
-        for par in pixelpop_data.window_parameters:
-            assert 'log_marginal_' + par in hyperposterior
-            window_model = parametric_models[par + '_window']
-            window_keys = parameter_to_hyperparameters[par + '_window']
-
-            marg_params = _window_marginal_parameters(
-                window_model, [hyperposterior[k][0] for k in window_keys],
-                grid_data, marg_candidates, marg_grids,
-                )
-            if marg_params:
-                print(f'Marginalizing {par} window over parametric {marg_params}')
-
-            # one leading axis per marginalized parameter, then the grid axes
-            ndim = dimension + len(marg_params)
-            marg_data = {p: _broadcast_axis(marg_grids[p], kk, ndim)
-                         for kk, p in enumerate(marg_params)}
-            marg_funcs = {p: _compiled(parametric_models[p]) for p in marg_params}
-            marg_log_weights = {
-                p: np.array([marg_funcs[p](
-                        {p: marg_grids[p]},
-                        *[hyperposterior[k][ii] for k in parameter_to_hyperparameters[p]]
-                        )
-                    for ii in range(Nsamples)])
-                for p in marg_params}
-
-            window_func = _compiled(window_model)
-            window_factors = []
-            for ii in range(Nsamples):
-                window = np.asarray(window_func(
-                    dict(grid_data, **marg_data),
-                    *[hyperposterior[k][ii] for k in window_keys]
-                    ))
-                if marg_params:
-                    # log W = log int dx p(x|theta) w(x, grid) - log int dx p(x|theta)
-                    log_norm = 0.
-                    for kk, p in enumerate(marg_params):
-                        window = window + _broadcast_axis(marg_log_weights[p][ii], kk, ndim)
-                        log_norm += LSE(marg_log_weights[p][ii])
-                    window = LSE(window, axis=tuple(range(len(marg_params)))) - log_norm
-                window_factors.append(window)
-            window_in_bins = window_in_bins + np.array(window_factors)
+        window_in_bins = _window_factors(hyperposterior, pixelpop_data, Nsamples)
 
         # Use a local variable for the windowed rate — do NOT mutate
         # hyperposterior['merger_rate_density'], which is the raw ICAR
@@ -577,19 +640,23 @@ def create_popsummary(
             overwrite=overwrite
             )
     
-    # Nd stuff
-    x_axes = np.meshgrid(*pp_grids, indexing='ij')
-    pos = np.vstack([
-        x.flatten() for x in x_axes
-        ])
-    joint = log_joint if probability_density else R
-    result.set_rates_on_grids(
-        grid_key='joint_pixelpop_rate',
-        grid_params=pixelpop_parameters,
-        positions=pos,
-        rates=np.exp(joint.reshape(Nsamples,np.prod(bins))),
-        overwrite=overwrite
-    )
+    # Nd stuff -- a fully parametric run has no pixelated axes to join
+    if fully_parametric:
+        x_axes = None
+    else:
+        x_axes = np.meshgrid(*pp_grids, indexing='ij')
+    if not fully_parametric:
+        pos = np.vstack([
+            x.flatten() for x in x_axes
+            ])
+        joint = log_joint if probability_density else R
+        result.set_rates_on_grids(
+            grid_key='joint_pixelpop_rate',
+            grid_params=pixelpop_parameters,
+            positions=pos,
+            rates=np.exp(joint.reshape(Nsamples,np.prod(bins))),
+            overwrite=overwrite
+        )
 
     # validation of results
     rhat_results, ess_results, error_stats, summary = validate_pixelpop_inference(

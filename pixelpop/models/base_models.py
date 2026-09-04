@@ -97,6 +97,35 @@ def m_smoother(m1s, minimum, delta, edge_fraction=EDGE_FRACTION,
     return (jnp.where(is_step, jnp.where(m1s >= minimum, 0., floor), taper)
             - below_edge_slope * deficit)
 
+def log_powerlaw_norm(slope, minimum, maximum):
+    r"""
+    Log normalization of a truncated power law,
+    :math:`\log \int_{x_{\min}}^{x_{\max}} x^{s}\, \mathrm{d}x`.
+
+    Split out of :func:`powerlaw` for models that need the normalization without
+    the support window, e.g. the continuity corrections of
+    :func:`~pixelpop.models.O4_models.TriplePowerlaw_MassRatio`.
+
+    Parameters
+    ----------
+    slope : float
+        Power-law exponent.
+    minimum : float or jnp.ndarray
+        Lower bound of support.
+    maximum : float or jnp.ndarray
+        Upper bound of support.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log of the normalizing integral.
+    """
+    return jnp.where(
+        jnp.isclose(slope, -1),
+        jnp.log(jnp.log(maximum / minimum)),
+        -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
+    )
+
 def powerlaw(data, slope, minimum, maximum):
     """
     Compute the log-PDF of a truncated power-law distribution.
@@ -118,11 +147,7 @@ def powerlaw(data, slope, minimum, maximum):
         Log-probability density evaluated at `data`.
         Returns -INF outside [minimum, maximum].
     """
-    norm = jnp.where(
-        jnp.isclose(slope, -1),
-        jnp.log(jnp.log(maximum / minimum)),
-        -jnp.log(jnp.abs(slope + 1)) + jnp.log(jnp.abs(maximum**(slope+1) - minimum**(slope+1)))
-    )
+    norm = log_powerlaw_norm(slope, minimum, maximum)
     window = jnp.logical_and(data >= minimum, data <= maximum)
     p = jnp.where(window, slope*jnp.log(data), -INF*jnp.ones_like(data))
     return p - norm

@@ -164,7 +164,19 @@ def setup_probabilistic_model(pixelpop_data, log='default'):
             
     parameters_psi = [p.replace('redshift', 'redshift_psi') for p in pixelpop_data.pixelpop_parameters]
     if pixelpop_data.skip_nonparametric:
-        initial_value = {}
+        # No field, so `log_rate` is the only nonparametric site. It is an
+        # ImproperUniform, which cannot be sampled from, so it needs an explicit
+        # initial value or NUTS cannot start. Seed it the way get_initial_value
+        # seeds the field's overall scale: the rate that puts Nexp at Nobs, using
+        # the selection weights alone (the parametric models are at their own
+        # initial hyperparameters and only shift this).
+        inj_weights = (pixelpop_data.injections['ln_dVTc']
+                       - pixelpop_data.injections['log_prior'])
+        pdet = LSE(inj_weights) - jnp.log(pixelpop_data.injections['total_generated'])
+        initial_value = {
+            'log_rate': jnp.log(pixelpop_data.Nobs) - pdet
+                        - jnp.log(pixelpop_data.injections['analysis_time'])
+            }
     else:
         initial_value = get_initial_value(
             pixelpop_data.plausible_hyperparameters, 

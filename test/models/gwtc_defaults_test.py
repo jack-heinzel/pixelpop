@@ -16,6 +16,7 @@ from numpyro import distributions as dist
 from pixelpop.models import (
     CatalogDefaults,
     GWTC_DEFAULTS,
+    TriplePowerlaw_MassRatio,
     gwtc4_default,
     gwtc6_fms_default,
 )
@@ -182,7 +183,13 @@ def test_gwtc6_fms_differs_from_gwtc6_only_where_expected():
 
     changed = {p for p in gwtc6.models
                if gwtc6.models[p] is not fms.models.get(p)}
-    assert changed == {'mass_1', 'log_mass_1', 'a'}
+    assert changed == {'mass_1', 'log_mass_1', 'a', 'mass_ratio'}
+    # the mass ratio resolves one slope per source class, BNS / NSBH / BBH
+    assert fms.models['mass_ratio'] is TriplePowerlaw_MassRatio
+    assert fms.hyperparameters['mass_ratio'] == [
+        'beta_1', 'beta_2', 'beta_3', 'mlow_2', 'delta_m_2']
+    for slope in ('beta_1', 'beta_2', 'beta_3'):
+        assert fms.priors[slope] == ([-2, 7], dist.Uniform)
     # the full spectrum opens the minimum masses down into the NS range
     assert fms.priors['mlow_1'] == ([1., 3.], dist.Uniform)
     assert fms.priors['mlow_2'] == ([1., 3.], dist.Uniform)

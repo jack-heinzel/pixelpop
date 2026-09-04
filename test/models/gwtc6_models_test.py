@@ -32,6 +32,7 @@ from pixelpop.models import (
     PowerlawRedshiftPsi,
     SmoothedPowerlaw_MassRatio,
     TripleBrokenPowerLaw,
+    TriplePowerlaw_MassRatio,
     TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass,
     gwtc6_default,
     gwtc6_fms_default,
@@ -54,7 +55,7 @@ HYPERS = dict(
     break_mass_2=40.0, delta_m_1=1.0, lam_fractions=(0.94, 0.03, 0.03),
     mpp_1=10.0, sigpp_1=2.0, mpp_2=33.0, sigpp_2=4.0, mmax=300.0,
     gaussian_mass_maximum=350.0, break_mass=35.0,
-    beta=1.1, mlow_2=1.2, delta_m_2=1.2,
+    beta=1.1, beta_1=1.1, beta_2=0.8, beta_3=1.4, mlow_2=1.2, delta_m_2=1.2,
     mu_1_chi=0.1, mu_2_chi=0.4, sigma_1_chi=0.1, sigma_2_chi=0.2,
     lamb_chi_1=0.5, lamb_chi_2=0.5, amax=1.0,
     mu_spin=0.5, sigma_spin=1.0, xi_spin=0.5,
@@ -322,6 +323,171 @@ def test_mass_ratio_vanishes_below_mmin():
     assert np.all(out[1:] > -10.) and np.all(np.isfinite(out[1:]))
 
 
+# gwtc6's triple-region mass ratio. slope_1/2/3, mmin, delta_m, m1.
+# gwpopulation's numpy powerlaw refuses alpha == 1 exactly (see TRIPLE_PL_CASES),
+# so no slope is 1 here.
+TRIPLE_MASS_RATIO_CASES = [
+    (1.1, 2.0, 1.5, 1.2, 1.0, 30.),     # BBH: region 3 only
+    (1.1, 2.0, 1.5, 1.2, 1.0, 2.2),     # BNS: region 1 only
+    (1.1, 2.0, 1.5, 1.2, 1.0, 4.0),     # NSBH and BBH in the same column
+    (0.0, 3.0, 5.0, 1.0, 0.5, 8.),
+    (-1.5, 2.0, 4.0, 1.5, 2.0, 100.),
+    (2.0, 1.3, 3.0, 1.2, 1.0, 70.),     # above the O3 injection hole in m1
+]
+
+# The GWTC-6 mass-ratio model separates neutron stars from black holes here.
+M_NS_MAX = 2.5
+
+
+def _reference_triple_p_q(grid, m1v, q, slopes, mmin, delta_m):
+    """gwtc6's triple-region p_q, evaluated statelessly.
+
+    Same rewrite as :func:`_reference_p_q`: the stock ``p_q`` caches an interpolant
+    closed over the data masses. It also skips the normalization entirely when
+    ``delta_m == 0``, which pixelpop does not, so normalize unconditionally here.
+    """
+    from gwpopulation.utils import trapezoid
+    from gwtc6_population_models.mass import triple_power_law_mass_ratio
+
+    m1 = np.full_like(q, m1v)
+    prob = triple_power_law_mass_ratio(m1, q, *slopes, mmin, M_NS_MAX)
+    prob = prob * grid.smoothing(m1 * q, mmin=mmin, mmax=m1, delta_m=delta_m)
+    on_grid = triple_power_law_mass_ratio(
+        grid.m1s_grid, grid.qs_grid, *slopes, mmin, M_NS_MAX)
+    on_grid = on_grid * grid.smoothing(grid.m1s_grid * grid.qs_grid, mmin=mmin,
+                                       mmax=grid.m1s_grid, delta_m=delta_m)
+    norms = jnp.nan_to_num(trapezoid(on_grid, grid.qs, axis=0))
+    return np.asarray(
+        jnp.nan_to_num(prob)
+        / jnp.clip(jnp.interp(jnp.log(m1), jnp.log(grid.m1s), norms), 1e-30)
+    )
+
+
+@pytest.mark.parametrize("case", TRIPLE_MASS_RATIO_CASES)
+def test_triple_mass_ratio_matches_gwtc6(g6, case):
+    from gwtc6_population_models.mass import (
+        TwoPeakThreeBrokenPowerLawSmoothedMassTripleRegionMassRatioDistribution,
+    )
+
+    *slopes, mmin, delta_m, m1v = case
+    q = np.linspace(0.005, 1.0, 4000)
+    reference = _reference_triple_p_q(
+        TwoPeakThreeBrokenPowerLawSmoothedMassTripleRegionMassRatioDistribution(),
+        m1v, q, slopes, mmin, delta_m,
+    )
+    data = {'log_mass_1': jnp.asarray(np.full_like(q, np.log(m1v))),
+            'mass_ratio': jnp.asarray(q)}
+    assert_matches(TriplePowerlaw_MassRatio(data, *slopes, mmin, delta_m),
+                   reference, rtol=5e-3)
+
+
+@pytest.mark.parametrize("case", TRIPLE_MASS_RATIO_CASES)
+def test_triple_mass_ratio_is_normalized(case):
+    *slopes, mmin, delta_m, m1v = case
+    q = np.linspace(1e-4, 1.0, 20000)
+    data = {'log_mass_1': jnp.asarray(np.full_like(q, np.log(m1v))),
+            'mass_ratio': jnp.asarray(q)}
+    integral = integrate(TriplePowerlaw_MassRatio(data, *slopes, mmin, delta_m), q)
+    assert integral == pytest.approx(1.0, abs=5e-3)
+
+
+@pytest.mark.parametrize("case", TRIPLE_MASS_RATIO_CASES)
+def test_triple_mass_ratio_is_continuous_in_q(case):
+    """The reason the corrections exist: no jump across m2 = m_NS,max at fixed m1."""
+    *slopes, mmin, delta_m, m1v = case
+    if m1v <= M_NS_MAX:
+        pytest.skip("no 2-3 boundary below m_NS_max")
+    if m1v > 60.:
+        pytest.skip("the O3 injection hole empties region 2, so the model is "
+                    "*meant* to jump at this boundary -- see "
+                    "test_triple_mass_ratio_injection_hole")
+    eps = 1e-5
+    q = M_NS_MAX / m1v
+    data = {'log_mass_1': jnp.log(jnp.full(2, m1v)),
+            'mass_ratio': jnp.asarray([q * (1 - eps), q * (1 + eps)])}
+    lo, hi = np.asarray(TriplePowerlaw_MassRatio(data, *slopes, mmin, delta_m))
+    assert np.exp(hi) == pytest.approx(np.exp(lo), rel=1e-3)
+
+
+@pytest.mark.parametrize("case", TRIPLE_MASS_RATIO_CASES)
+def test_triple_mass_ratio_is_continuous_in_m1(case):
+    """...and none across m1 = m_NS,max at fixed q, which is what correction_1 buys.
+
+    The per-m1 normalization is interpolated on a grid, so allow it a wider
+    tolerance than the pure-q boundary above.
+    """
+    *slopes, mmin, delta_m, _ = case
+    q = 0.8
+    eps = 1e-4
+    data = {'log_mass_1': jnp.log(jnp.asarray([M_NS_MAX * (1 - eps),
+                                               M_NS_MAX * (1 + eps)])),
+            'mass_ratio': jnp.full(2, q)}
+    lo, hi = np.asarray(TriplePowerlaw_MassRatio(data, *slopes, mmin, delta_m))
+    if min(lo, hi) < -50:
+        pytest.skip("q * m_NS_max is below mmin for this case")
+    assert np.exp(hi) == pytest.approx(np.exp(lo), rel=1e-2)
+
+
+@pytest.mark.parametrize("case", MASS_RATIO_CASES)
+def test_triple_mass_ratio_reduces_to_single_slope(case):
+    """Three equal slopes leave nothing for the corrections to do, so the model has
+    to collapse onto SmoothedPowerlaw_MassRatio."""
+    beta, mmin, delta_m, m1v = case
+    q = np.linspace(0.005, 1.0, 2000)
+    data = {'log_mass_1': jnp.asarray(np.full_like(q, np.log(m1v))),
+            'mass_ratio': jnp.asarray(q)}
+    triple = np.asarray(TriplePowerlaw_MassRatio(data, beta, beta, beta, mmin, delta_m))
+    single = np.asarray(SmoothedPowerlaw_MassRatio(data, beta, mmin, delta_m))
+    # equal slopes are not enough on their own: the O3 injection hole has no
+    # counterpart in the single-slope model, so leave it out of the comparison.
+    ok = (single > -50) & ~((m1v > 60.) & (q * m1v < 3.))
+    assert ok.sum() > 100
+    np.testing.assert_allclose(np.exp(triple[ok]), np.exp(single[ok]), rtol=1e-3)
+
+
+def test_triple_mass_ratio_injection_hole():
+    """gwtc6 empties the NSBH branch above m1 = 60, where O3 injected nothing."""
+    slopes, mmin, delta_m = (1.1, 2.0, 1.5), 1.2, 1.0
+    q = np.linspace(0.02, 1.0, 3000)
+    for m1v, empty in [(70., True), (50., False)]:
+        data = {'log_mass_1': jnp.asarray(np.full_like(q, np.log(m1v))),
+                'mass_ratio': jnp.asarray(q)}
+        out = np.asarray(TriplePowerlaw_MassRatio(data, *slopes, mmin, delta_m))
+        nsbh = (q * m1v > mmin + delta_m) & (q * m1v < M_NS_MAX)
+        assert nsbh.sum() > 10
+        assert np.all(out[nsbh] < -50.) == empty
+        # region 3 is untouched either way, and still normalized
+        assert integrate(out, q) == pytest.approx(1.0, abs=5e-3)
+
+
+def test_triple_mass_ratio_vanishes_below_mmin():
+    """As for SmoothedPowerlaw_MassRatio: below mmin the density underflows to zero
+    rather than picking up a spurious value from the power-law normalizations, whose
+    q support has closed there."""
+    q = jnp.asarray([0.1, 0.5, 0.9])
+    below = {'log_mass_1': jnp.log(jnp.full(3, 2.0)), 'mass_ratio': q}
+    out = np.asarray(TriplePowerlaw_MassRatio(below, 1.1, 2.0, 1.5, 5., 1.))
+    assert np.all(out < -100.) and not np.any(np.isnan(out))
+    assert np.all(np.exp(np.clip(out, -700, None)) == 0.)
+
+    above = {'log_mass_1': jnp.log(jnp.full(3, 20.0)), 'mass_ratio': q}
+    out = np.asarray(TriplePowerlaw_MassRatio(above, 1.1, 2.0, 1.5, 5., 1.))
+    assert out[0] < -100.
+    assert np.all(out[1:] > -10.) and np.all(np.isfinite(out[1:]))
+
+
+def test_triple_mass_ratio_gradients_are_finite(dataset):
+    """Every hyperparameter, over data that straddles all three regions."""
+    def loss(*args):
+        out = TriplePowerlaw_MassRatio(dataset, *args)
+        return jnp.sum(jnp.where(jnp.isfinite(out), out, 0.0))
+
+    args = tuple(jnp.asarray(v, dtype=float) for v in (1.1, 2.0, 1.5, 1.2, 1.0))
+    grads = jax.jit(jax.grad(loss, argnums=tuple(range(len(args)))))(*args)
+    for name, g in zip(('slope_1', 'slope_2', 'slope_3', 'minimum', 'delta_m'), grads):
+        assert np.isfinite(np.asarray(g)), f"non-finite gradient w.r.t. {name}"
+
+
 # ---------------------------------------------------------------------------
 # Component spins
 # ---------------------------------------------------------------------------
@@ -496,9 +662,10 @@ def test_joint_matches_gwtc6(g6, dataset):
             dataset['redshift'], lamb=h['lamb']))
     )
     q = np.asarray(dataset['mass_ratio'])
+    slopes = (h['beta_1'], h['beta_2'], h['beta_3'])
     p_q = np.array([
-        _reference_p_q(grid, m1v, np.array([qv]), h['beta'], h['mlow_2'],
-                       h['delta_m_2'])[0]
+        _reference_triple_p_q(grid, m1v, np.array([qv]), slopes, h['mlow_2'],
+                              h['delta_m_2'])[0]
         for m1v, qv in zip(m1[:300], q[:300])
     ])
     reference = reference[:300] * p_q

@@ -77,13 +77,27 @@ class PixelPopRateFunction(object):
             'parameter_to_hyperparameters', 
             'parametric_models', 
             'IID',
+            'skip_nonparametric',
             ]
         
         for attr in attrs_to_copy:
             value = getattr(pixelpop_data, attr)
             setattr(self, attr, value)
 
-        if self.IID:
+        if self.skip_nonparametric:
+            # Fully parametric: no grid, so there are no bins to index and the
+            # pixelpop term is the single overall log_rate. The sample shape has
+            # to come from the data instead of from the bin arrays.
+            if dataset_type == 'posteriors':
+                self.shape = pixelpop_data.posteriors['ln_dVTc'].shape
+            elif dataset_type == 'injections':
+                self.shape = pixelpop_data.injections['ln_dVTc'].shape
+            else:
+                raise ValueError(
+                    f'dataset_type can only be \'posteriors\' or \'injections\', you entered {dataset_type}'
+                )
+            self.dataset_bins = ()
+        elif self.IID:
             if dataset_type == 'posteriors':
                 self.dataset_bins_1 = pixelpop_data.event_bins_1
                 self.dataset_bins_2 = pixelpop_data.event_bins_2
@@ -144,6 +158,10 @@ class PixelPopRateFunction(object):
     def log_rate_pixelpop(self, dataset, hyperparameters):
 
         ln_dVTc = dataset['ln_dVTc']
+        if self.skip_nonparametric:
+            # the field's place is taken by one overall rate, as in the `skip`
+            # branch of nonparametric_model
+            return ln_dVTc + hyperparameters['log_rate']
         pp_rates = hyperparameters['merger_rate_density']
         if self.IID:
             norm = hyperparameters['log_rate']

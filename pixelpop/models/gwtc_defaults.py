@@ -17,8 +17,9 @@ generation into one :class:`CatalogDefaults`:
 ``gwtc6_default``     BBH: broken power law + two peaks mass, two-Gaussian
                       mixture component spins, free-mean tilt.
 ``gwtc6_fms_default`` Full mass spectrum: as GWTC-6 but with the twice-broken
-                      power law mass model and the neutron-star spin cap, and
-                      minimum masses opened down to 1 Msun.
+                      power law mass model, the per-source-class mass ratio model
+                      and the neutron-star spin cap, and minimum masses opened
+                      down to 1 Msun.
 ===================== =========================================================
 
 Usage
@@ -54,6 +55,7 @@ from .O4_models import (
     BrokenPowerlawPlusTwoPeaks_PrimaryMass,
     SmoothedPowerlaw_MassRatio,
     TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass,
+    TriplePowerlaw_MassRatio,
     two_gaussian_spin,
     two_gaussian_spin_fms,
 )
@@ -363,23 +365,36 @@ _GWTC6_FMS_MASS_HYPERS = ['alpha_1', 'alpha_2', 'alpha_3', 'mlow_1',
 FMS_MASS_MINIMUM = 1.
 FMS_MASS_MAXIMUM = 3.
 
+# TriplePowerlaw_MassRatio(data, slope_1, slope_2, slope_3, minimum, delta_m),
+# one slope per source class: BNS (both components below NS_MASS_MAXIMUM), NSBH
+# (secondary below it) and BBH (neither). `ns_maximum` is left at its default.
+_GWTC6_FMS_MASS_RATIO_HYPERS = ['beta_1', 'beta_2', 'beta_3', 'mlow_2', 'delta_m_2']
+
 gwtc6_fms_default = CatalogDefaults(
     models={
         'mass_1': TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass,
         'log_mass_1': TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass,
         'a': two_gaussian_spin_fms,
         **_GWTC6_SHARED_MODELS,
+        # after the spread: the shared set is the single-slope BBH model, and a
+        # full-spectrum catalog resolves each source class separately.
+        'mass_ratio': TriplePowerlaw_MassRatio,
     },
     hyperparameters={
         'mass_1': list(_GWTC6_FMS_MASS_HYPERS),
         'log_mass_1': list(_GWTC6_FMS_MASS_HYPERS),
         'a': list(_GWTC6_SPIN_HYPERS),
         **_GWTC6_SHARED_HYPERS,
+        'mass_ratio': list(_GWTC6_FMS_MASS_RATIO_HYPERS),
     },
     priors={
         **_GWTC6_PRIORS,
         'mlow_1': ([FMS_MASS_MINIMUM, FMS_MASS_MAXIMUM], dist.Uniform),
         'mlow_2': ([FMS_MASS_MINIMUM, FMS_MASS_MAXIMUM], dist.Uniform),
+        # one per region, each on the range the single-slope `beta` uses
+        'beta_1': ([-2, 7], dist.Uniform),
+        'beta_2': ([-2, 7], dist.Uniform),
+        'beta_3': ([-2, 7], dist.Uniform),
     },
     minima={
         'mass_1': FMS_MASS_MINIMUM,

@@ -7,6 +7,10 @@ Primary mass
     :func:`BrokenPowerlawPlusTwoPeaks_PrimaryMass` (GWTC-4 default),
     :func:`TripleBrokenPowerlawPlusTwoPeaks_PrimaryMass` (GWTC-6 full mass
     spectrum), :func:`WrongOrderSmoothed_BrokenPowerlawPlusTwoPeaks_PrimaryMass`.
+Mass ratio
+    :func:`SmoothedPowerlaw_MassRatio` (GWTC-6 default),
+    :func:`TriplePowerlaw_MassRatio` (GWTC-6 full mass spectrum, one slope per
+    BNS / NSBH / BBH region).
 Spin magnitude
     :func:`iid_normal_spin`, :func:`iid_normal_spin_fms`,
     :func:`two_gaussian_spin`, :func:`two_gaussian_spin_fms` (GWTC-6).
@@ -22,6 +26,7 @@ from .base_models import (
     INF,
     BrokenPowerLaw,
     TripleBrokenPowerLaw,
+    log_powerlaw_norm,
     m_smoother,
     trunc_gaussian,
 )
@@ -31,11 +36,12 @@ FMS_GRID_MINIMUM = 1.0
 FMS_GRID_MAXIMUM = 300.0
 FMS_GRID_POINTS = 2000
 
-# The neutron-star spin cap applied by the GWTC-6 full-spectrum spin model.
+# The GWTC-6 full-spectrum spin model caps spins at NS_SPIN_MAXIMUM below
+# NS_MASS_MAXIMUM, which is also where TriplePowerlaw_MassRatio changes slope.
 NS_SPIN_MAXIMUM = 0.4
 NS_MASS_MAXIMUM = 2.5
 
-# Normalization grid for SmoothedPowerlaw_MassRatio. 
+# Normalization grid shared by the mass-ratio models.
 MASS_RATIO_Q_POINTS = 1000
 MASS_RATIO_M1_MINIMUM = 1.0
 MASS_RATIO_M1_MAXIMUM = 300.0
@@ -43,6 +49,17 @@ MASS_RATIO_M1_POINTS = 500
 
 # -np.inf causes nan gradients, -100 is small enough in practice
 MASS_RATIO_LOG_NORM_FLOOR = -100.
+
+# The q support [minimum/m1, 1] closes as m1 falls to `minimum`. Hold it open by
+# this much so the power-law normalizations of TriplePowerlaw_MassRatio stay
+# finite: wherever the clip bites, the secondary is below `minimum` and the
+# smoother has already floored the density.
+MASS_RATIO_QMIN_MAXIMUM = 1. - 1e-3
+
+# The O3 injection set has nothing above this primary mass with a secondary this
+# light, so the GWTC-6 triple-region model empties its NSBH branch there.
+O3_INJECTION_HOLE_M1 = 60.
+O3_INJECTION_HOLE_M2 = 3.
 
 
 def _primary_mass(data):
@@ -350,6 +367,41 @@ def WrongOrderSmoothed_BrokenPowerlawPlusTwoPeaks_PrimaryMass(
     return pm1
 
 
+def _mass_ratio_log_norms(log_integrand, minimum):
+    """Integrate a mass-ratio integrand over q at each m1 of a fixed grid.
+
+    Returns ``(log_m1s, log_norms)``; interpolating ``log_norms`` in ``log(m1)``
+    normalizes p(q | m1) at the data.
+
+    Parameters
+    ----------
+    log_integrand : callable
+        ``log_integrand(q, m1)`` giving the unnormalized log density, broadcast
+        over a (q, m1) grid.
+    minimum : float
+        Minimum component mass, which sets the q support at each m1.
+    """
+    log_m1s = jnp.linspace(jnp.log(MASS_RATIO_M1_MINIMUM),
+                           jnp.log(MASS_RATIO_M1_MAXIMUM), MASS_RATIO_M1_POINTS)
+    m1s = jnp.exp(log_m1s)
+
+    # q axis rescaled onto each m1's own support so every column resolves the same
+    # number of points across [mmin/m1, 1].
+    qmin = jnp.clip(minimum / m1s, 0., MASS_RATIO_QMIN_MAXIMUM)
+    unit = jnp.linspace(0., 1., MASS_RATIO_Q_POINTS)[:, None]
+    qs = qmin[None, :] + (1. - qmin[None, :]) * unit
+    dq = jnp.clip((1. - qmin) / (MASS_RATIO_Q_POINTS - 1), 1e-30)
+
+    # Trapezoid rather than plain Riemann
+    weights = jnp.ones_like(unit).at[0].set(0.5).at[-1].set(0.5)
+
+    log_norms = scs.logsumexp(
+        log_integrand(qs, m1s[None, :]), b=weights, axis=0
+    ) + jnp.log(dq)
+
+    return log_m1s, jnp.clip(log_norms, MASS_RATIO_LOG_NORM_FLOOR)
+
+
 def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
     r"""
     Mass-ratio distribution: power law in q with the secondary-mass turn-on.
@@ -389,25 +441,109 @@ def SmoothedPowerlaw_MassRatio(data, slope, minimum, delta_m):
         return (jnp.where(qq <= 1., slope * jnp.log(qq), -INF)
                 + m_smoother(qq * mm, minimum, delta_m))
 
-    log_m1s = jnp.linspace(jnp.log(MASS_RATIO_M1_MINIMUM),
-                           jnp.log(MASS_RATIO_M1_MAXIMUM), MASS_RATIO_M1_POINTS)
-    m1s = jnp.exp(log_m1s)
+    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum)
 
-    # q axis rescaled onto each m1's own support so every column resolves the same
-    # number of points across [mmin/m1, 1].
-    qmin = jnp.clip(minimum / m1s, 0., 1.)
-    unit = jnp.linspace(0., 1., MASS_RATIO_Q_POINTS)[:, None]
-    qs = qmin[None, :] + (1. - qmin[None, :]) * unit
-    dq = jnp.clip((1. - qmin) / (MASS_RATIO_Q_POINTS - 1), 1e-30)
+    return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 
-    # Trapezoid rather than plain Riemann
-    weights = jnp.ones_like(unit).at[0].set(0.5).at[-1].set(0.5)
 
-    log_norms = scs.logsumexp(
-        log_integrand(qs, m1s[None, :]), b=weights, axis=0
-    ) + jnp.log(dq)
+def TriplePowerlaw_MassRatio(data, slope_1, slope_2, slope_3, minimum, delta_m,
+                             ns_maximum=NS_MASS_MAXIMUM):
+    r"""
+    Mass-ratio distribution: one power-law slope per BNS / NSBH / BBH region.
 
-    log_norms = jnp.clip(log_norms, MASS_RATIO_LOG_NORM_FLOOR)
+    .. math::
+        p(q | m_1) \propto S(m_1 q \mid m_{\min}, \delta_m)
+        \begin{cases}
+            C_1\, q^{\beta_1} & m_1 \leq m_{\rm NS,max},\ m_2 \leq m_{\rm NS,max}\\
+            C_2\, q^{\beta_2} & m_1 > m_{\rm NS,max},\ m_2 \leq m_{\rm NS,max}\\
+            q^{\beta_3} & m_1 > m_{\rm NS,max},\ m_2 > m_{\rm NS,max}
+        \end{cases}
+
+    with :math:`m_2 = q m_1`, normalized over :math:`q \in [0, 1]` separately at
+    each :math:`m_1`. This is the log-space equivalent of
+    ``gwtc6_population_models.mass.triple_power_law_mass_ratio``, windowed and
+    normalized exactly as :func:`SmoothedPowerlaw_MassRatio` is.
+
+    :math:`C_1` and :math:`C_2` are the reference's continuity corrections. Each is
+    a ratio of truncated power laws, so in log space the density reduces to the
+    slope of whichever region the point lands in, offset to meet its neighbour at
+    the shared boundary: :math:`C_2` matches region 2 to region 3 at
+    :math:`m_2 = m_{\rm NS,max}`, and :math:`C_1` matches region 1 to region 2
+    along :math:`m_1 = m_{\rm NS,max}` at fixed :math:`m_2`.
+
+    Like the reference, the NSBH branch is emptied above ``O3_INJECTION_HOLE_M1``,
+    where the O3 injection set constrains nothing.
+
+    The secondary-mass turn-on is the smoother, not a hard cut at
+    :math:`q = m_{\min}/m_1`: with ``delta_m = 0`` the two agree, and with
+    ``delta_m > 0`` the reference's hard cut is redundant with its own smoothing.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'mass_ratio' and either 'mass_1' or 'log_mass_1'.
+    slope_1 : float
+        Power-law slope on q where both components are below ``ns_maximum``.
+    slope_2 : float
+        Power-law slope on q where only the secondary is below ``ns_maximum``.
+    slope_3 : float
+        Power-law slope on q where both components are above ``ns_maximum``.
+    minimum : float
+        Minimum component mass; sets both the turn-on and the q support.
+    delta_m : float
+        Width of the smoothing region above `minimum`.
+    ns_maximum : float, optional
+        Mass separating the neutron-star and black-hole regions, see
+        :data:`NS_MASS_MAXIMUM`.
+
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density of the mass-ratio distribution.
+    """
+    m1, _ = _primary_mass(data)
+    q = data['mass_ratio']
+
+    # The 1-2 boundary is evaluated at m1 = ns_maximum, so its q support is fixed.
+    qmin_12 = jnp.clip(minimum / ns_maximum, 0., MASS_RATIO_QMIN_MAXIMUM)
+    # There the 2-3 boundary sits at q = m_NS,max / m_NS,max = 1, so only the
+    # normalizations survive.
+    log_correction_2_at_12 = (log_powerlaw_norm(slope_2, qmin_12, 1.)
+                              - log_powerlaw_norm(slope_3, qmin_12, 1.))
+
+    def log_integrand(qq, mm):
+        m2 = qq * mm
+        log_q = jnp.log(qq)
+        qmin = jnp.clip(minimum / mm, 0., MASS_RATIO_QMIN_MAXIMUM)
+
+        # Region 2 -> 3 continuity, at the boundary q = m_NS,max / m1.
+        log_q_23 = jnp.log(jnp.clip(ns_maximum / mm, qmin, 1.))
+        log_correction_2 = ((slope_3 - slope_2) * log_q_23
+                            + log_powerlaw_norm(slope_2, qmin, 1.)
+                            - log_powerlaw_norm(slope_3, qmin, 1.))
+
+        # Region 1 -> 2 continuity, at the same m2 but m1 = m_NS,max, i.e. the
+        # boundary q = m2 / m_NS,max.
+        log_q_12 = jnp.log(jnp.clip(m2 / ns_maximum, qmin_12, 1.))
+        log_correction_1 = (log_correction_2_at_12
+                            + (slope_2 - slope_1) * log_q_12
+                            + log_powerlaw_norm(slope_1, qmin_12, 1.)
+                            - log_powerlaw_norm(slope_2, qmin_12, 1.))
+
+        log_p_1 = slope_1 * log_q - log_powerlaw_norm(slope_1, qmin, 1.) + log_correction_1
+        log_p_2 = slope_2 * log_q - log_powerlaw_norm(slope_2, qmin, 1.) + log_correction_2
+        log_p_3 = slope_3 * log_q - log_powerlaw_norm(slope_3, qmin, 1.)
+
+        log_p_2 = jnp.where(
+            (mm > O3_INJECTION_HOLE_M1) & (m2 < O3_INJECTION_HOLE_M2), -INF, log_p_2)
+
+        # m2 <= m1, so m1 <= ns_maximum is region 1 on its own.
+        log_p = jnp.where(mm <= ns_maximum, log_p_1,
+                          jnp.where(m2 <= ns_maximum, log_p_2, log_p_3))
+
+        return jnp.where(qq <= 1., log_p, -INF) + m_smoother(m2, minimum, delta_m)
+
+    log_m1s, log_norms = _mass_ratio_log_norms(log_integrand, minimum)
 
     return log_integrand(q, m1) - jnp.interp(jnp.log(m1), log_m1s, log_norms)
 
