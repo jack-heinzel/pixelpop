@@ -39,7 +39,7 @@ FMS_GRID_POINTS = 2000
 # The GWTC-6 full-spectrum spin model caps spins at NS_SPIN_MAXIMUM below
 # NS_MASS_MAXIMUM, which is also where TriplePowerlaw_MassRatio changes slope.
 NS_SPIN_MAXIMUM = 0.4
-NS_MASS_MAXIMUM = 2.5
+NS_MASS_MAXIMUM = 3.0
 
 # Normalization grid shared by the mass-ratio models.
 MASS_RATIO_Q_POINTS = 1000
