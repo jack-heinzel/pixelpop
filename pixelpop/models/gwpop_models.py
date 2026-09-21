@@ -278,6 +278,40 @@ def chip_gaussian(data, mean, sig):
         x = data
     return trunc_gaussian(x, mean, sig, 0, 1)
 
+def conditional_chip_gaussian(data, mean, sig, amax=1):
+    """
+    Effective precessing spin distribution: Gaussian in chi_p.
+    
+    Improved over the chip gaussian model by conditioning on chi_eff and q for the 
+    proper normalization
+
+    Parameters
+    ----------
+    data : dict 
+        dict containing key 'chi_p', 'chi_eff', and 'mass_ratio'.
+    mean : float
+        Mean of the Gaussian.
+    sig : float
+        Standard deviation of the Gaussian.
+    
+    Returns
+    -------
+    jnp.ndarray
+        Log-probability density under the Gaussian distribution.
+    """
+    
+    chip = data['chi_p']
+    
+    chieff = data['chi_eff']
+    q = data['mass_ratio']
+    
+    x = (1 + q) * jnp.abs(chieff) - amax * q
+    x = jnp.clip(x, 0.0, amax) # x is physically limited < amax. If x < 0, set to 0
+    # eq. 12 from https://arxiv.org/pdf/2412.14551
+    chip_max = jnp.sqrt(amax**2 - x**2)
+    
+    return trunc_gaussian(chip, mean, sig, 0, chip_max)
+
 def lognormal(data, mean, sig):
     """
     Log-normal distribution.
