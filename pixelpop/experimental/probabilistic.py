@@ -81,10 +81,14 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
             #"interpolant": jnp.array(np.random.normal(loc=0, scale=0.1, size=(n_total-1,))), # here
             "interpolant": init_interpolant_from_counts(pixelpop_data), #init
             "log_rate": jnp.log(50.),
+            "eps_x": jnp.asarray(0.0),
+            "xi": jnp.asarray(0.05),
+            "mu_x": jnp.asarray(0.03),
+            "lnsigma": jnp.asarray(-1.5),
         }
 
     # ----------------------------------------------------------------
-    # Parametric model: split into "common" and "strong"
+    # Parametric model: split into "common", "strong" and "weak"        
     # ----------------------------------------------------------------
     def parametric_model(data, injections):
         sample = {}
@@ -93,6 +97,8 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
         common_param_inj_weights = 0
         strong_param_event_weights = 0
         strong_param_inj_weights = 0
+        weak_param_event_weights = 0                                    
+        weak_param_inj_weights = 0                                      
 
         # Draw all hyperparameters
         for key in pixelpop_data.priors:
@@ -159,11 +165,32 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                     iw=LSE(strong_param_inj_weights),
                 )
 
+        # Weak parameters (nonparametric side of mixture only)          
+        # getattr keeps this a no-op until the dataclass fields land.   
+        for p in getattr(pixelpop_data, "pixelpop_only_parameters", []):        
+            model_fn = pixelpop_data.pixelpop_parametric_models[p]              
+            hypers = [                                                          
+                sample[h]                                                       
+                for h in pixelpop_data.pixelpop_parameter_to_hyperparameters[p] 
+            ]                                                                   
+            weak_param_event_weights += model_fn(data, *hypers)                 
+            weak_param_inj_weights += model_fn(injections, *hypers)             
+
+            if log == "debug":                                                  
+                jaxprint(                                                       
+                    "[DEBUG] weak {p}: LSE(ew)={ew}, LSE(iw)={iw}",             
+                    p=p,                                                        
+                    ew=LSE(weak_param_event_weights),                           
+                    iw=LSE(weak_param_inj_weights),                             
+                )                                                               
+
         return (
             common_param_event_weights,
             common_param_inj_weights,
             strong_param_event_weights,
             strong_param_inj_weights,
+            weak_param_event_weights,                                   
+            weak_param_inj_weights,                                     
         )
 
     # ----------------------------------------------------------------
@@ -218,7 +245,7 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                 concentration=((normalization_dof - 1) / 2)
             ),
         )
-        precision = unscaled_gamma * quad / 2
+        precision = 2 * quad / unscaled_gamma
         numpyro.deterministic("lnsigma", -0.5 * jnp.log(precision))
 
         # Return log p_PP at event/injection bin locations
@@ -248,6 +275,8 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
             common_param_inj_weights,
             strong_param_event_weights,
             strong_param_inj_weights,
+            weak_param_event_weights,                                   
+            weak_param_inj_weights,                                     
         ) = parametric_model(posteriors, injections)
 
         # Case 1: skip PixelPop
@@ -302,7 +331,7 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                 + common_param_event_weights
                 + log_R0
                 + jnp.logaddexp(
-                    jnp.log(xi) + event_weights_PP,
+                    jnp.log(xi) + event_weights_PP + weak_param_event_weights,   
                     jnp.log1p(-xi) + strong_param_event_weights,
                 )
             )
@@ -311,7 +340,7 @@ def setup_mixture_probabilistic_model_direct(pixelpop_data, log="default"):
                 + common_param_inj_weights
                 + log_R0
                 + jnp.logaddexp(
-                    jnp.log(xi) + inj_weights_PP,
+                    jnp.log(xi) + inj_weights_PP + weak_param_inj_weights,       
                     jnp.log1p(-xi) + strong_param_inj_weights,
                 )
             )

@@ -465,6 +465,14 @@ class MixturePixelPopData(PixelPopData):
     skip_nonparametric: bool = False
     skip_mixture: bool = False
 
+    pixelpop_only_parameters: List[str] = field(default_factory=list)         
+    pixelpop_parametric_models: Dict[str, Callable] = field(                  
+        default_factory=dict                                                  
+    )                                                                         
+    pixelpop_parameter_to_hyperparameters: Dict[str, List[str]] = field(      
+        default_factory=dict                                                  
+    )                                                                         
+
     def __post_init__(self):
         # Before calling super(), stash any mixture_parametric_models entries
         # that target other_parameters. These will override the parent's
@@ -474,6 +482,13 @@ class MixturePixelPopData(PixelPopData):
             for p in list(self.mixture_parametric_models)
             if p in self.other_parameters
         }
+
+        # Stash the user's priors before super() rebuilds self.priors, which   
+        # keeps only hyperparameters reachable from                            
+        # pixelpop_parameters + other_parameters. Anything belonging to a       
+        # pixelpop_only_parameter is in neither list and would be dropped.      
+        _user_priors = dict(self.priors)                                       
+        _user_mixture_priors = dict(self.mixture_priors)                       
 
         super().__post_init__()
 
@@ -526,4 +541,38 @@ class MixturePixelPopData(PixelPopData):
                           f"{ppr[1].__name__}{tuple(ppr[0])}")
                     resolved_priors[h] = gwpop_models.default_priors[h]
         self.mixture_priors = resolved_priors
+
+
+        resolved_pp_models = {}                                                
+        for p in self.pixelpop_only_parameters:                                
+            if p in self.pixelpop_parametric_models:                           
+                print(f"[PixelPop-only] Using custom model for '{p}': "        
+                      f"{self.pixelpop_parametric_models[p].__name__}")        
+                resolved_pp_models[p] = self.pixelpop_parametric_models[p]     
+            else:                                                              
+                print(f"[PixelPop-only] Using default model for '{p}': "       
+                      f"{gwpop_models.gwparameter_to_model[p].__name__}")      
+                resolved_pp_models[p] = gwpop_models.gwparameter_to_model[p]   
+        self.pixelpop_parametric_models = resolved_pp_models                   
+
+        # Resolve their hyperparameter mappings                                
+        full_pp_hyper = gwpop_models.gwparameter_to_hyperparameters.copy()     
+        full_pp_hyper.update(self.pixelpop_parameter_to_hyperparameters)       
+        self.pixelpop_parameter_to_hyperparameters = {                         
+            p: full_pp_hyper[p] for p in self.pixelpop_only_parameters         
+        }                                                                      
+
+        # Their priors are folded into mixture_priors, which the probabilistic 
+        # model already draws from, so probabilistic.py needs no further edit. 
+        for p in self.pixelpop_only_parameters:                                
+            for h in self.pixelpop_parameter_to_hyperparameters[p]:            
+                if h in _user_mixture_priors:                                  
+                    src, ppr = "custom", _user_mixture_priors[h]               
+                elif h in _user_priors:                                        
+                    src, ppr = "custom", _user_priors[h]                       
+                else:                                                          
+                    src, ppr = "default", gwpop_models.default_priors[h]       
+                print(f"[PixelPop-only] Using {src} prior for '{h}': "         
+                      f"{ppr[1].__name__}{tuple(ppr[0])}")                     
+                self.mixture_priors[h] = ppr                                   
 
