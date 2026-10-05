@@ -201,6 +201,7 @@ def load_all_events_no_downsample(
     ignore=None,
     event_labels=None,
     only_listed_events=False,
+    event_cosmologies=None,
 ):
     """
     Load posteriors for some/all events, keeping each event's full sample count.
@@ -236,6 +237,19 @@ def load_all_events_no_downsample(
         mapping, so a collection script can simply set it to a dict.
     only_listed_events: bool
         If True, only events appearing in ``event_labels`` are loaded.
+    event_cosmologies: dict, optional
+        Mapping of event name -> name of the cosmology its samples were drawn with
+        (any name ``gwpopulation_pipe.utils.get_cosmology`` resolves), matched to
+        files like ``event_labels``. Overrides the cosmology stored in the file's
+        metadata, which is not always right (GWTC-5 files store ``Planck15_lal``
+        but their samples are astropy Planck15). The cosmology used is recorded
+        in event_data.json, with the stored value kept as ``stored_cosmology``.
+
+    Each file's PE prior is evaluated with its own cosmology and with the
+    distance / mass / spin priors of the ``sample_regex`` entry it came from.
+    (Upstream, and pixelpop before this, passed the last entry's metadata and
+    dataset label to ``evaluate_prior`` for every file, so only files in the last
+    entry got their stored cosmology and the rest silently used Planck15_LAL.)
 
     Returns
     -------
@@ -245,6 +259,7 @@ def load_all_events_no_downsample(
     """
     posteriors = dict()
     meta_data = dict()
+    datasets = dict()   # file name -> the sample_regex entry it was loaded from
     parameter_mapping = DEFAULT_PARAMETER_MAPPING.copy()
     if args.custom_parameter_mapping is not None:
         parameter_mapping.update(args.custom_parameter_mapping)
@@ -276,6 +291,18 @@ def load_all_events_no_downsample(
             )
         posteriors.update(posts)
         meta_data.update(meta)
+        datasets.update({name: label for name in posts})
+    if event_cosmologies:
+        for name in meta_data:
+            event, cosmology = _labels_for_file(name, event_cosmologies)
+            if event is None:
+                continue
+            meta_data[name]["stored_cosmology"] = meta_data[name].get("cosmology")
+            meta_data[name]["cosmology"] = cosmology[0]
+    for name in meta_data:
+        if meta_data[name].get("cosmology") is None:
+            logger.warning(f"No cosmology stored or given for {name}; evaluate_prior "
+                           "will assume Planck15_LAL.")
     if save_meta_data:
         with open(os.path.join(args.run_dir, "data", "event_data.json"), "w") as ff:
             json.dump(meta_data, ff)
@@ -314,7 +341,13 @@ def load_all_events_no_downsample(
             padded[name] = pd.concat([frame, extra], ignore_index=True)
         else:
             padded[name] = frame
-    padded = evaluate_prior(padded, args=args, dataset=label, meta=meta)
+    # one call per sample_regex entry, so each file gets its own entry's prior
+    # settings, and the full metadata, so each file gets its own cosmology. Every
+    # call sees the same common width, so the jitted spin prior compiles once.
+    for label in args.sample_regex:
+        batch = {name: padded[name] for name in padded if datasets[name] == label}
+        if batch:
+            padded.update(evaluate_prior(batch, args=args, dataset=label, meta=meta_data))
     posteriors = {
         name: padded[name].iloc[: real_lengths[name]].reset_index(drop=True)
         for name in padded
@@ -330,7 +363,8 @@ def load_all_events_no_downsample(
     return posteriors
 
 def gather_posteriors(
-    args, save_meta_data=True, event_labels=None, only_listed_events=False
+    args, save_meta_data=True, event_labels=None, only_listed_events=False,
+    event_cosmologies=None,
 ):
     """
     Load in posteriors from files according to the command-line arguments.
@@ -361,6 +395,7 @@ def gather_posteriors(
         ignore=args.ignore,
         event_labels=event_labels,
         only_listed_events=only_listed_events,
+        event_cosmologies=event_cosmologies,
     )
     posts = {}
     events = list()
@@ -420,7 +455,7 @@ def posteriors_to_pytree(posteriors, parameters):
     return event_dicts, event_names
 
 
-def main(event_labels=None, only_listed_events=None):
+def main(event_labels=None, only_listed_events=None, event_cosmologies=None):
     """
     Collect posteriors and write them to the run directory.
 
@@ -438,6 +473,9 @@ def main(event_labels=None, only_listed_events=None):
         If True, only events appearing in ``event_labels`` are loaded; events
         without an entry are skipped rather than loaded with the fallback
         labels. Defaults to ``args.only_listed_events`` if set, else False.
+    event_cosmologies: dict, optional
+        Mapping of event name -> cosmology name its samples were drawn with,
+        overriding the file metadata. See :func:`load_all_events_no_downsample`.
     """
     parser = create_parser()
     args = parser.parse_args()
@@ -468,6 +506,7 @@ def main(event_labels=None, only_listed_events=None):
             args=args,
             event_labels=event_labels,
             only_listed_events=only_listed_events,
+            event_cosmologies=event_cosmologies,
         )
     logger.info(f"Using {len(posts)} events, final event list is: {', '.join(events)}.")
     posterior_file = f"{args.data_label}.pkl"

@@ -54,14 +54,19 @@ class PixelPopRateFunction(object):
         The data container holding event posteriors, injections, bin definitions,
         and model settings.
     dataset_type : str, default='posteriors'
-        Specifies which dataset bins to use for the rate evaluation. 
-        Must be either 'posteriors' (for evaluating event rates) or 
-        'injections' (for evaluating selection sensitivity).
+        Specifies which dataset bins to use for the rate evaluation.
+        Must be either 'posteriors' (for evaluating event rates) or
+        'injections' (for evaluating selection sensitivity). For 'injections'
+        the rate is multiplied by the live time, `injections['analysis_time']`,
+        so that the injection weights average to the expected number of
+        detections Nexp, as in `rate_likelihood`.
 
     Attributes
     ----------
     dataset_bins : jax.numpy.ndarray
         The pre-computed bin indices for the specified dataset.
+    live_time : float
+        `injections['analysis_time']` for 'injections', 1 for 'posteriors'.
     other_parameters : list of str
         List of parameters modeled by parametric functions rather than pixels.
     parametric_models : dict
@@ -83,6 +88,14 @@ class PixelPopRateFunction(object):
         for attr in attrs_to_copy:
             value = getattr(pixelpop_data, attr)
             setattr(self, attr, value)
+
+        # The rate likelihood has Nexp = live_time * mean(injection weights) (see rate_likelihood);
+        # population_error's rate mode has no live time, so without this factor every selection
+        # covariance, and the selection term of the likelihood correction, is too small by live_time^2.
+        if dataset_type == 'injections':
+            self.live_time = pixelpop_data.injections.get('analysis_time', 1.)
+        else:
+            self.live_time = 1.
 
         if self.skip_nonparametric:
             # Fully parametric: no grid, so there are no bins to index and the
@@ -137,13 +150,13 @@ class PixelPopRateFunction(object):
         Returns
         -------
         jax.numpy.ndarray
-            The expected rate density (in units of probability * total rate) 
-            for each sample in the dataset.
+            The expected rate density (in units of probability * total rate)
+            for each sample in the dataset, times the live time for 'injections'.
         """
         lp_parametric = self.log_prob_parametric_model(dataset, hyperparameters)
         lp_pixelpop = self.log_rate_pixelpop(dataset, hyperparameters)
 
-        return jnp.exp(lp_parametric + lp_pixelpop)
+        return self.live_time * jnp.exp(lp_parametric + lp_pixelpop)
     
     def log_prob_parametric_model(self, dataset, hyperparameters):
         
